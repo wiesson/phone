@@ -5,6 +5,7 @@ struct PhonePanel: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @FocusState private var numberFieldFocused: Bool
+    @State private var showKeypad = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -90,15 +91,43 @@ struct PhonePanel: View {
                     actionButton("Answer", symbol: "phone.fill", color: .green, action: phone.answer)
                 }
             } else if phone.state.isInCall {
-                Button(action: phone.hangup) {
-                    Label("Hang up", systemImage: "phone.down.fill")
-                        .fontWeight(.semibold)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 7)
+                HStack(spacing: 10) {
+                    Button(action: phone.toggleMute) {
+                        Image(systemName: phone.isMuted ? "mic.slash.fill" : "mic.fill")
+                            .fontWeight(.semibold)
+                            .frame(width: 34, height: 34)
+                    }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
+                    .tint(phone.isMuted ? .orange : nil)
+                    .disabled(!phone.state.isConnected)
+                    .help(phone.isMuted ? "Unmute" : "Mute")
+
+                    Button(action: phone.hangup) {
+                        Label("Hang up", systemImage: "phone.down.fill")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 7)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .controlSize(.large)
+
+                    Button {
+                        showKeypad.toggle()
+                    } label: {
+                        Image(systemName: "circle.grid.3x3.fill")
+                            .fontWeight(.semibold)
+                            .frame(width: 34, height: 34)
+                    }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
+                    .disabled(!phone.state.isConnected)
+                    .help("Keypad")
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
-                .controlSize(.large)
+                if showKeypad && phone.state.isConnected {
+                    keypad
+                }
             } else if case .error = phone.state {
                 Button("Back to dialing", action: phone.recoverFromError)
                     .buttonStyle(.borderedProminent)
@@ -113,6 +142,22 @@ struct PhonePanel: View {
             }
         }
         .padding(16)
+    }
+
+    private var keypad: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 6) {
+            ForEach(Array("123456789*0#"), id: \.self) { digit in
+                Button {
+                    phone.sendDTMF(digit)
+                } label: {
+                    Text(String(digit))
+                        .font(.system(size: 16, weight: .medium, design: .rounded))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
     }
 
     private var historySection: some View {

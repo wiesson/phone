@@ -13,6 +13,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     @Published private(set) var intelligenceStatus = "Local transcription ready"
     @Published private(set) var callStartedAt: Date?
     @Published private(set) var history: [CallRecord] = []
+    @Published private(set) var isMuted = false
 
     private var process: Process?
     private var input: Pipe?
@@ -115,6 +116,20 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         recordCall(missed: false)
         finishCall()
         state = .ready
+    }
+
+    /// Toggles the microphone for the active call (baresip single-key command).
+    func toggleMute() {
+        guard state.isConnected else { return }
+        send("m")
+        isMuted.toggle()
+    }
+
+    /// Sends a DTMF digit during an active call. baresip relays bare digit
+    /// keys as DTMF while a call is established.
+    func sendDTMF(_ digit: Character) {
+        guard state.isConnected, "0123456789*#".contains(digit) else { return }
+        send(String(digit))
     }
 
     /// Handles tel:, callto:, and sip: URLs from other applications.
@@ -493,6 +508,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func finishCall() {
+        isMuted = false
         guard intelligenceRunning else {
             callStartedAt = nil
             return
