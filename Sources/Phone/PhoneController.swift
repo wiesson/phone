@@ -269,6 +269,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private var baresipExecutable: String? {
         let candidates = [
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/baresip").path,
             ProcessInfo.processInfo.environment["BARESIP_EXECUTABLE"],
             "/opt/homebrew/bin/baresip",
             "/usr/local/bin/baresip"

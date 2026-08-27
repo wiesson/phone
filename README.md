@@ -7,8 +7,7 @@ Phone focuses on the essentials: being reachable, answering calls, dialing out,
 and hanging up — without keeping a large softphone window around. Audio and
 optional conversation processing stay local on your Mac.
 
-> **Status:** Early, working development version. Currently targets macOS 26
-> and uses a local Homebrew installation of baresip.
+> **Status:** Early, working development version. Currently targets macOS 26.
 
 ## Features
 
@@ -30,6 +29,12 @@ optional conversation processing stay local on your Mac.
 ## Requirements
 
 - macOS 26 or newer
+
+The built application contains baresip and its required libraries, so Homebrew
+is not required on the Mac that runs Phone.
+
+Building Phone additionally requires:
+
 - Xcode 26 or the matching Command Line Tools
 - [Homebrew](https://brew.sh)
 - baresip and libre:
@@ -39,7 +44,8 @@ brew install baresip libre
 ```
 
 A full Xcode project is not required. The app is built with Swift Package
-Manager and a small shell script.
+Manager and a small shell script. Homebrew, baresip, and libre are build-time
+dependencies only.
 
 ## Quick start
 
@@ -112,9 +118,10 @@ cp -R dist/Phone.app /Applications/
 open /Applications/Phone.app
 ```
 
-The app is only ad hoc signed for the local Mac. Its default configuration and
-custom audio module are bundled inside the app. At first launch it creates its
-writable configuration, log, and process state under
+The app is only ad hoc signed for the local Mac. Its default configuration,
+baresip helper, required libraries, standard modules, and custom audio module
+are bundled inside the app. At first launch it creates its writable
+configuration, log, and process state under
 `~/Library/Application Support/Phone`. A development-tree account is migrated
 only when no account exists there yet, so subsequent builds never replace SIP
 credentials.
@@ -130,7 +137,7 @@ Useful scripts:
 
 ## How it works
 
-The app starts a local baresip process with the configuration under
+The app starts its bundled baresip helper with the configuration under
 `~/Library/Application Support/Phone/baresip` and controls it through its
 `stdio` module. A small bundled baresip audio filter module hands call audio to
 the app via a local Unix socket.
@@ -159,6 +166,6 @@ addresses.
 
 ## Known limitations
 
-- only tested on Apple Silicon Macs with Homebrew so far
+- only tested on Apple Silicon Macs so far
 - no graphical setup dialog for SIP accounts
 - local development build, no signed/notarized download yet
