@@ -358,11 +358,23 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
+    private var transcriptionEnabled: Bool {
+        UserDefaults.standard.object(forKey: "transcriptionEnabled") as? Bool ?? true
+    }
+
+    private var retainTranscript: Bool {
+        UserDefaults.standard.object(forKey: "retainTranscript") as? Bool ?? true
+    }
+
     private func beginCallIntelligence() {
-        guard !intelligenceRunning else { return }
+        guard !intelligenceRunning, callStartedAt == nil else { return }
         clearConversation()
-        intelligenceRunning = true
         callStartedAt = Date()
+        guard transcriptionEnabled else {
+            intelligenceStatus = "Transcription is off"
+            return
+        }
+        intelligenceRunning = true
         audioFrameCounts = [:]
         intelligenceStatus = "Preparing local models …"
         Task {
@@ -415,9 +427,13 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 await MainActor.run {
                     self.summary = CallSummary(text: text, createdAt: Date())
                     self.intelligenceStatus = "Processed locally"
+                    if !self.retainTranscript { self.clearConversation() }
                 }
             } catch {
-                await MainActor.run { self.intelligenceStatus = "Summary unavailable" }
+                await MainActor.run {
+                    self.intelligenceStatus = "Summary unavailable"
+                    if !self.retainTranscript { self.clearConversation() }
+                }
             }
         }
     }
