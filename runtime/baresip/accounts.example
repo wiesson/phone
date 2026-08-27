@@ -1,6 +1,6 @@
-# Eine SIP-Identität pro Zeile. Niemals echte Zugangsdaten committen.
-# Beispiel Telekom (Platzhalter ersetzen):
-"Meine Nummer" <sip:+49XXXXXXXXXX@tel.t-online.de>;regint=300;outbound="sip:tel.t-online.de";stunserver=stun:stun.t-online.de;mediaenc=srtp-mand
+# One SIP identity per line. Never commit real credentials.
+# Deutsche Telekom example (replace the placeholders):
+"My number" <sip:+49XXXXXXXXXX@tel.t-online.de>;regint=300;outbound="sip:tel.t-online.de";stunserver=stun:stun.t-online.de;mediaenc=srtp-mand
 
-# Weitere Nummern werden als zusätzliche Zeilen ergänzt.
-# "Zweite Nummer" <sip:+49YYYYYYYYYY@tel.t-online.de>;regint=300;outbound="sip:tel.t-online.de";stunserver=stun:stun.t-online.de;mediaenc=srtp-mand
+# Additional numbers go on additional lines.
+# "Second number" <sip:+49YYYYYYYYYY@tel.t-online.de>;regint=300;outbound="sip:tel.t-online.de";stunserver=stun:stun.t-online.de;mediaenc=srtp-mand

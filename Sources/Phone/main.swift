@@ -34,7 +34,7 @@ struct PhoneApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("Gespräch", id: "conversation") {
+        Window("Conversation", id: "conversation") {
             ConversationView(phone: phone)
         }
         .defaultSize(width: 680, height: 620)

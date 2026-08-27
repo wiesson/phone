@@ -58,7 +58,7 @@ struct PhonePanel: View {
         VStack(spacing: 12) {
             if phone.state.isReady {
                 HStack(spacing: 8) {
-                    TextField("Telefonnummer oder SIP-Adresse", text: $phone.number)
+                    TextField("Phone number or SIP address", text: $phone.number)
                         .textFieldStyle(.plain)
                         .focusEffectDisabled()
                         .focused($numberFieldFocused)
@@ -71,7 +71,7 @@ struct PhonePanel: View {
                     .buttonStyle(.borderedProminent)
                     .buttonBorderShape(.circle)
                     .tint(.green)
-                    .help("Anrufen")
+                    .help("Call")
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -85,12 +85,12 @@ struct PhonePanel: View {
                 }
             } else if phone.state.isRinging {
                 HStack(spacing: 10) {
-                    actionButton("Ablehnen", symbol: "phone.down.fill", color: .red, action: phone.reject)
-                    actionButton("Annehmen", symbol: "phone.fill", color: .green, action: phone.answer)
+                    actionButton("Decline", symbol: "phone.down.fill", color: .red, action: phone.reject)
+                    actionButton("Answer", symbol: "phone.fill", color: .green, action: phone.answer)
                 }
             } else if phone.state.isInCall {
                 Button(action: phone.hangup) {
-                    Label("Auflegen", systemImage: "phone.down.fill")
+                    Label("Hang up", systemImage: "phone.down.fill")
                         .fontWeight(.semibold)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 7)
@@ -99,15 +99,15 @@ struct PhonePanel: View {
                 .tint(.red)
                 .controlSize(.large)
             } else if case .error = phone.state {
-                Button("Zurück zur Wahl", action: phone.recoverFromError)
+                Button("Back to dialing", action: phone.recoverFromError)
                     .buttonStyle(.borderedProminent)
                     .frame(maxWidth: .infinity)
             } else if phone.state == .stopped {
-                Button("Telefon starten", action: phone.toggleBaresip)
+                Button("Start phone", action: phone.toggleBaresip)
                     .buttonStyle(.borderedProminent)
                     .frame(maxWidth: .infinity)
             } else {
-                ProgressView("Telekom wird registriert …")
+                ProgressView("Registering with the provider …")
                     .frame(maxWidth: .infinity)
             }
         }
@@ -117,10 +117,10 @@ struct PhonePanel: View {
     private var conversationPreview: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(phone.summary == nil ? "Live-Mitschrift" : "Gespräch")
+                Text(phone.summary == nil ? "Live transcript" : "Conversation")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
-                Button("Öffnen") { openWindow(id: "conversation") }
+                Button("Open") { openWindow(id: "conversation") }
                     .buttonStyle(.link)
                     .font(.system(size: 11))
             }
@@ -155,7 +155,7 @@ struct PhonePanel: View {
                 Image(systemName: "gearshape")
             }
             .buttonStyle(.plain)
-            .help("Einstellungen")
+            .help("Settings")
 
             Button {
                 phone.openRuntimeConfig()
@@ -163,11 +163,11 @@ struct PhonePanel: View {
                 Image(systemName: "wrench.and.screwdriver")
             }
             .buttonStyle(.plain)
-            .help("Technische Konfiguration öffnen")
+            .help("Open technical configuration")
 
             Spacer()
 
-            Button("Beenden", action: phone.quit)
+            Button("Quit", action: phone.quit)
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .font(.system(size: 11))
@@ -213,9 +213,9 @@ struct ConversationView: View {
                     LazyVStack(alignment: .leading, spacing: 18) {
                         if phone.transcript.isEmpty {
                             ContentUnavailableView(
-                                "Noch keine Mitschrift",
+                                "No transcript yet",
                                 systemImage: "waveform",
-                                description: Text("Sobald das Gespräch verbunden ist, erscheint der Text beider Seiten hier live.")
+                                description: Text("Once the call is connected, both sides of the conversation appear here live.")
                             )
                             .frame(maxWidth: .infinity, minHeight: 300)
                         }
@@ -243,9 +243,9 @@ struct ConversationView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Löschen", action: phone.clearConversation)
+                Button("Clear", action: phone.clearConversation)
                     .disabled(phone.transcript.isEmpty && phone.summary == nil)
-                Button("Kopieren", action: phone.copyConversation)
+                Button("Copy", action: phone.copyConversation)
                     .disabled(phone.transcript.isEmpty && phone.summary == nil)
                     .keyboardShortcut("c", modifiers: [.command, .shift])
             }
@@ -262,9 +262,9 @@ struct ConversationView: View {
                 .foregroundStyle(phone.state.isInCall ? .green : .blue)
                 .symbolEffect(.variableColor.iterative, isActive: phone.state.isInCall)
             VStack(alignment: .leading, spacing: 2) {
-                Text(phone.state.isInCall ? "Live-Gespräch" : "Letztes Gespräch")
+                Text(phone.state.isInCall ? "Live call" : "Last call")
                     .font(.title3.weight(.semibold))
-                Text(phone.state.peer ?? "Lokale Mitschrift")
+                Text(phone.state.peer ?? "Local transcript")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -316,7 +316,7 @@ private struct SummaryCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Zusammenfassung", systemImage: "sparkles")
+            Label("Summary", systemImage: "sparkles")
                 .font(.headline)
                 .foregroundStyle(.blue)
             Text(summary.text)
@@ -359,18 +359,18 @@ struct PhoneSettingsView: View {
     var body: some View {
         TabView {
             intelligenceSettings
-                .tabItem { Label("Mitschrift", systemImage: "text.bubble") }
+                .tabItem { Label("Transcript", systemImage: "text.bubble") }
 
             phoneSettings
-                .tabItem { Label("Telefon", systemImage: "phone") }
+                .tabItem { Label("Phone", systemImage: "phone") }
         }
         .frame(width: 460, height: 220)
     }
 
     private var intelligenceSettings: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Toggle("Gespräche live mitschreiben", isOn: $transcriptionEnabled)
-            Toggle("Letzte Mitschrift nach dem Auflegen behalten", isOn: $retainTranscript)
+            Toggle("Transcribe calls live", isOn: $transcriptionEnabled)
+            Toggle("Keep the last transcript after hanging up", isOn: $retainTranscript)
                 .disabled(!transcriptionEnabled)
 
             Divider()
@@ -379,9 +379,9 @@ struct PhoneSettingsView: View {
                 Image(systemName: "lock.shield.fill")
                     .foregroundStyle(.green)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Verarbeitung auf diesem Mac")
+                    Text("Processing on this Mac")
                         .fontWeight(.medium)
-                    Text("Gesprächsaudio wird weder dauerhaft aufgezeichnet noch an einen Cloud-Dienst gesendet.")
+                    Text("Call audio is neither persistently recorded nor sent to any cloud service.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -393,12 +393,12 @@ struct PhoneSettingsView: View {
 
     private var phoneSettings: some View {
         VStack(alignment: .leading, spacing: 14) {
-            settingsRow("Anbieter", value: "Telekom")
-            settingsRow("Telefonie", value: "baresip")
+            settingsRow("Provider", value: "Telekom")
+            settingsRow("Telephony", value: "baresip")
 
             Divider()
 
-            Text("Das Provider-Konto wird im nächsten Schritt direkt hier konfigurierbar.")
+            Text("Provider account configuration will move directly into this panel in a future step.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

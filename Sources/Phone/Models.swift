@@ -42,13 +42,13 @@ enum CallState: Equatable {
 
     var label: String {
         switch self {
-        case .stopped: "Telefon ist aus"
-        case .starting: "SIP wird registriert …"
-        case .ready: "Bereit"
-        case .ringing(let peer): peer.map { "Anruf von \($0)" } ?? "Eingehender Anruf"
-        case .dialing(let peer): "Rufe \(peer) an"
-        case .answering: "Verbinden …"
-        case .connected(let peer): peer.map { "Verbunden mit \($0)" } ?? "Verbunden"
+        case .stopped: "Phone is off"
+        case .starting: "Registering SIP …"
+        case .ready: "Ready"
+        case .ringing(let peer): peer.map { "Call from \($0)" } ?? "Incoming call"
+        case .dialing(let peer): "Calling \(peer)"
+        case .answering: "Connecting …"
+        case .connected(let peer): peer.map { "Connected to \($0)" } ?? "Connected"
         case .error(let message): message
         }
     }
@@ -70,7 +70,7 @@ enum Speaker: UInt8, Codable, Sendable {
     case me = 1
     case caller = 2
 
-    var title: String { self == .me ? "Ich" : "Anrufer" }
+    var title: String { self == .me ? "Me" : "Caller" }
 }
 
 struct TranscriptEntry: Identifiable, Equatable, Sendable {

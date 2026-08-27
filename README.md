@@ -1,42 +1,42 @@
 # Phone
 
-Eine kleine native macOS-Menüleisten-App für SIP-Telefonie mit
+A small native macOS menu bar app for SIP telephony, built on
 [baresip](https://github.com/baresip/baresip).
 
-Phone konzentriert sich auf das Wesentliche: erreichbar sein, Anrufe annehmen,
-selbst anrufen und wieder auflegen — ohne ein großes Softphone-Fenster offen zu
-halten. Audio und optionale Gesprächsverarbeitung bleiben lokal auf dem Mac.
+Phone focuses on the essentials: being reachable, answering calls, dialing out,
+and hanging up — without keeping a large softphone window around. Audio and
+optional conversation processing stay local on your Mac.
 
-> **Status:** Frühe, funktionierende Entwicklungsversion. Aktuell für macOS 26
-> und eine lokale Homebrew-Installation von baresip ausgelegt.
+> **Status:** Early, working development version. Currently targets macOS 26
+> and a local Homebrew installation of baresip.
 
-## Funktionen
+## Features
 
-- native SwiftUI-Menüleisten-App
-- ein- und ausgehende SIP-Anrufe
-- Annehmen, Ablehnen und Auflegen
-- macOS-Mitteilungen bei eingehenden Anrufen
-- Gesprächsdauer direkt in der Menüleiste
-- Wahlwiederholung des zuletzt gewählten Ziels
-- TLS und SDES-SRTP mit der mitgelieferten Telekom-Konfiguration
-- lokale Live-Transkription und Zusammenfassung auf unterstützten Macs
-- keine Cloud-Verarbeitung und keine dauerhafte Audioaufzeichnung
+- native SwiftUI menu bar app
+- incoming and outgoing SIP calls
+- answer, reject, and hang up
+- macOS notifications for incoming calls
+- call duration right in the menu bar
+- redial of the last dialed destination
+- TLS and SDES-SRTP with the bundled Deutsche Telekom configuration
+- local live transcription and summarization on supported Macs
+- no cloud processing and no persistent audio recording
 
-## Voraussetzungen
+## Requirements
 
-- macOS 26 oder neuer
-- Xcode 26 oder die zugehörigen Command Line Tools
+- macOS 26 or newer
+- Xcode 26 or the matching Command Line Tools
 - [Homebrew](https://brew.sh)
-- baresip und libre:
+- baresip and libre:
 
 ```sh
 brew install baresip libre
 ```
 
-Ein vollständiges Xcode-Projekt ist nicht nötig. Die App wird mit Swift Package
-Manager und einem kleinen Shell-Skript gebaut.
+A full Xcode project is not required. The app is built with Swift Package
+Manager and a small shell script.
 
-## Schnellstart
+## Quick start
 
 ```sh
 git clone https://github.com/wiesson/phone.git
@@ -44,99 +44,96 @@ cd phone
 sh scripts/setup.sh
 ```
 
-Das Setup legt aus `runtime/baresip/accounts.example` eine lokale Datei
-`runtime/baresip/accounts` an. Öffne diese Datei und ersetze die Platzhalter
-durch dein SIP-Konto. Zugangsdaten und andere Laufzeitdateien werden von Git
-ignoriert.
+The setup creates a local `runtime/baresip/accounts` file from
+`runtime/baresip/accounts.example`. Open that file and replace the placeholders
+with your SIP account. Credentials and other runtime files are ignored by Git.
 
-Danach baut und startet ein Befehl die App:
+After that, a single command builds and starts the app:
 
 ```sh
 sh scripts/run.sh
 ```
 
-Das Telefonsymbol erscheint in der macOS-Menüleiste. Beim ersten Start fragt
-macOS gegebenenfalls nach Mitteilungs- und Mikrofonzugriff.
+The phone icon appears in the macOS menu bar. On first launch, macOS may ask
+for notification and microphone access.
 
-## SIP konfigurieren
+## Configuring SIP
 
-baresip liest seine Konfiguration aus `runtime/baresip`. Ein Konto steht als
-einzelne Zeile in `runtime/baresip/accounts`.
+baresip reads its configuration from `runtime/baresip`. An account is a single
+line in `runtime/baresip/accounts`.
 
-### Telekom direkt
+### Deutsche Telekom (direct)
 
-Die mitgelieferte Beispieldatei enthält eine Vorlage für einen
-Telekom-Anschluss:
+The bundled example file contains a template for a Telekom landline:
 
 ```text
-"Meine Nummer" <sip:+49XXXXXXXXXX@tel.t-online.de>;regint=300;outbound="sip:tel.t-online.de";stunserver=stun:stun.t-online.de;mediaenc=srtp-mand
+"My number" <sip:+49XXXXXXXXXX@tel.t-online.de>;regint=300;outbound="sip:tel.t-online.de";stunserver=stun:stun.t-online.de;mediaenc=srtp-mand
 ```
 
-Je nach Anschluss und Heimnetz können zusätzliche Zugangsdaten oder
-Provider-Einstellungen erforderlich sein.
+Depending on your line and home network, additional credentials or provider
+settings may be required.
 
-### SIP-Konto im Router
+### SIP account on your router
 
-Oft ist es einfacher, in einer FRITZ!Box oder einem anderen Router ein lokales
-IP-Telefon anzulegen und Phone dagegen zu registrieren. Dafür werden benötigt:
+It is often easier to create a local IP phone in a FRITZ!Box or another router
+and register Phone against it. You will need:
 
-- lokale Router-Adresse als Registrar
-- SIP-Benutzername und Passwort
-- Zuordnung der gewünschten ein- und ausgehenden Rufnummern
+- the local router address as registrar
+- a SIP username and password
+- a mapping of the desired incoming and outgoing numbers
 
-Die genaue Account-Zeile hängt vom Router ab. Echte Zugangsdaten gehören nie in
-einen Commit oder ein Issue.
+The exact account line depends on the router. Real credentials never belong in
+a commit or an issue.
 
-## Lokale Entwicklung
+## Local development
 
-Der normale Build ist absichtlich ein Debug-Build:
+The normal build is intentionally a debug build:
 
 ```sh
 sh scripts/build-app.sh
 open dist/Phone.app
 ```
 
-Das Ergebnis liegt unter `dist/Phone.app` und wird nur ad hoc für den lokalen
-Mac signiert. Es gibt derzeit bewusst keinen Release-, Packaging- oder
-Veröffentlichungsprozess.
+The result lives at `dist/Phone.app` and is only ad hoc signed for the local
+Mac. There is deliberately no release, packaging, or distribution process yet.
 
-Nützliche Skripte:
+Useful scripts:
 
-| Skript | Aufgabe |
+| Script | Purpose |
 | --- | --- |
-| `scripts/setup.sh` | Voraussetzungen prüfen und lokale Account-Datei anlegen |
-| `scripts/build-audio-tap.sh` | baresip-Module verlinken und das lokale Audio-Modul bauen |
-| `scripts/build-app.sh` | Swift-App bauen und `dist/Phone.app` erzeugen |
-| `scripts/run.sh` | App bauen und öffnen |
+| `scripts/setup.sh` | check prerequisites and create the local account file |
+| `scripts/build-audio-tap.sh` | link baresip modules and build the local audio module |
+| `scripts/build-app.sh` | build the Swift app and produce `dist/Phone.app` |
+| `scripts/run.sh` | build and open the app |
 
-## Wie es funktioniert
+## How it works
 
-Die App startet einen lokalen baresip-Prozess mit der Konfiguration unter
-`runtime/baresip` und steuert ihn über dessen `stdio`-Modul. Ein kleines
-baresip-Audiofilter-Modul übergibt Gesprächsaudio über einen lokalen Unix-Socket
-an die App. SwiftUI bildet Status und Bedienung ab; Apples lokale Modelle
-übernehmen auf unterstützten Macs Transkription und Zusammenfassung.
+The app starts a local baresip process with the configuration under
+`runtime/baresip` and controls it through its `stdio` module. A small baresip
+audio filter module hands call audio to the app via a local Unix socket.
+SwiftUI renders state and controls; on supported Macs, Apple's local models
+handle transcription and summarization.
 
-Die wichtigsten baresip-Befehle sind:
+The most important baresip commands are:
 
-- `/dial <Ziel>` — Anruf starten
-- `a` — eingehenden Anruf annehmen
-- `b` — Anruf ablehnen oder auflegen
-- `/quit` — baresip sauber beenden
+- `/dial <target>` — start a call
+- `a` — answer an incoming call
+- `b` — reject a call or hang up
+- `/quit` — shut baresip down cleanly
 
-## Datenschutz
+## Privacy
 
-- SIP-Zugangsdaten bleiben in der ignorierten Datei `runtime/baresip/accounts`.
-- Gesprächsaudio wird nicht dauerhaft aufgezeichnet.
-- Transkription und Zusammenfassung laufen lokal.
-- Diagnose-Logs unter `runtime/` werden nicht versioniert.
+- SIP credentials stay in the ignored `runtime/baresip/accounts` file.
+- Call audio is not persistently recorded.
+- Transcription and summarization run locally.
+- Diagnostic logs under `runtime/` are not versioned.
 
-Vor dem Teilen von Logs sollte trotzdem geprüft werden, ob sie Telefonnummern
-oder SIP-Adressen enthalten.
+Before sharing logs, still check whether they contain phone numbers or SIP
+addresses.
 
-## Bekannte Grenzen
+## Known limitations
 
-- bislang nur auf Apple-Silicon-Macs mit Homebrew getestet
-- kein grafischer Einrichtungsdialog für SIP-Konten
-- kein Kontaktbuch und noch keine Anrufhistorie
-- lokaler Development-Build, noch kein signierter/notarisierter Download
+- only tested on Apple Silicon Macs with Homebrew so far
+- no graphical setup dialog for SIP accounts
+- no contact book and no call history yet
+- local development build, no signed/notarized download yet

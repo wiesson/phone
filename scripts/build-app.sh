@@ -26,11 +26,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>LSUIElement</key><true/>
-  <key>NSMicrophoneUsageDescription</key><string>Phone benötigt das Mikrofon für SIP-Anrufe.</string>
-  <key>NSSpeechRecognitionUsageDescription</key><string>Phone transkribiert Gespräche lokal auf diesem Mac.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Phone needs the microphone for SIP calls.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Phone transcribes calls locally on this Mac.</string>
 </dict></plist>
 PLIST
 
 # Ad-hoc signing is sufficient for a local development build.
 codesign --force --deep --sign - "$APP"
-echo "Gebaut: $APP"
+echo "Built: $APP"

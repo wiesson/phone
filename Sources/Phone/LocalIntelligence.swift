@@ -10,8 +10,8 @@ actor SpeechLane {
 
         var errorDescription: String? {
             switch self {
-            case .unavailable: "Lokale Spracherkennung ist nicht verfügbar."
-            case .unsupportedFormat: "Das Anruf-Audioformat wird nicht unterstützt."
+            case .unavailable: "Local speech recognition is unavailable."
+            case .unsupportedFormat: "The call audio format is not supported."
             }
         }
     }
@@ -28,7 +28,7 @@ actor SpeechLane {
     private var analysisTask: Task<Void, Never>?
     private var onResult: (@Sendable (Speaker, String, Bool) -> Void)?
 
-    init(speaker: Speaker, locale: Locale = Locale(identifier: "de-DE")) {
+    init(speaker: Speaker, locale: Locale = .current) {
         self.speaker = speaker
         self.locale = locale
     }
@@ -144,7 +144,7 @@ actor LocalIntelligence {
 
     func prepare() async throws {
         guard SpeechTranscriber.isAvailable else { throw SpeechLane.LaneError.unavailable }
-        let requested = Locale(identifier: "de-DE")
+        let requested = Locale.current
         let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requested) ?? requested
         let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
         let modules: [any SpeechModule] = [transcriber]
@@ -182,11 +182,11 @@ actor LocalIntelligence {
             .filter { $0.isFinal && !$0.text.isEmpty }
             .map { "\($0.speaker.title): \($0.text)" }
             .joined(separator: "\n")
-        guard !transcript.isEmpty else { return "Für diesen Anruf liegt noch kein Transkript vor." }
+        guard !transcript.isEmpty else { return "There is no transcript for this call yet." }
 
-        let session = LanguageModelSession(instructions: "Du fasst Telefonate knapp, sachlich und auf Deutsch zusammen. Erfinde nichts.")
+        let session = LanguageModelSession(instructions: "You summarize phone calls concisely and factually, in the language of the conversation. Do not invent anything.")
         let response = try await session.respond(to: """
-        Fasse das folgende Telefonat in höchstens vier kurzen Sätzen zusammen. Ergänze danach nur dann die Überschrift „Nächste Schritte“, wenn konkrete Aufgaben, Termine oder Zusagen genannt wurden.
+        Summarize the following phone call in at most four short sentences, in the language of the conversation. Only add a "Next steps" heading afterwards if concrete tasks, dates, or commitments were mentioned.
 
         \(transcript)
         """)
@@ -195,7 +195,7 @@ actor LocalIntelligence {
 
     private func fallbackSummary(_ entries: [TranscriptEntry]) -> String {
         let final = entries.filter { $0.isFinal && !$0.text.isEmpty }
-        guard !final.isEmpty else { return "Für diesen Anruf liegt noch kein Transkript vor." }
+        guard !final.isEmpty else { return "There is no transcript for this call yet." }
         return final.suffix(6).map { "\($0.speaker.title): \($0.text)" }.joined(separator: "\n")
     }
 }

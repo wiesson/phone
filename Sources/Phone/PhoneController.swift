@@ -10,7 +10,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     @Published var number = ""
     @Published private(set) var transcript: [TranscriptEntry] = []
     @Published private(set) var summary: CallSummary?
-    @Published private(set) var intelligenceStatus = "Lokale Transkription bereit"
+    @Published private(set) var intelligenceStatus = "Local transcription ready"
     @Published private(set) var callStartedAt: Date?
 
     private var process: Process?
@@ -45,14 +45,14 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         do {
             try audioTap.start()
         } catch {
-            intelligenceStatus = "Audio-Brücke nicht verfügbar"
+            intelligenceStatus = "Audio bridge unavailable"
         }
         startBaresip()
-        intelligenceStatus = "Lokale Modelle werden vorbereitet …"
+        intelligenceStatus = "Preparing local models …"
         Task {
             do {
                 try await intelligence.prepare()
-                await MainActor.run { self.intelligenceStatus = "Lokale Transkription bereit" }
+                await MainActor.run { self.intelligenceStatus = "Local transcription ready" }
             } catch {
                 await MainActor.run { self.intelligenceStatus = error.localizedDescription }
             }
@@ -72,7 +72,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         guard state.isReady else { return }
         let value = number.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, !value.contains("\n"), !value.contains("\r") else {
-            state = .error("Bitte eine gültige Nummer eingeben")
+            state = .error("Please enter a valid number")
             return
         }
         number = value
@@ -150,12 +150,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         isShuttingDown = false
         cleanupOrphanedBaresip()
         guard let executable = baresipExecutable else {
-            state = .error("baresip wurde nicht gefunden")
+            state = .error("baresip was not found")
             return
         }
         let configDirectory = projectRoot.appendingPathComponent("runtime/baresip", isDirectory: true)
         guard FileManager.default.fileExists(atPath: configDirectory.appendingPathComponent("config").path) else {
-            state = .error("baresip-Konfiguration fehlt")
+            state = .error("baresip configuration is missing")
             return
         }
 
@@ -185,7 +185,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             hasRegisteredAccount = false
             state = .starting
         } catch {
-            state = .error("baresip konnte nicht gestartet werden")
+            state = .error("baresip could not be started")
         }
     }
 
@@ -307,7 +307,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             hasRegisteredAccount = true
             if case .starting = state { state = .ready }
         } else if lower.contains("registration failed") || lower.contains("register failed") {
-            state = .error("SIP-Registrierung fehlgeschlagen")
+            state = .error("SIP registration failed")
         } else if lower.contains("incoming call") || lower.contains("call incoming") {
             let caller = callerName(from: line)
             state = .ringing(caller)
@@ -321,10 +321,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             clearIncomingCallNotification()
         } else if lower.contains("security violation") {
             finishCall()
-            state = .error("Telekom hat die Audio-Verschlüsselung abgelehnt")
+            state = .error("The provider rejected the audio encryption")
         } else if lower.contains("ua_connect failed") || lower.contains("call failed") {
             finishCall()
-            state = .error("Anruf konnte nicht aufgebaut werden")
+            state = .error("The call could not be established")
         } else if lower.contains("call closed") || lower.contains("session closed") || lower.contains("disconnected") {
             let missed = state.isRinging
             let caller = state.peer
@@ -333,7 +333,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             clearIncomingCallNotification()
             if missed { showMissedCallNotification(caller: caller) }
         } else if lower.contains("no accounts") {
-            state = .error("Kein SIP-Konto konfiguriert")
+            state = .error("No SIP account configured")
         }
     }
 
@@ -350,13 +350,13 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         clearConversation()
         intelligenceRunning = true
         callStartedAt = Date()
-        intelligenceStatus = "Lokale Modelle werden vorbereitet …"
+        intelligenceStatus = "Preparing local models …"
         Task {
             do {
                 try await intelligence.start { [weak self] speaker, text, isFinal in
                     Task { @MainActor in self?.receiveTranscript(speaker: speaker, text: text, isFinal: isFinal) }
                 }
-                await MainActor.run { self.intelligenceStatus = "Live · nur auf diesem Mac" }
+                await MainActor.run { self.intelligenceStatus = "Live · on this Mac only" }
             } catch {
                 await MainActor.run {
                     self.intelligenceRunning = false
@@ -387,7 +387,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
         intelligenceRunning = false
         callStartedAt = nil
-        intelligenceStatus = "Gespräch wird zusammengefasst …"
+        intelligenceStatus = "Summarizing the call …"
         let entries = transcript
         Task {
             await intelligence.stop()
@@ -395,10 +395,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 let text = try await intelligence.summarize(entries: entries)
                 await MainActor.run {
                     self.summary = CallSummary(text: text, createdAt: Date())
-                    self.intelligenceStatus = "Lokal verarbeitet"
+                    self.intelligenceStatus = "Processed locally"
                 }
             } catch {
-                await MainActor.run { self.intelligenceStatus = "Zusammenfassung nicht verfügbar" }
+                await MainActor.run { self.intelligenceStatus = "Summary unavailable" }
             }
         }
     }
@@ -406,8 +406,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private func installNotifications() {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        let answer = UNNotificationAction(identifier: "answer-call", title: "Annehmen", options: [.foreground])
-        let reject = UNNotificationAction(identifier: "reject-call", title: "Ablehnen", options: [.destructive])
+        let answer = UNNotificationAction(identifier: "answer-call", title: "Answer", options: [.foreground])
+        let reject = UNNotificationAction(identifier: "reject-call", title: "Decline", options: [.destructive])
         center.setNotificationCategories([
             UNNotificationCategory(identifier: "incoming-call", actions: [answer, reject], intentIdentifiers: [])
         ])
@@ -437,8 +437,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private func showIncomingCallNotification(caller: String?) {
         let content = UNMutableNotificationContent()
-        content.title = "Eingehender Anruf"
-        content.body = caller.map { "Anruf von \($0)" } ?? "Das Telefon klingelt."
+        content.title = "Incoming call"
+        content.body = caller.map { "Call from \($0)" } ?? "The phone is ringing."
         content.sound = .default
         content.categoryIdentifier = "incoming-call"
         clearIncomingCallNotification()
@@ -447,8 +447,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private func showMissedCallNotification(caller: String?) {
         let content = UNMutableNotificationContent()
-        content.title = "Verpasster Anruf"
-        content.body = caller.map { "Anruf von \($0)" } ?? "Ein Anruf wurde nicht angenommen."
+        content.title = "Missed call"
+        content.body = caller.map { "Call from \($0)" } ?? "A call was not answered."
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "missed-\(UUID())", content: content, trigger: nil))
     }
 
