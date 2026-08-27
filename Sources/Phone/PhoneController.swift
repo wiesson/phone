@@ -34,11 +34,11 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private var isShuttingDown = false
 
     private var diagnosticLogURL: URL {
-        projectRoot.appendingPathComponent("runtime/phone.log")
+        applicationSupportDirectory.appendingPathComponent("phone.log")
     }
 
     private var pidFileURL: URL {
-        projectRoot.appendingPathComponent("runtime/baresip.pid")
+        applicationSupportDirectory.appendingPathComponent("baresip.pid")
     }
 
     override init() {
@@ -55,6 +55,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     func start() {
+        do {
+            try prepareRuntime()
+        } catch {
+            state = .error("Phone data could not be prepared")
+            return
+        }
         loadContacts()
         installNotifications()
         do {
@@ -162,7 +168,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     func openRuntimeConfig() {
-        NSWorkspace.shared.open(projectRoot.appendingPathComponent("runtime/baresip", isDirectory: true))
+        try? prepareRuntime()
+        NSWorkspace.shared.open(configDirectory)
     }
 
     func quit() {
@@ -178,8 +185,86 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         stopBaresipAndWait()
     }
 
-    private var projectRoot: URL {
-        Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent()
+    private var applicationSupportDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Phone", isDirectory: true)
+    }
+
+    private var configDirectory: URL {
+        applicationSupportDirectory.appendingPathComponent("baresip", isDirectory: true)
+    }
+
+    private var bundledBaresipDirectory: URL? {
+        Bundle.main.resourceURL?.appendingPathComponent("baresip", isDirectory: true)
+    }
+
+    private var bundledModulesDirectory: URL? {
+        bundledBaresipDirectory?.appendingPathComponent("modules", isDirectory: true)
+    }
+
+    private var developmentRuntimeDirectory: URL? {
+        let root = Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent()
+        let runtime = root.appendingPathComponent("runtime", isDirectory: true)
+        let config = runtime.appendingPathComponent("baresip/config")
+        return FileManager.default.fileExists(atPath: config.path) ? runtime : nil
+    }
+
+    private func prepareRuntime() throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+
+        guard let bundledBaresipDirectory, let bundledModulesDirectory else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let developmentConfig = developmentRuntimeDirectory?.appendingPathComponent("baresip", isDirectory: true)
+
+        try copyIfMissing(
+            to: configDirectory.appendingPathComponent("config"),
+            from: [developmentConfig?.appendingPathComponent("config"), bundledBaresipDirectory.appendingPathComponent("config")]
+        )
+        try copyIfMissing(
+            to: configDirectory.appendingPathComponent("accounts.example"),
+            from: [bundledBaresipDirectory.appendingPathComponent("accounts.example")]
+        )
+        try copyIfMissing(
+            to: configDirectory.appendingPathComponent("contacts"),
+            from: [developmentConfig?.appendingPathComponent("contacts"), bundledBaresipDirectory.appendingPathComponent("contacts")]
+        )
+        try copyIfMissing(
+            to: configDirectory.appendingPathComponent("accounts"),
+            from: [developmentConfig?.appendingPathComponent("accounts"), bundledBaresipDirectory.appendingPathComponent("accounts.example")]
+        )
+        try updateModulePath(bundledModulesDirectory)
+    }
+
+    private func copyIfMissing(to destination: URL, from candidates: [URL?]) throws {
+        let fileManager = FileManager.default
+        guard !fileManager.fileExists(atPath: destination.path) else { return }
+        guard let source = candidates.compactMap({ $0 }).first(where: { fileManager.fileExists(atPath: $0.path) }) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        try fileManager.copyItem(at: source, to: destination)
+    }
+
+    private func updateModulePath(_ modulesDirectory: URL) throws {
+        let url = configDirectory.appendingPathComponent("config")
+        let content = try String(contentsOf: url, encoding: .utf8)
+        var lines = content.components(separatedBy: "\n")
+        var foundModulePath = false
+        for index in lines.indices {
+            let line = lines[index].trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("module_path") {
+                lines[index] = "module_path\t\t\(modulesDirectory.path)"
+                foundModulePath = true
+            }
+        }
+        if !foundModulePath {
+            lines.append("module_path\t\t\(modulesDirectory.path)")
+        }
+        let updated = lines.joined(separator: "\n")
+        if updated != content {
+            try updated.write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 
     private var baresipExecutable: String? {
@@ -199,7 +284,6 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             state = .error("baresip was not found")
             return
         }
-        let configDirectory = projectRoot.appendingPathComponent("runtime/baresip", isDirectory: true)
         guard FileManager.default.fileExists(atPath: configDirectory.appendingPathComponent("config").path) else {
             state = .error("baresip configuration is missing")
             return
@@ -209,7 +293,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         let stdin = Pipe()
         let stdout = Pipe()
         task.executableURL = URL(fileURLWithPath: executable)
-        task.currentDirectoryURL = projectRoot
+        task.currentDirectoryURL = applicationSupportDirectory
         task.arguments = ["-f", configDirectory.path, "-c"]
         task.standardInput = stdin
         task.standardOutput = stdout
@@ -293,8 +377,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         probe.waitUntilExit()
         let data = output.fileHandleForReading.readDataToEndOfFile()
         let command = String(data: data, encoding: .utf8) ?? ""
-        let expectedConfig = projectRoot.appendingPathComponent("runtime/baresip").path
-        guard command.contains("/opt/homebrew/bin/baresip"), command.contains(expectedConfig) else {
+        guard command.contains("baresip"), command.contains(configDirectory.path) else {
             try? FileManager.default.removeItem(at: pidFileURL)
             return
         }
@@ -386,11 +469,11 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
-    /// Parses `runtime/baresip/contacts` lines of the form `"Name" <sip:user@domain>`
+    /// Parses baresip contacts lines of the form `"Name" <sip:user@domain>`
     /// into a user-part → display-name map.
     private func loadContacts() {
         contacts = [:]
-        let url = projectRoot.appendingPathComponent("runtime/baresip/contacts")
+        let url = configDirectory.appendingPathComponent("contacts")
         guard let content = try? String(contentsOf: url, encoding: .utf8) else { return }
         for line in content.split(separator: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)

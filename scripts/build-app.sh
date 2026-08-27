@@ -13,6 +13,13 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/Phone" "$APP/Contents/MacOS/Phone"
 cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+mkdir -p "$APP/Contents/Resources/baresip/modules"
+cp "$ROOT/runtime/baresip/config" "$APP/Contents/Resources/baresip/config"
+cp "$ROOT/runtime/baresip/accounts.example" "$APP/Contents/Resources/baresip/accounts.example"
+cp "$ROOT/Resources/baresip/contacts" "$APP/Contents/Resources/baresip/contacts"
+for module in "$ROOT"/runtime/modules/*.so; do
+  cp -L "$module" "$APP/Contents/Resources/baresip/modules/"
+done
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

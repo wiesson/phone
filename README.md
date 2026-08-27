@@ -8,7 +8,7 @@ and hanging up — without keeping a large softphone window around. Audio and
 optional conversation processing stay local on your Mac.
 
 > **Status:** Early, working development version. Currently targets macOS 26
-> and a local Homebrew installation of baresip.
+> and uses a local Homebrew installation of baresip.
 
 ## Features
 
@@ -51,7 +51,10 @@ sh scripts/setup.sh
 
 The setup creates a local `runtime/baresip/accounts` file from
 `runtime/baresip/accounts.example`. Open that file and replace the placeholders
-with your SIP account. Credentials and other runtime files are ignored by Git.
+with your SIP account. On the first launch from the development tree, Phone
+migrates missing configuration files from `runtime/baresip` into
+`~/Library/Application Support/Phone/baresip`. Existing files in Application
+Support, especially `accounts`, are never overwritten.
 
 After that, a single command builds and starts the app:
 
@@ -64,8 +67,10 @@ for notification and microphone access.
 
 ## Configuring SIP
 
-baresip reads its configuration from `runtime/baresip`. An account is a single
-line in `runtime/baresip/accounts`.
+baresip reads its configuration from
+`~/Library/Application Support/Phone/baresip`. An account is a single line in
+the `accounts` file in that directory. The menu bar window's "Open technical
+configuration" button opens the same location.
 
 ### Deutsche Telekom (direct)
 
@@ -99,8 +104,20 @@ sh scripts/build-app.sh
 open dist/Phone.app
 ```
 
-The result lives at `dist/Phone.app` and is only ad hoc signed for the local
-Mac. There is deliberately no release, packaging, or distribution process yet.
+The result lives at `dist/Phone.app` and can optionally be installed like a
+normal application:
+
+```sh
+cp -R dist/Phone.app /Applications/
+open /Applications/Phone.app
+```
+
+The app is only ad hoc signed for the local Mac. Its default configuration and
+custom audio module are bundled inside the app. At first launch it creates its
+writable configuration, log, and process state under
+`~/Library/Application Support/Phone`. A development-tree account is migrated
+only when no account exists there yet, so subsequent builds never replace SIP
+credentials.
 
 Useful scripts:
 
@@ -114,8 +131,9 @@ Useful scripts:
 ## How it works
 
 The app starts a local baresip process with the configuration under
-`runtime/baresip` and controls it through its `stdio` module. A small baresip
-audio filter module hands call audio to the app via a local Unix socket.
+`~/Library/Application Support/Phone/baresip` and controls it through its
+`stdio` module. A small bundled baresip audio filter module hands call audio to
+the app via a local Unix socket.
 SwiftUI renders state and controls; on supported Macs, Apple's local models
 handle transcription and summarization.
 
@@ -128,10 +146,13 @@ The most important baresip commands are:
 
 ## Privacy
 
-- SIP credentials stay in the ignored `runtime/baresip/accounts` file.
+- SIP credentials stay in
+  `~/Library/Application Support/Phone/baresip/accounts`. The optional
+  development source at `runtime/baresip/accounts` is ignored by Git.
 - Call audio is not persistently recorded.
 - Transcription and summarization run locally.
-- Diagnostic logs under `runtime/` are not versioned.
+- Diagnostic logs are written to
+  `~/Library/Application Support/Phone/phone.log` and are not versioned.
 
 Before sharing logs, still check whether they contain phone numbers or SIP
 addresses.
