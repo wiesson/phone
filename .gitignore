@@ -1,0 +1,12 @@
+.build/
+.swiftpm/
+dist/
+.DS_Store
+runtime/*.log
+runtime/*.pid
+runtime/modules/
+runtime/baresip/accounts
+runtime/baresip/contacts
+runtime/baresip/current_contact
+runtime/baresip/uuid
+runtime/baresip/*.log
