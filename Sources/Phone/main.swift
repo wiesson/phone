@@ -19,11 +19,14 @@ final class PhoneAppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 struct PhoneApp: App {
     @NSApplicationDelegateAdaptor(PhoneAppDelegate.self) private var appDelegate
-    @StateObject private var phone: PhoneController
+    // Deliberately not @StateObject: the app body must not re-evaluate on
+    // every controller publish, or each transcript update forces an expensive
+    // menu bar item relayout. Views observe the controller individually.
+    private let phone: PhoneController
 
     init() {
         let controller = PhoneController()
-        _phone = StateObject(wrappedValue: controller)
+        phone = controller
         appDelegate.controller = controller
         controller.start()
     }
@@ -32,10 +35,7 @@ struct PhoneApp: App {
         MenuBarExtra {
             PhonePanel(phone: phone)
         } label: {
-            MenuBarPhoneLabel(
-                state: phone.state,
-                callStartedAt: phone.callStartedAt
-            )
+            MenuBarPhoneLabel(model: phone.menuBar)
         }
         .menuBarExtraStyle(.window)
 
@@ -52,9 +52,11 @@ struct PhoneApp: App {
 }
 
 private struct MenuBarPhoneLabel: View {
-    let state: CallState
-    let callStartedAt: Date?
+    @ObservedObject var model: MenuBarModel
     @Environment(\.openWindow) private var openWindow
+
+    private var state: CallState { model.state }
+    private var callStartedAt: Date? { model.callStartedAt }
 
     var body: some View {
         HStack(spacing: 5) {

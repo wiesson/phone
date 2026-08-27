@@ -16,7 +16,19 @@ final class AudioTapServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "phone.audio-tap", qos: .userInitiated)
     private var descriptor: Int32 = -1
     private var running = false
+    private let countLock = NSLock()
+    private var frameCounts: [Speaker: Int] = [:]
     var onFrame: (@Sendable (AudioFrame) -> Void)?
+
+    /// Returns and resets the per-speaker frame counters (for diagnostics).
+    /// Uses a lock because the receive loop permanently occupies the queue.
+    func drainFrameCounts() -> [Speaker: Int] {
+        countLock.lock()
+        defer { countLock.unlock() }
+        let counts = frameCounts
+        frameCounts = [:]
+        return counts
+    }
 
     func start() throws {
         guard !running else { return }
@@ -70,6 +82,9 @@ final class AudioTapServer: @unchecked Sendable {
                 continue
             }
             guard let frame = parse(packet[0..<count]) else { continue }
+            countLock.lock()
+            frameCounts[frame.speaker, default: 0] += 1
+            countLock.unlock()
             onFrame?(frame)
         }
     }

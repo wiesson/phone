@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 enum CallState: Equatable {
@@ -64,6 +65,14 @@ enum CallState: Equatable {
         case .error: "phone.badge.exclamationmark"
         }
     }
+}
+
+/// Tiny observable model for the menu bar label, so the label only re-renders
+/// on call state changes and not on every transcript update.
+@MainActor
+final class MenuBarModel: ObservableObject {
+    @Published var state: CallState = .stopped
+    @Published var callStartedAt: Date?
 }
 
 enum Speaker: UInt8, Codable, Sendable {

@@ -6,12 +6,18 @@ import UserNotifications
 
 @MainActor
 final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserNotificationCenterDelegate {
-    @Published private(set) var state: CallState = .stopped
+    let menuBar = MenuBarModel()
+
+    @Published private(set) var state: CallState = .stopped {
+        didSet { if menuBar.state != state { menuBar.state = state } }
+    }
     @Published var number = ""
     @Published private(set) var transcript: [TranscriptEntry] = []
     @Published private(set) var summary: CallSummary?
     @Published private(set) var intelligenceStatus = "Local transcription ready"
-    @Published private(set) var callStartedAt: Date?
+    @Published private(set) var callStartedAt: Date? {
+        didSet { if menuBar.callStartedAt != callStartedAt { menuBar.callStartedAt = callStartedAt } }
+    }
     @Published private(set) var history: [CallRecord] = []
     @Published private(set) var isMuted = false
 
@@ -22,7 +28,6 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private let intelligence = LocalIntelligence()
     private var draftIDs: [Speaker: UUID] = [:]
     private var intelligenceRunning = false
-    private var audioFrameCounts: [Speaker: Int] = [:]
     private var currentDirection: CallDirection?
     private var contacts: [String: String] = [:]
     private var hasRegisteredAccount = false
@@ -43,12 +48,9 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
            let stored = try? JSONDecoder().decode([CallRecord].self, from: data) {
             history = stored
         }
-        audioTap.onFrame = { [weak self] frame in
-            guard let self else { return }
-            Task { @MainActor in
-                self.countAudioFrame(frame)
-                await self.intelligence.append(frame)
-            }
+        let intelligence = self.intelligence
+        audioTap.onFrame = { frame in
+            Task { await intelligence.append(frame) }
         }
     }
 
@@ -445,15 +447,6 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
-    private func countAudioFrame(_ frame: AudioFrame) {
-        guard intelligenceRunning else { return }
-        audioFrameCounts[frame.speaker, default: 0] += 1
-        let count = audioFrameCounts[frame.speaker] ?? 0
-        if count == 1 || count % 1_000 == 0 {
-            appendDiagnostic("phone-app: \(count) \(frame.speaker.title) audio frames received (\(Int(frame.sampleRate)) Hz)\n")
-        }
-    }
-
     private var transcriptionEnabled: Bool {
         UserDefaults.standard.object(forKey: "transcriptionEnabled") as? Bool ?? true
     }
@@ -471,7 +464,6 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             return
         }
         intelligenceRunning = true
-        audioFrameCounts = [:]
         intelligenceStatus = "Preparing local models …"
         Task {
             do {
@@ -497,6 +489,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return }
         if let draftID = draftIDs[speaker], let index = transcript.firstIndex(where: { $0.id == draftID }) {
+            guard transcript[index].text != cleaned || transcript[index].isFinal != isFinal else { return }
             transcript[index].text = cleaned
             transcript[index].isFinal = isFinal
             if isFinal { draftIDs[speaker] = nil }
@@ -509,6 +502,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private func finishCall() {
         isMuted = false
+        let counts = audioTap.drainFrameCounts()
+        appendDiagnostic("phone-app: audio frames this call — me: \(counts[.me] ?? 0), caller: \(counts[.caller] ?? 0)\n")
         guard intelligenceRunning else {
             callStartedAt = nil
             return
