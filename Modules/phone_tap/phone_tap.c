@@ -9,7 +9,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#define PHONE_TAP_SOCKET "/tmp/phone-audio.sock"
+#define PHONE_TAP_SOCKET_FORMAT "/tmp/phone-audio-%u.sock"
 #define PHONE_TAP_MAX_PAYLOAD (60U * 1024U)
 
 enum phone_direction {
@@ -171,7 +171,9 @@ static int module_init(void)
     (void)fcntl(tap_socket, F_SETFL, O_NONBLOCK);
     memset(&tap_address, 0, sizeof(tap_address));
     tap_address.sun_family = AF_UNIX;
-    strlcpy(tap_address.sun_path, PHONE_TAP_SOCKET, sizeof(tap_address.sun_path));
+    /* Per-user socket path, matching AudioTapServer.socketPath on the app side. */
+    (void)snprintf(tap_address.sun_path, sizeof(tap_address.sun_path),
+                   PHONE_TAP_SOCKET_FORMAT, (unsigned)getuid());
 
     aufilt_register(baresip_aufiltl(), &phone_tap);
     info("phone_tap: local RX/TX audio bridge ready\n");

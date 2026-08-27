@@ -11,7 +11,7 @@ struct AudioFrame: @unchecked Sendable {
 }
 
 final class AudioTapServer: @unchecked Sendable {
-    static let socketPath = "/tmp/phone-audio.sock"
+    static let socketPath = "/tmp/phone-audio-\(getuid()).sock"
 
     private let queue = DispatchQueue(label: "phone.audio-tap", qos: .userInitiated)
     private var descriptor: Int32 = -1
