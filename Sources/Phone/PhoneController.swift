@@ -12,6 +12,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     @Published private(set) var summary: CallSummary?
     @Published private(set) var intelligenceStatus = "Local transcription ready"
     @Published private(set) var callStartedAt: Date?
+    @Published private(set) var history: [CallRecord] = []
 
     private var process: Process?
     private var input: Pipe?
@@ -21,6 +22,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private var draftIDs: [Speaker: UUID] = [:]
     private var intelligenceRunning = false
     private var audioFrameCounts: [Speaker: Int] = [:]
+    private var currentDirection: CallDirection?
     private var hasRegisteredAccount = false
     private var isShuttingDown = false
 
@@ -35,6 +37,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     override init() {
         super.init()
         number = UserDefaults.standard.string(forKey: "lastDialedNumber") ?? ""
+        if let data = UserDefaults.standard.data(forKey: "callHistory"),
+           let stored = try? JSONDecoder().decode([CallRecord].self, from: data) {
+            history = stored
+        }
         audioTap.onFrame = { [weak self] frame in
             guard let self else { return }
             Task { @MainActor in
@@ -81,6 +87,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
         number = value
         UserDefaults.standard.set(value, forKey: "lastDialedNumber")
+        currentDirection = .outgoing
         state = .dialing(value)
         send("/dial \(value)")
     }
@@ -95,6 +102,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     func reject() {
         guard state.isRinging else { return }
         clearIncomingCallNotification()
+        recordCall(missed: false)
         send("b")
         state = .ready
     }
@@ -102,6 +110,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     func hangup() {
         guard state.isInCall else { return }
         send("b")
+        recordCall(missed: false)
         finishCall()
         state = .ready
     }
@@ -314,6 +323,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             state = .error("SIP registration failed")
         } else if lower.contains("incoming call") || lower.contains("call incoming") {
             let caller = callerName(from: line)
+            currentDirection = .incoming
             state = .ringing(caller)
             showIncomingCallNotification(caller: caller)
         } else if lower.contains("call established") || lower.contains("answered") {
@@ -327,11 +337,13 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             finishCall()
             state = .error("The provider rejected the audio encryption")
         } else if lower.contains("ua_connect failed") || lower.contains("call failed") {
+            recordCall(missed: false)
             finishCall()
             state = .error("The call could not be established")
         } else if lower.contains("call closed") || lower.contains("session closed") || lower.contains("disconnected") {
             let missed = state.isRinging
             let caller = state.peer
+            recordCall(missed: missed)
             finishCall()
             state = hasRegisteredAccount ? .ready : .starting
             clearIncomingCallNotification()
@@ -347,6 +359,29 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         if value.lowercased().hasPrefix("sip:") { value.removeFirst(4) }
         guard let caller = value.split(separator: "@").first, !caller.isEmpty else { return nil }
         return String(caller).removingPercentEncoding ?? String(caller)
+    }
+
+    func clearHistory() {
+        history = []
+        UserDefaults.standard.removeObject(forKey: "callHistory")
+    }
+
+    private func recordCall(missed: Bool) {
+        guard let direction = currentDirection else { return }
+        currentDirection = nil
+        let duration = callStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+        let record = CallRecord(
+            direction: direction,
+            peer: state.peer,
+            date: Date(),
+            duration: duration,
+            missed: missed
+        )
+        history.insert(record, at: 0)
+        if history.count > 50 { history.removeLast(history.count - 50) }
+        if let data = try? JSONEncoder().encode(history) {
+            UserDefaults.standard.set(data, forKey: "callHistory")
+        }
     }
 
     private func countAudioFrame(_ frame: AudioFrame) {

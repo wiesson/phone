@@ -85,3 +85,17 @@ struct CallSummary: Equatable, Sendable {
     let text: String
     let createdAt: Date
 }
+
+enum CallDirection: String, Codable, Sendable {
+    case incoming
+    case outgoing
+}
+
+struct CallRecord: Identifiable, Codable, Equatable, Sendable {
+    var id = UUID()
+    let direction: CallDirection
+    let peer: String?
+    let date: Date
+    let duration: TimeInterval
+    let missed: Bool
+}

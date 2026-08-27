@@ -11,6 +11,10 @@ struct PhonePanel: View {
             header
             Divider().opacity(0.45)
             callControls
+            if phone.state.isReady && !phone.history.isEmpty {
+                Divider().opacity(0.45)
+                historySection
+            }
             if !phone.transcript.isEmpty || phone.summary != nil {
                 Divider().opacity(0.45)
                 conversationPreview
@@ -109,6 +113,48 @@ struct PhonePanel: View {
             }
         }
         .padding(16)
+    }
+
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Recent")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Button("Clear") { phone.clearHistory() }
+                    .buttonStyle(.link)
+                    .font(.system(size: 11))
+            }
+            ForEach(phone.history.prefix(4)) { record in
+                Button {
+                    if let peer = record.peer {
+                        phone.number = peer
+                        phone.dial()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: record.direction == .incoming
+                              ? "arrow.down.left"
+                              : "arrow.up.right")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(record.missed ? .red : .secondary)
+                            .frame(width: 14)
+                        Text(record.peer ?? "Unknown")
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                        Spacer()
+                        Text(record.date, format: .relative(presentation: .named))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(record.peer.map { "Call \($0)" } ?? "Caller unknown")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
     private var conversationPreview: some View {
