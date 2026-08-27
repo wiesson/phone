@@ -33,7 +33,10 @@ actor SpeechLane {
         self.locale = locale
     }
 
-    func start(onResult: @escaping @Sendable (Speaker, String, Bool) -> Void) async throws {
+    func start(
+        onResult: @escaping @Sendable (Speaker, String, Bool) -> Void,
+        onError: @escaping @Sendable (Speaker, String) -> Void
+    ) async throws {
         guard SpeechTranscriber.isAvailable else { throw LaneError.unavailable }
         self.onResult = onResult
 
@@ -64,11 +67,19 @@ actor SpeechLane {
                 for try await result in transcriber.results {
                     onResult(speaker, String(result.text.characters), result.isFinal)
                 }
-            } catch { }
+            } catch {
+                if !(error is CancellationError) {
+                    onError(speaker, "Transcriber failed: \(error.localizedDescription)")
+                }
+            }
         }
-        analysisTask = Task {
+        analysisTask = Task { [speaker] in
             do { try await analyzer.start(inputSequence: stream) }
-            catch { }
+            catch {
+                if !(error is CancellationError) {
+                    onError(speaker, "Speech analysis failed: \(error.localizedDescription)")
+                }
+            }
         }
     }
 
@@ -154,10 +165,13 @@ actor LocalIntelligence {
         _ = try? await AssetInventory.reserve(locale: locale)
     }
 
-    func start(onResult: @escaping @Sendable (Speaker, String, Bool) -> Void) async throws {
-        try await me.start(onResult: onResult)
+    func start(
+        onResult: @escaping @Sendable (Speaker, String, Bool) -> Void,
+        onError: @escaping @Sendable (Speaker, String) -> Void
+    ) async throws {
+        try await me.start(onResult: onResult, onError: onError)
         do {
-            try await caller.start(onResult: onResult)
+            try await caller.start(onResult: onResult, onError: onError)
         } catch {
             await me.stop()
             throw error

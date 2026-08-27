@@ -20,6 +20,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private let intelligence = LocalIntelligence()
     private var draftIDs: [Speaker: UUID] = [:]
     private var intelligenceRunning = false
+    private var audioFrameCounts: [Speaker: Int] = [:]
     private var hasRegisteredAccount = false
     private var isShuttingDown = false
 
@@ -36,7 +37,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         number = UserDefaults.standard.string(forKey: "lastDialedNumber") ?? ""
         audioTap.onFrame = { [weak self] frame in
             guard let self else { return }
-            Task { await self.intelligence.append(frame) }
+            Task { @MainActor in
+                self.countAudioFrame(frame)
+                await self.intelligence.append(frame)
+            }
         }
     }
 
@@ -345,16 +349,31 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         return String(caller).removingPercentEncoding ?? String(caller)
     }
 
+    private func countAudioFrame(_ frame: AudioFrame) {
+        guard intelligenceRunning else { return }
+        audioFrameCounts[frame.speaker, default: 0] += 1
+        let count = audioFrameCounts[frame.speaker] ?? 0
+        if count == 1 || count % 1_000 == 0 {
+            appendDiagnostic("phone-app: \(count) \(frame.speaker.title) audio frames received (\(Int(frame.sampleRate)) Hz)\n")
+        }
+    }
+
     private func beginCallIntelligence() {
         guard !intelligenceRunning else { return }
         clearConversation()
         intelligenceRunning = true
         callStartedAt = Date()
+        audioFrameCounts = [:]
         intelligenceStatus = "Preparing local models …"
         Task {
             do {
                 try await intelligence.start { [weak self] speaker, text, isFinal in
                     Task { @MainActor in self?.receiveTranscript(speaker: speaker, text: text, isFinal: isFinal) }
+                } onError: { [weak self] speaker, message in
+                    Task { @MainActor in
+                        self?.appendDiagnostic("phone-app: \(speaker.title) lane error: \(message)\n")
+                        self?.intelligenceStatus = message
+                    }
                 }
                 await MainActor.run { self.intelligenceStatus = "Live · on this Mac only" }
             } catch {
