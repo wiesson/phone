@@ -20,9 +20,6 @@ struct PhonePanel: View {
         }
         .frame(width: 380)
         .background(.ultraThinMaterial)
-        .onChange(of: phone.state) { oldState, newState in
-            if !oldState.isConnected && newState.isConnected { openWindow(id: "conversation") }
-        }
     }
 
     private var header: some View {

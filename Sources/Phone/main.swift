@@ -49,6 +49,7 @@ struct PhoneApp: App {
 private struct MenuBarPhoneLabel: View {
     let state: CallState
     let callStartedAt: Date?
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack(spacing: 5) {
@@ -61,6 +62,14 @@ private struct MenuBarPhoneLabel: View {
             }
         }
         .accessibilityLabel(state.label)
+        // The menu bar label is the only view that exists for the whole app
+        // lifetime, so the conversation window must be opened from here.
+        .onChange(of: state.isConnected) { wasConnected, isConnected in
+            if !wasConnected && isConnected {
+                openWindow(id: "conversation")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
     }
 
     private func duration(from start: Date, to end: Date) -> String {
