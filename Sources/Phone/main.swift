@@ -8,6 +8,11 @@ final class PhoneAppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         controller?.shutdown()
     }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first else { return }
+        controller?.handleDialURL(url)
+    }
 }
 
 @main

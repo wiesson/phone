@@ -28,6 +28,18 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>LSUIElement</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Phone needs the microphone for SIP calls.</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>Phone transcribes calls locally on this Mac.</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>Phone call</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>tel</string>
+        <string>callto</string>
+        <string>sip</string>
+      </array>
+    </dict>
+  </array>
 </dict></plist>
 PLIST
 

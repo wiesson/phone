@@ -117,6 +117,20 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         state = .ready
     }
 
+    /// Handles tel:, callto:, and sip: URLs from other applications.
+    func handleDialURL(_ url: URL) {
+        var target = url.absoluteString
+        for scheme in ["tel:", "callto:", "sip:"] where target.lowercased().hasPrefix(scheme) {
+            target.removeFirst(scheme.count)
+        }
+        target = target.removingPercentEncoding ?? target
+        target = target.replacingOccurrences(of: "//", with: "")
+        target.removeAll { $0.isWhitespace || $0 == "(" || $0 == ")" || $0 == "-" }
+        guard !target.isEmpty else { return }
+        number = target
+        if state.isReady { dial() }
+    }
+
     func clearConversation() {
         transcript = []
         summary = nil
