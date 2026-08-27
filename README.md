@@ -18,6 +18,11 @@ optional conversation processing stay local on your Mac.
 - macOS notifications for incoming calls
 - call duration right in the menu bar
 - redial of the last dialed destination
+- persistent call history with one-click redial
+- mute and a DTMF keypad during calls
+- contact names from the baresip contacts file
+- handles tel:, callto:, and sip: links from other apps
+- Dock icon while the conversation window is open, menu-bar-only otherwise
 - TLS and SDES-SRTP with the bundled Deutsche Telekom configuration
 - local live transcription and summarization on supported Macs
 - no cloud processing and no persistent audio recording
@@ -135,5 +140,4 @@ addresses.
 
 - only tested on Apple Silicon Macs with Homebrew so far
 - no graphical setup dialog for SIP accounts
-- no contact book and no call history yet
 - local development build, no signed/notarized download yet
