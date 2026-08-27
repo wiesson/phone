@@ -23,6 +23,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private var intelligenceRunning = false
     private var audioFrameCounts: [Speaker: Int] = [:]
     private var currentDirection: CallDirection?
+    private var contacts: [String: String] = [:]
     private var hasRegisteredAccount = false
     private var isShuttingDown = false
 
@@ -51,6 +52,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     func start() {
+        loadContacts()
         installNotifications()
         do {
             try audioTap.start()
@@ -353,12 +355,42 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
+    /// Parses `runtime/baresip/contacts` lines of the form `"Name" <sip:user@domain>`
+    /// into a user-part → display-name map.
+    private func loadContacts() {
+        contacts = [:]
+        let url = projectRoot.appendingPathComponent("runtime/baresip/contacts")
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return }
+        for line in content.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.hasPrefix("#"),
+                  let nameStart = trimmed.firstIndex(of: "\""),
+                  let nameEnd = trimmed[trimmed.index(after: nameStart)...].firstIndex(of: "\""),
+                  let uriStart = trimmed.range(of: "<sip:"),
+                  let uriEnd = trimmed[uriStart.upperBound...].firstIndex(of: ">") else { continue }
+            let name = String(trimmed[trimmed.index(after: nameStart)..<nameEnd])
+            let uri = trimmed[uriStart.upperBound..<uriEnd]
+            guard let user = uri.split(separator: "@").first, !user.contains("*"), !name.isEmpty else { continue }
+            contacts[String(user)] = name
+        }
+    }
+
+    /// Returns a display name for a dial target or caller id, if known.
+    func displayName(for peer: String?) -> String? {
+        guard let peer else { return nil }
+        var value = peer
+        if value.lowercased().hasPrefix("sip:") { value.removeFirst(4) }
+        let user = value.split(separator: "@").first.map(String.init) ?? value
+        return contacts[user]
+    }
+
     private func callerName(from line: String) -> String? {
         guard let marker = line.range(of: "incoming call from:", options: .caseInsensitive) else { return nil }
         var value = line[marker.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
         if value.lowercased().hasPrefix("sip:") { value.removeFirst(4) }
         guard let caller = value.split(separator: "@").first, !caller.isEmpty else { return nil }
-        return String(caller).removingPercentEncoding ?? String(caller)
+        let id = String(caller).removingPercentEncoding ?? String(caller)
+        return contacts[id] ?? id
     }
 
     func clearHistory() {

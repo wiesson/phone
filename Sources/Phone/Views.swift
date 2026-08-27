@@ -139,7 +139,7 @@ struct PhonePanel: View {
                             .font(.system(size: 10, weight: .bold))
                             .foregroundStyle(record.missed ? .red : .secondary)
                             .frame(width: 14)
-                        Text(record.peer ?? "Unknown")
+                        Text(phone.displayName(for: record.peer) ?? record.peer ?? "Unknown")
                             .font(.system(size: 12))
                             .lineLimit(1)
                         Spacer()
@@ -311,7 +311,7 @@ struct ConversationView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(phone.state.isInCall ? "Live call" : "Last call")
                     .font(.title3.weight(.semibold))
-                Text(phone.state.peer ?? "Local transcript")
+                Text(phone.displayName(for: phone.state.peer) ?? phone.state.peer ?? "Local transcript")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
