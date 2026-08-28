@@ -776,8 +776,13 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private func regenerateManagedAccountsFile() throws {
         guard !managedAccounts.isEmpty else { return }
         guard activeManagedAccount != nil else { throw SIPAccountError.missingManagedAccount }
+        // Telekom does not deliver inbound calls (and 403s outbound) when
+        // several numbers register over one baresip instance/connection, so
+        // only the active account is registered until the engine runs one
+        // baresip process per account.
+        let activeOnly = managedAccounts.filter { $0.sipAddress == activeManagedSIPAddress }
         let content = try managedAccountsFileContent(
-            accounts: managedAccounts,
+            accounts: activeOnly.isEmpty ? managedAccounts : activeOnly,
             activeSIPAddress: activeManagedSIPAddress,
             passwordFor: { try SIPPasswordStore.password(account: $0.sipAddress) }
         )
