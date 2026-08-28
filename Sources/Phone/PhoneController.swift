@@ -200,6 +200,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
     @Published private(set) var history: [CallRecord] = []
     @Published private(set) var isMuted = false
+    private var mutedByBridge = false
     @Published private(set) var managedAccounts: [ManagedSIPAccount] = []
     @Published private(set) var activeManagedSIPAddress: String?
     @Published private(set) var unmanagedAccountAOR: String?
@@ -547,6 +548,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         guard state.isConnected else { return }
         send("/mute")
         isMuted.toggle()
+        mutedByBridge = false
     }
 
     func saveGeminiAPIKey(_ key: String) throws {
@@ -608,6 +610,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             ) { [weak self] state in
                 Task { @MainActor [weak self] in
                     self?.geminiLiveState = state
+                    if case .live = state { self?.muteForBridgeIfNeeded() }
                     if case .failed(let message) = state {
                         self?.clearAssistantCall()
                         self?.appendDiagnostic("phone-app: Gemini Live failed: \(message)\n")
@@ -1603,9 +1606,25 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
+    private func muteForBridgeIfNeeded() {
+        guard state.isConnected, !isMuted else { return }
+        send("/mute")
+        isMuted = true
+        mutedByBridge = true
+    }
+
+    private func unmuteAfterBridgeIfNeeded() {
+        guard mutedByBridge else { return }
+        mutedByBridge = false
+        guard isMuted, state.isConnected else { return }
+        send("/mute")
+        isMuted = false
+    }
+
     private func stopGeminiLive() {
         guard geminiLiveState != .off else { return }
         geminiLiveState = .off
+        unmuteAfterBridgeIfNeeded()
         geminiBridgeTask?.cancel()
         let bridge = geminiLiveBridge
         geminiBridgeTask = Task { await bridge.stop() }
