@@ -161,6 +161,14 @@ import Testing
     #expect(fallback.contains("Ich brauche am Dienstag einen Termin."))
 }
 
+@Test func assistantCallSummaryPromptLeadsWithOutcome() {
+    let prompt = assistantCallSummaryPrompt(task: "Bestelle eine Pizza Thunfisch", transcript: "Assistant: Hallo.")
+    #expect(prompt.contains("Bestelle eine Pizza Thunfisch"))
+    #expect(prompt.contains("ERGEBNIS"))
+    #expect(prompt.contains("Nächste Schritte"))
+    #expect(prompt.contains("Keine Dialognacherzählung"))
+}
+
 @Test func resamplesGeminiAudioFrom24kTo8k() {
     let sourceRate = 24_000
     let targetRate = 8_000

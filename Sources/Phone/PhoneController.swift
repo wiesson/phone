@@ -1693,6 +1693,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private func finishCall(missed: Bool = false, preservingDialRetry: Bool = false, preservingAssistantCall: Bool = false) {
         let finishingInstanceID = currentCallInstanceID
+        let finishedAssistantTask = isAssistantCallActive ? assistantCallPlan.task : nil
         if !preservingDialRetry { currentCallInstanceID = nil }
         if !preservingDialRetry { pendingDialRetry = nil }
         if !preservingDialRetry { currentCallAccountAOR = nil }
@@ -1739,7 +1740,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
             guard wasIntelligenceRunning else { return }
             do {
-                let text = try await intelligence.summarize(entries: entries)
+                let text = try await intelligence.summarize(entries: entries, assistantTask: finishedAssistantTask)
                 if includesContent, let archiveRecord {
                     try? await store.attachSummary(text, to: archiveRecord.id)
                 }

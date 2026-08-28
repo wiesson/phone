@@ -237,26 +237,64 @@ actor LocalIntelligence {
         await caller.stop()
     }
 
-    func summarize(entries: [TranscriptEntry]) async throws -> String {
-        let model = SystemLanguageModel.default
-        guard model.isAvailable else {
-            phoneDiagnosticLog("phone-app: using fallback summary — Foundation Models availability: \(String(describing: model.availability))\n")
-            return fallbackCallSummary(entries)
-        }
+    func summarize(entries: [TranscriptEntry], assistantTask: String? = nil) async throws -> String {
         let transcript = entries
             .filter { $0.isFinal && !$0.text.isEmpty }
             .map { "\($0.speakerTitle): \($0.text)" }
             .joined(separator: "\n")
         guard !transcript.isEmpty else { return "There is no transcript for this call yet." }
+        let prompt = assistantTask.map { assistantCallSummaryPrompt(task: $0, transcript: transcript) }
+            ?? callSummaryPrompt(transcript: transcript)
 
-        let session = LanguageModelSession(instructions: callSummaryInstructions)
-        do {
-            let response = try await session.respond(to: callSummaryPrompt(transcript: transcript))
-            return response.content
-        } catch {
-            phoneDiagnosticLog("phone-app: using fallback summary — Foundation Models error: \(String(describing: error))\n")
-            return fallbackCallSummary(entries)
+        let model = SystemLanguageModel.default
+        if model.isAvailable {
+            let session = LanguageModelSession(instructions: callSummaryInstructions)
+            do {
+                return try await session.respond(to: prompt).content
+            } catch {
+                phoneDiagnosticLog("phone-app: local summary failed, trying Gemini — Foundation Models error: \(String(describing: error))\n")
+            }
+        } else {
+            phoneDiagnosticLog("phone-app: local summary unavailable, trying Gemini — Foundation Models availability: \(String(describing: model.availability))\n")
         }
+        if let apiKey = GeminiAPIKeyStore.apiKey() {
+            do {
+                return try await geminiSummary(prompt: prompt, apiKey: apiKey)
+            } catch {
+                phoneDiagnosticLog("phone-app: using fallback summary — Gemini summary error: \(redactSensitiveValues(in: String(describing: error)))\n")
+            }
+        } else {
+            phoneDiagnosticLog("phone-app: using fallback summary — no Gemini API key configured\n")
+        }
+        return fallbackCallSummary(entries)
+    }
+
+    private func geminiSummary(prompt: String, apiKey: String) async throws -> String {
+        let model = UserDefaults.standard.string(forKey: "geminiSummaryModel") ?? "gemini-3.6-flash"
+        var request = URLRequest(url: URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+        request.timeoutInterval = 20
+        let body: [String: Any] = [
+            "systemInstruction": ["parts": [["text": callSummaryInstructions]]],
+            "contents": [["role": "user", "parts": [["text": prompt]]]]
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw NSError(domain: "GeminiSummary", code: status, userInfo: [NSLocalizedDescriptionKey: "HTTP \(status)"])
+        }
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let candidates = object["candidates"] as? [[String: Any]],
+              let content = candidates.first?["content"] as? [String: Any],
+              let parts = content["parts"] as? [[String: Any]],
+              let text = parts.compactMap({ $0["text"] as? String }).first,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NSError(domain: "GeminiSummary", code: 0, userInfo: [NSLocalizedDescriptionKey: "Empty response"])
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -273,6 +311,22 @@ func callSummaryPrompt(transcript: String) -> String {
     4. Vereinbarte nächste Schritte. Falls keine vereinbart wurden, „keine vereinbart“ schreiben.
 
     Keine Dialognacherzählung, keine Einleitung und keine Spekulation. Verwende höchstens vier kurze Sätze oder vier knappe Punkte.
+
+    Transkript:
+    \(transcript)
+    """
+}
+
+func assistantCallSummaryPrompt(task: String, transcript: String) -> String {
+    """
+    Unser KI-Assistent hat in diesem Telefonat im Auftrag des Nutzers angerufen. Der Auftrag lautete: „\(task)“
+
+    Erstelle eine kurze, sachliche Zusammenfassung auf Deutsch. Sie muss immer in dieser Reihenfolge enthalten:
+    1. ERGEBNIS: Wurde der Auftrag erledigt? Klar mit „Erledigt“, „Teilweise erledigt“ oder „Nicht erledigt“ beginnen und das konkrete Ergebnis nennen (z. B. was bestellt oder vereinbart wurde).
+    2. Wichtige Details: Preise, Zeiten, Namen, Orte — nur was tatsächlich genannt wurde.
+    3. Nächste Schritte für den Nutzer (z. B. abholen, zurückrufen). Falls keine, „keine“ schreiben.
+
+    Keine Dialognacherzählung, keine Einleitung und keine Spekulation. Verwende höchstens vier kurze Sätze oder knappe Punkte.
 
     Transkript:
     \(transcript)
