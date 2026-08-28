@@ -20,7 +20,7 @@ jobs:
         run: swift test
   loopback-integration:
     runs-on: macos-26
-    continue-on-error: true
+    continue-on-error: false
     steps:
       - uses: actions/checkout@v5
       - name: Install baresip
