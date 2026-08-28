@@ -303,10 +303,11 @@ private final class GeminiCallerAudioConverter {
 }
 
 private final class AudioInjectionSender {
-    static let socketPath = "/tmp/phone-audio-inject-\(getuid()).sock"
+    let socketPath: String
     private var descriptor: Int32 = -1
 
-    init() throws {
+    init(socketPath: String) throws {
+        self.socketPath = socketPath
         descriptor = socket(AF_UNIX, SOCK_DGRAM, 0)
         guard descriptor >= 0 else { throw GeminiLiveError.socket(errno) }
     }
@@ -315,7 +316,7 @@ private final class AudioInjectionSender {
         let packet = AudioInjectionProtocol.packet(samples: samples, sampleRate: sampleRate)
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
-        let pathBytes = Self.socketPath.utf8CString
+        let pathBytes = socketPath.utf8CString
         guard pathBytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
             throw GeminiLiveError.socket(ENAMETOOLONG)
         }
@@ -359,6 +360,7 @@ actor GeminiLiveBridge {
         model: String,
         instructions: String,
         sendsInitialGreeting: Bool = false,
+        injectionSocketPath: String,
         onState: @escaping StateHandler
     ) async {
         stop(notify: false)
@@ -373,7 +375,7 @@ actor GeminiLiveBridge {
         self.sendsInitialGreeting = sendsInitialGreeting
         publish(.connecting)
         do {
-            injectionSender = try AudioInjectionSender()
+            injectionSender = try AudioInjectionSender(socketPath: injectionSocketPath)
             var components = URLComponents(string: "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent")
             components?.queryItems = [URLQueryItem(name: "key", value: key)]
             guard let url = components?.url else { throw GeminiLiveError.invalidEndpoint }

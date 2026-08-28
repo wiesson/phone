@@ -43,7 +43,9 @@ enum AudioFrameParser {
 }
 
 final class AudioTapServer: @unchecked Sendable {
-    static let socketPath = "/tmp/phone-audio-\(getuid()).sock"
+    static let defaultSocketPath = "/tmp/phone-audio-\(getuid()).sock"
+
+    let socketPath: String
 
     private let queue = DispatchQueue(label: "phone.audio-tap", qos: .userInitiated)
     private var descriptor: Int32 = -1
@@ -51,6 +53,10 @@ final class AudioTapServer: @unchecked Sendable {
     private let countLock = NSLock()
     private var frameCounts: [Speaker: Int] = [:]
     var onFrame: (@Sendable (AudioFrame) -> Void)?
+
+    init(socketPath: String = defaultSocketPath) {
+        self.socketPath = socketPath
+    }
 
     /// Returns and resets the per-speaker frame counters (for diagnostics).
     /// Uses a lock because the receive loop permanently occupies the queue.
@@ -64,14 +70,14 @@ final class AudioTapServer: @unchecked Sendable {
 
     func start() throws {
         guard !running else { return }
-        unlink(Self.socketPath)
+        unlink(socketPath)
 
         let fd = socket(AF_UNIX, SOCK_DGRAM, 0)
         guard fd >= 0 else { throw POSIXError(.ENOTSOCK) }
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
-        let pathBytes = Self.socketPath.utf8CString
+        let pathBytes = socketPath.utf8CString
         guard pathBytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
             close(fd)
             throw POSIXError(.ENAMETOOLONG)
@@ -102,7 +108,7 @@ final class AudioTapServer: @unchecked Sendable {
             close(descriptor)
             descriptor = -1
         }
-        unlink(Self.socketPath)
+        unlink(socketPath)
     }
 
     private func receiveLoop() {
