@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import Phone
 
@@ -108,6 +109,27 @@ private func redactsAuthenticationPasswords(testCase: RedactionCase) {
     #expect(result.state.activeAccount?.assistantProfile == .personalAssistant)
     #expect(result.state.activeAccount?.assistantInstructionsOverride == nil)
     #expect(result.state.activeAccount?.assistantContextData == nil)
+    #expect(result.state.activeAccount?.outboundCallerID == nil)
+}
+
+@Test func outboundCallerIDEncodeDecodeRoundTripNormalizesSpaces() throws {
+    let account = ManagedSIPAccount(
+        provider: .sipgate,
+        username: "user",
+        domain: "sipgate.de",
+        outboundProxy: "sip:proxy.live.sipgate.de",
+        stunServer: "",
+        mediaEncryption: "",
+        label: "Mobile identity",
+        outboundCallerID: "+49 170 1234567",
+        assistantContextData: "Custom data"
+    )
+
+    let data = try JSONEncoder().encode(account)
+    let decoded = try JSONDecoder().decode(ManagedSIPAccount.self, from: data)
+
+    #expect(decoded == account)
+    #expect(decoded.outboundCallerID == "+491701234567")
 }
 
 @Test func ordersActiveAccountFirstAndWritesEveryAccount() throws {
@@ -200,6 +222,50 @@ private func redactsAuthenticationPasswords(testCase: RedactionCase) {
     )
 }
 
+@Test func accountLineUsesNormalizedOutboundCallerIDAsDisplayName() throws {
+    let account = ManagedSIPAccount(
+        provider: .sipgate,
+        username: "user",
+        domain: "sipgate.de",
+        outboundProxy: "sip:proxy.live.sipgate.de",
+        stunServer: "",
+        mediaEncryption: "",
+        sipDisplayName: "Support Desk",
+        outboundCallerID: "+49 170 1234567"
+    )
+
+    #expect(
+        try account.accountLine(password: "secret")
+            == #""+491701234567" <sip:user@sipgate.de>;auth_pass="secret";regint=300;outbound="sip:proxy.live.sipgate.de""# + "\n"
+    )
+}
+
+@Test func accountLineHasNoCallerIDDisplayNameWhenUnset() throws {
+    let account = ManagedSIPAccount(
+        provider: .custom,
+        username: "user",
+        domain: "example.test",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: ""
+    )
+
+    #expect(
+        try account.accountLine(password: "secret")
+            == #"<sip:user@example.test>;auth_pass="secret";regint=300"# + "\n"
+    )
+}
+
+@Test(arguments: ["+", "+49-170", "0049 (170)", "+49\t170", "caller"])
+private func rejectsInvalidOutboundCallerIDs(value: String) {
+    var account = accountCase(.sipgate, expected: "").account
+    account.outboundCallerID = value
+
+    #expect(throws: SIPAccountError.self) {
+        try account.validate(password: "secret")
+    }
+}
+
 @Test func sipgatePresetIncludesOutboundProxy() {
     #expect(SIPProviderPreset.sipgate.defaults.outboundProxy == "sip:proxy.live.sipgate.de")
 }
@@ -289,6 +355,7 @@ private let accountFieldClassificationCases = [
     AccountFieldClassificationCase(field: .mediaEncryption, isRegistrationRelevant: true),
     AccountFieldClassificationCase(field: .label, isRegistrationRelevant: false),
     AccountFieldClassificationCase(field: .sipDisplayName, isRegistrationRelevant: true),
+    AccountFieldClassificationCase(field: .outboundCallerID, isRegistrationRelevant: true),
     AccountFieldClassificationCase(field: .assistantProfile, isRegistrationRelevant: false),
     AccountFieldClassificationCase(field: .assistantInstructionsOverride, isRegistrationRelevant: false),
     AccountFieldClassificationCase(field: .assistantContextData, isRegistrationRelevant: false)
@@ -341,6 +408,22 @@ private func classifiesManagedAccountFields(testCase: AccountFieldClassification
     )
 
     #expect(plan.changedFields == [.sipDisplayName])
+    #expect(plan.requiresEngineRestart)
+    #expect(!plan.requiresRegistrationTest)
+}
+
+@Test func outboundCallerIDOnlyEditRestartsWithoutRegistrationTest() {
+    let original = editableAccount()
+    var updated = original
+    updated.outboundCallerID = "+491701234567"
+
+    let plan = managedSIPAccountEditPlan(
+        original: original,
+        updated: updated,
+        replacementPassword: ""
+    )
+
+    #expect(plan.changedFields == [.outboundCallerID])
     #expect(plan.requiresEngineRestart)
     #expect(!plan.requiresRegistrationTest)
 }

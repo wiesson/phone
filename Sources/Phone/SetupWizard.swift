@@ -153,6 +153,7 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
     var mediaEncryption: String
     var label: String? = nil
     var sipDisplayName: String? = nil
+    var outboundCallerID: String? = nil
     var assistantProfile: AssistantProfile = .personalAssistant
     var assistantInstructionsOverride: String? = nil
     var assistantContextData: String? = nil
@@ -166,6 +167,7 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         mediaEncryption: String,
         label: String? = nil,
         sipDisplayName: String? = nil,
+        outboundCallerID: String? = nil,
         assistantProfile: AssistantProfile = .personalAssistant,
         assistantInstructionsOverride: String? = nil,
         assistantContextData: String? = nil
@@ -178,6 +180,7 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         self.mediaEncryption = mediaEncryption
         self.label = label
         self.sipDisplayName = sipDisplayName
+        self.outboundCallerID = Self.normalizedOutboundCallerID(outboundCallerID)
         self.assistantProfile = assistantProfile
         self.assistantInstructionsOverride = assistantInstructionsOverride
         self.assistantContextData = assistantContextData
@@ -201,7 +204,13 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         if !stunServer.isEmpty { parameters.append("stunserver=\(stunServer)") }
         if !mediaEncryption.isEmpty { parameters.append("mediaenc=\(mediaEncryption)") }
         let trimmedDisplayName = sipDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let prefix = trimmedDisplayName.isEmpty ? "" : "\"\(quoted(trimmedDisplayName))\" "
+        // baresip 4.11's src/account.c decodes `extra` only as opaque metadata,
+        // while include/baresip.h exposes custom INVITE headers solely through
+        // linked UA APIs. The vendored child-process modules provide no per-account
+        // config or command for those APIs, so P-Preferred-Identity cannot be added
+        // cleanly here. Use the caller ID as the AOR display name fallback instead.
+        let effectiveDisplayName = Self.normalizedOutboundCallerID(outboundCallerID) ?? trimmedDisplayName
+        let prefix = effectiveDisplayName.isEmpty ? "" : "\"\(quoted(effectiveDisplayName))\" "
         return "\(prefix)<sip:\(sipAddress)>;\(parameters.joined(separator: ";"))\n"
     }
 
@@ -221,6 +230,18 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         guard sipDisplayName?.rangeOfCharacter(from: .newlines) == nil else {
             throw SIPAccountError.invalidProviderSettings
         }
+        if let outboundCallerID = Self.normalizedOutboundCallerID(outboundCallerID) {
+            let digits = outboundCallerID.hasPrefix("+") ? outboundCallerID.dropFirst() : outboundCallerID[...]
+            guard !digits.isEmpty, digits.utf8.allSatisfy({ (48...57).contains($0) }) else {
+                throw SIPAccountError.invalidOutboundCallerID
+            }
+        }
+    }
+
+    private static func normalizedOutboundCallerID(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value.replacingOccurrences(of: " ", with: "")
+        return normalized.isEmpty ? nil : normalized
     }
 
     private func quoted(_ value: String) -> String {
@@ -239,13 +260,14 @@ enum ManagedSIPAccountField: CaseIterable, Hashable, Sendable {
     case mediaEncryption
     case label
     case sipDisplayName
+    case outboundCallerID
     case assistantProfile
     case assistantInstructionsOverride
     case assistantContextData
 
     var isRegistrationRelevant: Bool {
         switch self {
-        case .username, .domain, .password, .outboundProxy, .stunServer, .mediaEncryption, .sipDisplayName:
+        case .username, .domain, .password, .outboundProxy, .stunServer, .mediaEncryption, .sipDisplayName, .outboundCallerID:
             true
         case .provider, .label, .assistantProfile, .assistantInstructionsOverride, .assistantContextData:
             false
@@ -253,7 +275,7 @@ enum ManagedSIPAccountField: CaseIterable, Hashable, Sendable {
     }
 
     var requiresRegistrationTest: Bool {
-        isRegistrationRelevant && self != .sipDisplayName
+        isRegistrationRelevant && self != .sipDisplayName && self != .outboundCallerID
     }
 }
 
@@ -284,6 +306,7 @@ func managedSIPAccountEditPlan(
     if original.mediaEncryption != updated.mediaEncryption { changedFields.insert(.mediaEncryption) }
     if original.label != updated.label { changedFields.insert(.label) }
     if original.sipDisplayName != updated.sipDisplayName { changedFields.insert(.sipDisplayName) }
+    if original.outboundCallerID != updated.outboundCallerID { changedFields.insert(.outboundCallerID) }
     if original.assistantProfile != updated.assistantProfile { changedFields.insert(.assistantProfile) }
     if original.assistantInstructionsOverride != updated.assistantInstructionsOverride {
         changedFields.insert(.assistantInstructionsOverride)
@@ -303,6 +326,7 @@ extension ManagedSIPAccount {
         case mediaEncryption
         case label
         case sipDisplayName
+        case outboundCallerID
         case assistantProfile
         case assistantInstructionsOverride
         case assistantContextData
@@ -318,6 +342,9 @@ extension ManagedSIPAccount {
         mediaEncryption = try container.decode(String.self, forKey: .mediaEncryption)
         label = try container.decodeIfPresent(String.self, forKey: .label)
         sipDisplayName = try container.decodeIfPresent(String.self, forKey: .sipDisplayName)
+        outboundCallerID = Self.normalizedOutboundCallerID(
+            try container.decodeIfPresent(String.self, forKey: .outboundCallerID)
+        )
         assistantProfile = try container.decodeIfPresent(AssistantProfile.self, forKey: .assistantProfile) ?? .personalAssistant
         assistantInstructionsOverride = try container.decodeIfPresent(String.self, forKey: .assistantInstructionsOverride)
         assistantContextData = try container.decodeIfPresent(String.self, forKey: .assistantContextData)
@@ -440,6 +467,7 @@ func decodeManagedSIPAccounts(
 enum SIPAccountError: LocalizedError {
     case activeCall
     case duplicateAccount
+    case invalidOutboundCallerID
     case invalidProviderSettings
     case invalidUsername
     case invalidPassword
@@ -454,6 +482,7 @@ enum SIPAccountError: LocalizedError {
         switch self {
         case .activeCall: "Finish the current call before changing the SIP account."
         case .duplicateAccount: "An account with this SIP address already exists."
+        case .invalidOutboundCallerID: "Enter an outbound caller ID containing only an optional leading +, digits, and spaces."
         case .invalidProviderSettings: "The provider settings contain unsupported characters."
         case .invalidUsername: "Enter a username without spaces, @, or SIP punctuation."
         case .invalidPassword: "The password cannot contain a line break."
@@ -545,6 +574,7 @@ struct SetupWizard: View {
     @State private var provider = SIPProviderPreset.telekom
     @State private var label = ""
     @State private var sipDisplayName = ""
+    @State private var outboundCallerID = ""
     @State private var username = ""
     @State private var password = ""
     @State private var domain = SIPProviderPreset.telekom.defaults.domain
@@ -719,6 +749,13 @@ struct SetupWizard: View {
             VStack(spacing: 14) {
                 setupField("Label", text: $label, prompt: "Optional, for example Private or Work")
                 setupField("Display name", text: $sipDisplayName, prompt: "Optional, shown to callees")
+                VStack(alignment: .leading, spacing: 5) {
+                    setupField("Outbound caller ID (optional)", text: $outboundCallerID, prompt: "+49 170 1234567")
+                    Text("Applies only to this account. Your provider must support CLIP no screening.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
                 setupField("Number or username", text: $username, prompt: provider == .telekom ? "+49…" : "SIP username")
                     .focused($focusedField, equals: .username)
                 LabeledContent("Password") {
@@ -816,6 +853,7 @@ struct SetupWizard: View {
             mediaEncryption: mediaEncryption,
             label: trimmedLabel.isEmpty ? nil : trimmedLabel,
             sipDisplayName: trimmedDisplayName.isEmpty ? nil : trimmedDisplayName,
+            outboundCallerID: outboundCallerID,
             assistantProfile: editingAccount?.assistantProfile ?? .personalAssistant,
             assistantInstructionsOverride: editingAccount?.assistantInstructionsOverride,
             assistantContextData: editingAccount?.assistantContextData
@@ -922,6 +960,7 @@ struct SetupWizard: View {
             provider = editingAccount.provider
             label = editingAccount.label ?? ""
             sipDisplayName = editingAccount.sipDisplayName ?? ""
+            outboundCallerID = editingAccount.outboundCallerID ?? ""
             username = editingAccount.username
             domain = editingAccount.domain
             outboundProxy = editingAccount.outboundProxy
@@ -936,6 +975,7 @@ struct SetupWizard: View {
             provider = .telekom
             label = ""
             sipDisplayName = ""
+            outboundCallerID = ""
             username = ""
             editingSIPAddress = nil
             showsAdvanced = false
