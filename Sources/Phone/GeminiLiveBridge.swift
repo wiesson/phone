@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 import Security
 
-let defaultGeminiLiveModel = "gemini-2.5-flash-native-audio-preview-09-2025"
+let defaultGeminiLiveModel = "gemini-3.1-flash-live-preview"
 
 enum GeminiLiveState: Equatable, Sendable {
     case off
