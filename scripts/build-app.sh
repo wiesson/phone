@@ -3,6 +3,9 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 
+SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development/ {print $2; exit}')
+SIGN_IDENTITY=${SIGN_IDENTITY:--}
+
 cd "$ROOT"
 sh "$ROOT/scripts/build-audio-tap.sh"
 swift build -c debug
@@ -183,12 +186,12 @@ for library in "$FRAMEWORKS"/*.dylib; do
 done
 
 for module in "$MODULES"/*.so; do
-  codesign --force --sign - "$module"
+  codesign --force --sign "$SIGN_IDENTITY" "$module"
 done
 for library in "$FRAMEWORKS"/*.dylib; do
-  codesign --force --sign - "$library"
+  codesign --force --sign "$SIGN_IDENTITY" "$library"
 done
-codesign --force --sign - "$HELPER"
+codesign --force --sign "$SIGN_IDENTITY" "$HELPER"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -221,5 +224,5 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 
-codesign --force --deep --sign - "$APP"
+codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
 echo "Built: $APP"

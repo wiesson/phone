@@ -15,6 +15,24 @@ func normalizedDialTarget(from url: URL) -> String? {
     return target.isEmpty ? nil : target
 }
 
+let phoneDiagnosticQueue = DispatchQueue(label: "phone.diagnostic-log")
+
+func phoneDiagnosticLog(_ text: String) {
+    phoneDiagnosticQueue.async {
+        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Phone/phone.log")
+        guard let data = text.data(using: .utf8) else { return }
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? handle.close() }
+        if (try? handle.seekToEnd()) != nil {
+            try? handle.write(contentsOf: data)
+        }
+    }
+}
+
 func redactSensitiveValues(in text: String) -> String {
     text.replacingOccurrences(
         of: #"auth_pass=(?:\"(?:[^\"\\]|\\.)*\"|[^;\s]*)"#,
