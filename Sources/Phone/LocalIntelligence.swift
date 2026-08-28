@@ -136,7 +136,7 @@ actor SpeechLane {
             status.pointee = .haveData
             return input
         }
-        if status == .haveData, output.frameLength > 0 {
+        if status == .haveData || status == .inputRanDry, output.frameLength > 0 {
             continuation?.yield(AnalyzerInput(buffer: output))
             noteAppended()
         } else {
