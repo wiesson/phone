@@ -159,7 +159,7 @@ public func validatedDialTarget(_ value: String) -> String? {
 }
 
 public enum ControlCommand: Equatable, Sendable {
-    case dial(String)
+    case dial(String, account: String?)
     case answer
     case hangup
     case sendDTMF(String)
@@ -196,11 +196,20 @@ public enum ControlRequestParser {
         }
         switch command {
         case "dial":
-            guard Set(args.keys) == ["number"], case .string(let number) = args["number"],
+            guard Set(args.keys).isSubset(of: ["number", "account"]), case .string(let number) = args["number"],
                   let target = validatedDialTarget(number) else {
-                return .failure(ControlError(code: "invalid_arguments", message: "dial requires one valid string argument: number."))
+                return .failure(ControlError(code: "invalid_arguments", message: "dial requires a valid string argument number and optionally account."))
             }
-            return .success(.dial(target))
+            let account: String?
+            if let value = args["account"] {
+                guard case .string(let name) = value, !name.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    return .failure(ControlError(code: "invalid_arguments", message: "account must be a non-empty string."))
+                }
+                account = name.trimmingCharacters(in: .whitespaces)
+            } else {
+                account = nil
+            }
+            return .success(.dial(target, account: account))
         case "answer":
             return noArguments(args, command: .answer)
         case "hangup":
@@ -266,7 +275,7 @@ public enum MCPProtocol {
     public static let protocolVersion = "2025-06-18"
 
     public static let tools: [JSONValue] = [
-        tool("dial", "Dial a phone number or SIP address.", properties: ["number": schema("string")], required: ["number"]),
+        tool("dial", "Dial a phone number or SIP address. Optionally select the outgoing line first via account (label, username, or SIP address of a configured account).", properties: ["number": schema("string"), "account": schema("string")], required: ["number"]),
         tool("answer", "Answer the incoming call."),
         tool("hangup", "Hang up the active call."),
         tool("send_dtmf", "Send a DTMF digit during the active call.", properties: ["digit": .object(["type": .string("string"), "pattern": .string("^[0-9*#]$")])], required: ["digit"]),

@@ -1401,7 +1401,22 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             return .failure(ControlError(code: "not_registered", message: "Phone is not registered with a SIP provider."))
         }
         switch command {
-        case .dial(let target):
+        case .dial(let target, let accountQuery):
+            if let accountQuery {
+                let query = accountQuery.lowercased()
+                guard let match = managedAccounts.first(where: {
+                    $0.label?.lowercased() == query
+                        || $0.username.lowercased() == query
+                        || $0.sipAddress.lowercased() == query
+                }) else {
+                    return .failure(ControlError(code: "unknown_account", message: "No configured account matches '\(accountQuery)'."))
+                }
+                do {
+                    try selectManagedAccount(match)
+                } catch {
+                    return .failure(ControlError(code: "invalid_state", message: "Cannot switch account: \(error.localizedDescription)"))
+                }
+            }
             guard state.isReady else {
                 return .failure(ControlError(code: "invalid_state", message: "Phone is not ready to dial."))
             }

@@ -28,7 +28,11 @@ import Testing
 
 @Test func parsesAndValidatesControlRequests() throws {
     let dial = Data(#"{"cmd":"dial","args":{"number":" +4930123456 "}}"#.utf8)
-    #expect(try ControlRequestParser.parse(dial).get() == .dial("+4930123456"))
+    #expect(try ControlRequestParser.parse(dial).get() == .dial("+4930123456", account: nil))
+    let dialAccount = Data(#"{"cmd":"dial","args":{"number":"+4930123456","account":" Privatnummer "}}"#.utf8)
+    #expect(try ControlRequestParser.parse(dialAccount).get() == .dial("+4930123456", account: "Privatnummer"))
+    let badAccount = Data(#"{"cmd":"dial","args":{"number":"+4930123456","account":"  "}}"#.utf8)
+    #expect(throws: ControlError.self) { try ControlRequestParser.parse(badAccount).get() }
 
     let history = Data(#"{"cmd":"get_history","args":{"limit":7}}"#.utf8)
     #expect(try ControlRequestParser.parse(history).get() == .getHistory(7))
