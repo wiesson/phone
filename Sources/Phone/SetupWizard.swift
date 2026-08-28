@@ -42,7 +42,7 @@ enum SIPProviderPreset: String, CaseIterable, Codable, Identifiable, Sendable {
         switch self {
         case .telekom: ("tel.t-online.de", "sip:tel.t-online.de", "stun:stun.t-online.de", "srtp-mand")
         case .fritzBox: ("fritz.box", "", "", "")
-        case .sipgate: ("sipgate.de", "", "", "")
+        case .sipgate: ("sipgate.de", "sip:proxy.live.sipgate.de", "", "")
         case .easybell: ("sip.easybell.de", "", "", "")
         case .custom: ("", "", "", "")
         }
@@ -152,6 +152,7 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
     var stunServer: String
     var mediaEncryption: String
     var label: String? = nil
+    var sipDisplayName: String? = nil
     var assistantProfile: AssistantProfile = .personalAssistant
     var assistantInstructionsOverride: String? = nil
     var assistantContextData: String? = nil
@@ -164,6 +165,7 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         stunServer: String,
         mediaEncryption: String,
         label: String? = nil,
+        sipDisplayName: String? = nil,
         assistantProfile: AssistantProfile = .personalAssistant,
         assistantInstructionsOverride: String? = nil,
         assistantContextData: String? = nil
@@ -175,6 +177,7 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         self.stunServer = stunServer
         self.mediaEncryption = mediaEncryption
         self.label = label
+        self.sipDisplayName = sipDisplayName
         self.assistantProfile = assistantProfile
         self.assistantInstructionsOverride = assistantInstructionsOverride
         self.assistantContextData = assistantContextData
@@ -197,7 +200,9 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         if !outboundProxy.isEmpty { parameters.append("outbound=\"\(quoted(outboundProxy))\"") }
         if !stunServer.isEmpty { parameters.append("stunserver=\(stunServer)") }
         if !mediaEncryption.isEmpty { parameters.append("mediaenc=\(mediaEncryption)") }
-        return "<sip:\(sipAddress)>;\(parameters.joined(separator: ";"))\n"
+        let trimmedDisplayName = sipDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let prefix = trimmedDisplayName.isEmpty ? "" : "\"\(quoted(trimmedDisplayName))\" "
+        return "\(prefix)<sip:\(sipAddress)>;\(parameters.joined(separator: ";"))\n"
     }
 
     func validate(password: String) throws {
@@ -213,6 +218,9 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         }
         guard !domain.contains("@") else { throw SIPAccountError.invalidProviderSettings }
         guard password.rangeOfCharacter(from: .newlines) == nil else { throw SIPAccountError.invalidPassword }
+        guard sipDisplayName?.rangeOfCharacter(from: .newlines) == nil else {
+            throw SIPAccountError.invalidProviderSettings
+        }
     }
 
     private func quoted(_ value: String) -> String {
@@ -230,6 +238,7 @@ extension ManagedSIPAccount {
         case stunServer
         case mediaEncryption
         case label
+        case sipDisplayName
         case assistantProfile
         case assistantInstructionsOverride
         case assistantContextData
@@ -244,6 +253,7 @@ extension ManagedSIPAccount {
         stunServer = try container.decode(String.self, forKey: .stunServer)
         mediaEncryption = try container.decode(String.self, forKey: .mediaEncryption)
         label = try container.decodeIfPresent(String.self, forKey: .label)
+        sipDisplayName = try container.decodeIfPresent(String.self, forKey: .sipDisplayName)
         assistantProfile = try container.decodeIfPresent(AssistantProfile.self, forKey: .assistantProfile) ?? .personalAssistant
         assistantInstructionsOverride = try container.decodeIfPresent(String.self, forKey: .assistantInstructionsOverride)
         assistantContextData = try container.decodeIfPresent(String.self, forKey: .assistantContextData)
@@ -310,6 +320,20 @@ struct ManagedSIPAccountsState: Equatable, Sendable {
         accounts[index] = account
     }
 
+    mutating func replace(accountAt originalSIPAddress: String, with account: ManagedSIPAccount) throws {
+        guard let index = accounts.firstIndex(where: { $0.sipAddress == originalSIPAddress }) else {
+            throw SIPAccountError.missingManagedAccount
+        }
+        guard originalSIPAddress == account.sipAddress
+                || !accounts.contains(where: { $0.sipAddress == account.sipAddress }) else {
+            throw SIPAccountError.duplicateAccount
+        }
+        accounts[index] = account
+        if activeSIPAddress == originalSIPAddress {
+            activeSIPAddress = account.sipAddress
+        }
+    }
+
     mutating func remove(_ account: ManagedSIPAccount) {
         accounts.removeAll { $0.sipAddress == account.sipAddress }
         if activeSIPAddress == account.sipAddress {
@@ -351,6 +375,7 @@ func decodeManagedSIPAccounts(
 
 enum SIPAccountError: LocalizedError {
     case activeCall
+    case duplicateAccount
     case invalidProviderSettings
     case invalidUsername
     case invalidPassword
@@ -364,6 +389,7 @@ enum SIPAccountError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .activeCall: "Finish the current call before changing the SIP account."
+        case .duplicateAccount: "An account with this SIP address already exists."
         case .invalidProviderSettings: "The provider settings contain unsupported characters."
         case .invalidUsername: "Enter a username without spaces, @, or SIP punctuation."
         case .invalidPassword: "The password cannot contain a line break."
@@ -376,6 +402,28 @@ enum SIPAccountError: LocalizedError {
         case .missingUsername: "Enter the phone number or SIP username."
         }
     }
+}
+
+enum ManagedSIPPasswordEdit: Equatable, Sendable {
+    case keep(account: String)
+    case save(password: String, account: String)
+    case move(password: String, from: String, to: String)
+}
+
+func managedSIPPasswordEdit(
+    originalSIPAddress: String,
+    updatedSIPAddress: String,
+    replacementPassword: String,
+    storedPassword: String?
+) throws -> ManagedSIPPasswordEdit {
+    if originalSIPAddress == updatedSIPAddress {
+        return replacementPassword.isEmpty
+            ? .keep(account: originalSIPAddress)
+            : .save(password: replacementPassword, account: updatedSIPAddress)
+    }
+    let password = replacementPassword.isEmpty ? storedPassword : replacementPassword
+    guard let password, !password.isEmpty else { throw SIPAccountError.missingStoredPassword }
+    return .move(password: password, from: originalSIPAddress, to: updatedSIPAddress)
 }
 
 enum SIPPasswordStore {
@@ -427,10 +475,12 @@ enum SIPPasswordStore {
 
 struct SetupWizard: View {
     @ObservedObject var phone: PhoneController
+    let editingAccount: ManagedSIPAccount?
     @Environment(\.dismiss) private var dismiss
     @State private var step = 0
     @State private var provider = SIPProviderPreset.telekom
     @State private var label = ""
+    @State private var sipDisplayName = ""
     @State private var username = ""
     @State private var password = ""
     @State private var domain = SIPProviderPreset.telekom.defaults.domain
@@ -438,12 +488,19 @@ struct SetupWizard: View {
     @State private var stunServer = SIPProviderPreset.telekom.defaults.stunServer
     @State private var mediaEncryption = SIPProviderPreset.telekom.defaults.mediaEncryption
     @State private var submissionError: String?
+    @State private var showsAdvanced = false
+    @State private var editingSIPAddress: String?
     @FocusState private var focusedField: Field?
 
     private enum Field {
         case username
         case password
         case registrar
+    }
+
+    init(phone: PhoneController, editing editingAccount: ManagedSIPAccount? = nil) {
+        self.phone = phone
+        self.editingAccount = editingAccount
     }
 
     var body: some View {
@@ -469,9 +526,9 @@ struct SetupWizard: View {
     private var wizardHeader: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Set up your SIP account")
+                Text(editingAccount == nil ? "Set up your SIP account" : "Edit SIP account")
                     .font(.title2.weight(.semibold))
-                Text("Connect Phone directly to your provider or local router.")
+                Text(editingAccount == nil ? "Connect Phone directly to your provider or local router." : "Update the account and test its registration.")
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: 0) {
@@ -555,44 +612,31 @@ struct SetupWizard: View {
 
     @ViewBuilder
     private var providerConfiguration: some View {
-        if provider == .custom {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Connection details")
-                    .font(.subheadline.weight(.semibold))
-                setupField("Registrar", text: $domain, prompt: "sip.example.com")
-                setupField("Outbound proxy", text: $outboundProxy, prompt: "Optional")
-                setupField("STUN server", text: $stunServer, prompt: "Optional")
-                Picker("Media encryption", selection: $mediaEncryption) {
-                    Text("None required").tag("")
-                    Text("SRTP preferred").tag("srtp")
-                    Text("SRTP required").tag("srtp-mand")
+        VStack(alignment: .leading, spacing: 12) {
+            if provider != .custom {
+                VStack(spacing: 8) {
+                    configurationRow("Registrar", value: domain)
+                    configurationRow("Outbound proxy", value: outboundProxy.isEmpty ? "Automatic" : outboundProxy)
+                    configurationRow("STUN", value: stunServer.isEmpty ? "Not used" : stunServer)
+                    configurationRow("Media encryption", value: mediaEncryption.isEmpty ? "Provider default" : mediaEncryption)
                 }
             }
-            .padding(16)
-            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        } else if provider == .fritzBox {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Router address")
-                    .font(.subheadline.weight(.semibold))
-                TextField("fritz.box", text: $domain)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($focusedField, equals: .registrar)
-                Text("Use the local hostname or IP address of the router where the IP phone is configured.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            DisclosureGroup("Advanced settings", isExpanded: $showsAdvanced) {
+                VStack(spacing: 12) {
+                    setupField("Registrar", text: $domain, prompt: "sip.example.com")
+                    setupField("Outbound proxy", text: $outboundProxy, prompt: "Optional")
+                    setupField("STUN server", text: $stunServer, prompt: "Optional")
+                    Picker("Media encryption", selection: $mediaEncryption) {
+                        Text("None").tag("")
+                        Text("SRTP").tag("srtp")
+                        Text("SRTP required").tag("srtp-mand")
+                    }
+                }
+                .padding(.top, 10)
             }
-            .padding(16)
-            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        } else {
-            VStack(spacing: 8) {
-                configurationRow("Registrar", value: domain)
-                configurationRow("Outbound proxy", value: outboundProxy.isEmpty ? "Automatic" : outboundProxy)
-                configurationRow("STUN", value: stunServer.isEmpty ? "Not used" : stunServer)
-                configurationRow("Media encryption", value: mediaEncryption.isEmpty ? "Provider default" : mediaEncryption)
-            }
-            .padding(14)
-            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
+        .padding(16)
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var credentialsStep: some View {
@@ -606,10 +650,11 @@ struct SetupWizard: View {
             }
             VStack(spacing: 14) {
                 setupField("Label", text: $label, prompt: "Optional, for example Private or Work")
+                setupField("Display name", text: $sipDisplayName, prompt: "Optional, shown to callees")
                 setupField("Number or username", text: $username, prompt: provider == .telekom ? "+49…" : "SIP username")
                     .focused($focusedField, equals: .username)
                 LabeledContent("Password") {
-                    SecureField("Required", text: $password)
+                    SecureField(editingAccount == nil ? "Required" : "Leave empty to keep stored password", text: $password)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 320)
                         .focused($focusedField, equals: .password)
@@ -681,7 +726,7 @@ struct SetupWizard: View {
             } else if step == 1 {
                 Button("Test registration", action: startRegistrationTest)
                     .buttonStyle(.borderedProminent)
-                    .disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || password.isEmpty || domain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (editingAccount == nil && password.isEmpty) || domain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } else if displayedStatus == .registered {
                 Button("Done") { dismiss() }
                     .buttonStyle(.borderedProminent)
@@ -693,6 +738,7 @@ struct SetupWizard: View {
 
     private var account: ManagedSIPAccount {
         let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDisplayName = sipDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
         return ManagedSIPAccount(
             provider: provider,
             username: username.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -700,7 +746,11 @@ struct SetupWizard: View {
             outboundProxy: outboundProxy.trimmingCharacters(in: .whitespacesAndNewlines),
             stunServer: stunServer.trimmingCharacters(in: .whitespacesAndNewlines),
             mediaEncryption: mediaEncryption,
-            label: trimmedLabel.isEmpty ? nil : trimmedLabel
+            label: trimmedLabel.isEmpty ? nil : trimmedLabel,
+            sipDisplayName: trimmedDisplayName.isEmpty ? nil : trimmedDisplayName,
+            assistantProfile: editingAccount?.assistantProfile ?? .personalAssistant,
+            assistantInstructionsOverride: editingAccount?.assistantInstructionsOverride,
+            assistantContextData: editingAccount?.assistantContextData
         )
     }
 
@@ -781,16 +831,36 @@ struct SetupWizard: View {
     private func selectProvider(_ value: SIPProviderPreset) {
         provider = value
         applyPreset(value)
+        showsAdvanced = editingAccount != nil || value == .custom || value == .fritzBox
     }
 
     private func reset() {
         step = 0
-        provider = .telekom
-        label = ""
-        username = ""
+        if let editingAccount {
+            provider = editingAccount.provider
+            label = editingAccount.label ?? ""
+            sipDisplayName = editingAccount.sipDisplayName ?? ""
+            username = editingAccount.username
+            domain = editingAccount.domain
+            outboundProxy = editingAccount.outboundProxy
+            if editingAccount.provider == .sipgate && outboundProxy.isEmpty {
+                outboundProxy = SIPProviderPreset.sipgate.defaults.outboundProxy
+            }
+            stunServer = editingAccount.stunServer
+            mediaEncryption = editingAccount.mediaEncryption
+            editingSIPAddress = editingAccount.sipAddress
+            showsAdvanced = true
+        } else {
+            provider = .telekom
+            label = ""
+            sipDisplayName = ""
+            username = ""
+            editingSIPAddress = nil
+            showsAdvanced = false
+            applyPreset(.telekom)
+        }
         password = ""
         submissionError = nil
-        applyPreset(.telekom)
         focusedField = nil
     }
 
@@ -801,7 +871,12 @@ struct SetupWizard: View {
         let password = password
         Task { @MainActor in
             do {
-                try phone.saveManagedAccountAndTest(account, password: password)
+                if let editingSIPAddress {
+                    try phone.editManagedAccountAndTest(account, replacing: editingSIPAddress, password: password)
+                    self.editingSIPAddress = account.sipAddress
+                } else {
+                    try phone.saveManagedAccountAndTest(account, password: password)
+                }
             } catch {
                 submissionError = error.localizedDescription
             }

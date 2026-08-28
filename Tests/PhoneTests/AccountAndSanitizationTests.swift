@@ -12,7 +12,10 @@ private let accountLineCases = [
         expected: #"<sip:user@tel.t-online.de>;auth_pass="secret";regint=300;outbound="sip:tel.t-online.de";stunserver=stun:stun.t-online.de;mediaenc=srtp-mand"# + "\n"
     ),
     accountCase(.fritzBox, expected: #"<sip:user@fritz.box>;auth_pass="secret";regint=300"# + "\n"),
-    accountCase(.sipgate, expected: #"<sip:user@sipgate.de>;auth_pass="secret";regint=300"# + "\n"),
+    accountCase(
+        .sipgate,
+        expected: #"<sip:user@sipgate.de>;auth_pass="secret";regint=300;outbound="sip:proxy.live.sipgate.de""# + "\n"
+    ),
     accountCase(.easybell, expected: #"<sip:user@sip.easybell.de>;auth_pass="secret";regint=300"# + "\n"),
     AccountLineCase(
         account: ManagedSIPAccount(
@@ -178,6 +181,97 @@ private func redactsAuthenticationPasswords(testCase: RedactionCase) {
     state.remove(privateAccount)
     #expect(state.activeAccount == nil)
     #expect(activeCount(in: state) == 0)
+}
+
+@Test func accountLineIncludesQuotedDisplayName() throws {
+    let account = ManagedSIPAccount(
+        provider: .custom,
+        username: "user",
+        domain: "example.test",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: "",
+        sipDisplayName: #"Support "Desk""#
+    )
+
+    #expect(
+        try account.accountLine(password: "secret")
+            == #""Support \"Desk\"" <sip:user@example.test>;auth_pass="secret";regint=300"# + "\n"
+    )
+}
+
+@Test func sipgatePresetIncludesOutboundProxy() {
+    #expect(SIPProviderPreset.sipgate.defaults.outboundProxy == "sip:proxy.live.sipgate.de")
+}
+
+@Test func editReplacesAccountInPlaceAndKeepsProfileSettings() throws {
+    let original = ManagedSIPAccount(
+        provider: .custom,
+        username: "old-user",
+        domain: "example.test",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: "",
+        label: "Work",
+        assistantProfile: .custom,
+        assistantInstructionsOverride: "Custom instructions",
+        assistantContextData: "Custom data"
+    )
+    var updated = original
+    updated.username = "new-user"
+    updated.outboundProxy = "sip:proxy.example.test"
+    var state = ManagedSIPAccountsState(accounts: [original], activeSIPAddress: original.sipAddress)
+
+    try state.replace(accountAt: original.sipAddress, with: updated)
+
+    #expect(state.accounts == [updated])
+    #expect(state.activeSIPAddress == updated.sipAddress)
+    #expect(state.activeAccount?.assistantProfile == .custom)
+    #expect(state.activeAccount?.assistantInstructionsOverride == "Custom instructions")
+    #expect(state.activeAccount?.assistantContextData == "Custom data")
+}
+
+@Test func editKeepsOrReplacesPasswordAtSameAddress() throws {
+    let address = "user@example.test"
+
+    #expect(
+        try managedSIPPasswordEdit(
+            originalSIPAddress: address,
+            updatedSIPAddress: address,
+            replacementPassword: "",
+            storedPassword: "stored-secret"
+        ) == .keep(account: address)
+    )
+    #expect(
+        try managedSIPPasswordEdit(
+            originalSIPAddress: address,
+            updatedSIPAddress: address,
+            replacementPassword: "replacement-secret",
+            storedPassword: nil
+        ) == .save(password: "replacement-secret", account: address)
+    )
+}
+
+@Test func addressChangeMovesStoredOrReplacementPassword() throws {
+    let oldAddress = "old-user@example.test"
+    let newAddress = "new-user@example.test"
+
+    #expect(
+        try managedSIPPasswordEdit(
+            originalSIPAddress: oldAddress,
+            updatedSIPAddress: newAddress,
+            replacementPassword: "",
+            storedPassword: "stored-secret"
+        ) == .move(password: "stored-secret", from: oldAddress, to: newAddress)
+    )
+    #expect(
+        try managedSIPPasswordEdit(
+            originalSIPAddress: oldAddress,
+            updatedSIPAddress: newAddress,
+            replacementPassword: "replacement-secret",
+            storedPassword: nil
+        ) == .move(password: "replacement-secret", from: oldAddress, to: newAddress)
+    )
 }
 
 private func accountCase(_ provider: SIPProviderPreset, expected: String) -> AccountLineCase {

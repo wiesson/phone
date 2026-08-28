@@ -413,6 +413,44 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         restartBaresipForRegistrationTest()
     }
 
+    func editManagedAccountAndTest(
+        _ account: ManagedSIPAccount,
+        replacing originalSIPAddress: String,
+        password replacementPassword: String
+    ) throws {
+        guard currentCallInstanceID == nil else { throw SIPAccountError.activeCall }
+        let storedPassword = replacementPassword.isEmpty
+            ? try SIPPasswordStore.password(account: originalSIPAddress)
+            : nil
+        let passwordEdit = try managedSIPPasswordEdit(
+            originalSIPAddress: originalSIPAddress,
+            updatedSIPAddress: account.sipAddress,
+            replacementPassword: replacementPassword,
+            storedPassword: storedPassword
+        )
+        let effectivePassword = replacementPassword.isEmpty ? storedPassword ?? "" : replacementPassword
+        try account.validate(password: effectivePassword)
+
+        var state = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
+        try state.replace(accountAt: originalSIPAddress, with: account)
+        switch passwordEdit {
+        case .keep:
+            break
+        case .save(let password, let address):
+            try SIPPasswordStore.save(password, account: address)
+        case .move(let password, _, let newAddress):
+            try SIPPasswordStore.save(password, account: newAddress)
+        }
+        try saveManagedAccountsState(state)
+        if case .move(_, let oldAddress, _) = passwordEdit {
+            try SIPPasswordStore.remove(account: oldAddress)
+        }
+        unmanagedAccountAOR = nil
+        restartBaresipForRegistrationTest(
+            removingInstanceFor: originalSIPAddress == account.sipAddress ? nil : originalSIPAddress
+        )
+    }
+
     func selectManagedAccount(_ account: ManagedSIPAccount) throws {
         guard currentCallInstanceID == nil else { throw SIPAccountError.activeCall }
         var accountsState = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
@@ -888,8 +926,16 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         Task { await geminiLiveBridge.append(frame) }
     }
 
-    private func restartBaresipForRegistrationTest() {
+    private func restartBaresipForRegistrationTest(removingInstanceFor sipAddress: String? = nil) {
         stopBaresipAndWait()
+        if let sipAddress {
+            try? FileManager.default.removeItem(
+                at: instancesDirectory.appendingPathComponent(
+                    sanitizedBaresipInstanceAOR(sipAddress),
+                    isDirectory: true
+                )
+            )
+        }
         startBaresip()
     }
 
