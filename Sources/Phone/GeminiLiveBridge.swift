@@ -155,6 +155,57 @@ struct GeminiServerMessage: Equatable, Sendable {
     let setupComplete: Bool
     let audioChunks: [Data]
     let turnComplete: Bool
+    let inputTranscription: String?
+    let outputTranscription: String?
+}
+
+struct GeminiTranscriptUtterance: Equatable, Sendable {
+    let speaker: Speaker
+    let text: String
+}
+
+struct GeminiTranscriptionBuffer: Sendable {
+    private var speaker: Speaker?
+    private var text = ""
+
+    mutating func receive(
+        inputTranscription: String?,
+        outputTranscription: String?,
+        turnComplete: Bool
+    ) -> [GeminiTranscriptUtterance] {
+        var utterances: [GeminiTranscriptUtterance] = []
+        append(inputTranscription, for: .caller, to: &utterances)
+        append(outputTranscription, for: .me, to: &utterances)
+        if turnComplete, let utterance = flush() { utterances.append(utterance) }
+        return utterances
+    }
+
+    mutating func flush() -> GeminiTranscriptUtterance? {
+        defer {
+            speaker = nil
+            text = ""
+        }
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let speaker, !cleaned.isEmpty else { return nil }
+        return GeminiTranscriptUtterance(speaker: speaker, text: cleaned)
+    }
+
+    private mutating func append(
+        _ fragment: String?,
+        for newSpeaker: Speaker,
+        to utterances: inout [GeminiTranscriptUtterance]
+    ) {
+        guard let fragment, !fragment.isEmpty else { return }
+        if speaker != nil, speaker != newSpeaker, let utterance = flush() {
+            utterances.append(utterance)
+        }
+        speaker = newSpeaker
+        if text.isEmpty || text.last?.isWhitespace == true || fragment.first?.isWhitespace == true || fragment.first?.isPunctuation == true {
+            text += fragment
+        } else {
+            text += " " + fragment
+        }
+    }
 }
 
 enum AssistantLiveEndpoint: Equatable, Sendable {
@@ -220,7 +271,9 @@ enum GeminiLiveProtocol {
         let modelPath = model.hasPrefix("models/") ? model : "models/\(model)"
         var setup: [String: Any] = [
             "model": modelPath,
-            "generationConfig": ["responseModalities": ["AUDIO"]]
+            "generationConfig": ["responseModalities": ["AUDIO"]],
+            "inputAudioTranscription": [String: Any](),
+            "outputAudioTranscription": [String: Any]()
         ]
         let trimmedInstructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedInstructions.isEmpty {
@@ -258,9 +311,17 @@ enum GeminiLiveProtocol {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let setupComplete = object["setupComplete"] != nil
         guard let serverContent = object["serverContent"] as? [String: Any] else {
-            return GeminiServerMessage(setupComplete: setupComplete, audioChunks: [], turnComplete: false)
+            return GeminiServerMessage(
+                setupComplete: setupComplete,
+                audioChunks: [],
+                turnComplete: false,
+                inputTranscription: nil,
+                outputTranscription: nil
+            )
         }
         let turnComplete = serverContent["turnComplete"] as? Bool ?? false
+        let inputTranscription = (serverContent["inputTranscription"] as? [String: Any])?["text"] as? String
+        let outputTranscription = (serverContent["outputTranscription"] as? [String: Any])?["text"] as? String
         let modelTurn = serverContent["modelTurn"] as? [String: Any]
         let parts = modelTurn?["parts"] as? [[String: Any]] ?? []
         let chunks = parts.compactMap { part -> Data? in
@@ -268,7 +329,13 @@ enum GeminiLiveProtocol {
                   let encoded = inlineData["data"] as? String else { return nil }
             return Data(base64Encoded: encoded)
         }
-        return GeminiServerMessage(setupComplete: setupComplete, audioChunks: chunks, turnComplete: turnComplete)
+        return GeminiServerMessage(
+            setupComplete: setupComplete,
+            audioChunks: chunks,
+            turnComplete: turnComplete,
+            inputTranscription: inputTranscription,
+            outputTranscription: outputTranscription
+        )
     }
 
     private static func jsonString(_ object: [String: Any]) throws -> String {
@@ -472,6 +539,7 @@ private final class AudioInjectionSender {
 
 actor GeminiLiveBridge {
     typealias StateHandler = @Sendable (GeminiLiveState) -> Void
+    typealias TranscriptHandler = @Sendable (Speaker, String) -> Void
 
     private var state: GeminiLiveState = .off
     private var session: URLSession?
@@ -479,6 +547,8 @@ actor GeminiLiveBridge {
     private var receiveTask: Task<Void, Never>?
     private var pacingTask: Task<Void, Never>?
     private var stateHandler: StateHandler?
+    private var transcriptHandler: TranscriptHandler?
+    private var transcriptionBuffer = GeminiTranscriptionBuffer()
     private var callerConverter = GeminiCallerAudioConverter()
     private var modelResampler = PCM16MonoResampler()
     private var injectionSender: AudioInjectionSender?
@@ -497,7 +567,8 @@ actor GeminiLiveBridge {
         instructions: String,
         sendsInitialGreeting: Bool = false,
         injectionSocketPath: String,
-        onState: @escaping StateHandler
+        onState: @escaping StateHandler,
+        onTranscript: @escaping TranscriptHandler
     ) async {
         if let brainURL {
             await startBrain(
@@ -519,6 +590,7 @@ actor GeminiLiveBridge {
             return
         }
         stateHandler = onState
+        transcriptHandler = onTranscript
         self.sendsInitialGreeting = sendsInitialGreeting
         publish(.connecting)
         do {
@@ -579,6 +651,7 @@ actor GeminiLiveBridge {
     }
 
     private func stop(notify: Bool) {
+        flushTranscription()
         sessionID &+= 1
         state = .off
         receiveTask?.cancel()
@@ -598,8 +671,10 @@ actor GeminiLiveBridge {
         pendingInjectionEnd = false
         sendsInitialGreeting = false
         usesBrain = false
+        transcriptionBuffer = GeminiTranscriptionBuffer()
         if notify { stateHandler?(.off) }
         stateHandler = nil
+        transcriptHandler = nil
     }
 
     private func startBrain(
@@ -701,6 +776,14 @@ actor GeminiLiveBridge {
                 for chunk in decoded.audioChunks {
                     modelAudio.append(chunk)
                 }
+                let utterances = transcriptionBuffer.receive(
+                    inputTranscription: decoded.inputTranscription,
+                    outputTranscription: decoded.outputTranscription,
+                    turnComplete: decoded.turnComplete
+                )
+                for utterance in utterances {
+                    transcriptHandler?(utterance.speaker, utterance.text)
+                }
                 flushModelAudio()
                 if decoded.turnComplete { flushPartialOutput() }
             }
@@ -779,6 +862,11 @@ actor GeminiLiveBridge {
         stateHandler?(newState)
     }
 
+    private func flushTranscription() {
+        guard let utterance = transcriptionBuffer.flush() else { return }
+        transcriptHandler?(utterance.speaker, utterance.text)
+    }
+
     private func failBrain(_ message: String) {
         sessionID &+= 1
         receiveTask?.cancel()
@@ -795,10 +883,13 @@ actor GeminiLiveBridge {
         outputAudio.removeAll(keepingCapacity: false)
         modelResampler = PCM16MonoResampler()
         pendingInjectionEnd = false
+        transcriptionBuffer = GeminiTranscriptionBuffer()
+        transcriptHandler = nil
         publish(.failed("External brain: \(message)"))
     }
 
     private func fail(_ message: String) {
+        flushTranscription()
         sessionID &+= 1
         receiveTask?.cancel()
         pacingTask?.cancel()
@@ -814,6 +905,8 @@ actor GeminiLiveBridge {
         outputAudio.removeAll(keepingCapacity: false)
         modelResampler = PCM16MonoResampler()
         pendingInjectionEnd = false
+        transcriptionBuffer = GeminiTranscriptionBuffer()
+        transcriptHandler = nil
         publish(.failed("Gemini Live: \(message)"))
     }
 }

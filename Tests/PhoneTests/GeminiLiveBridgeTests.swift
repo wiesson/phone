@@ -25,6 +25,8 @@ import Testing
 
     #expect(setup["model"] as? String == "models/gemini-live-test")
     #expect(parts.first?["text"] as? String == "Sei kurz und freundlich.")
+    #expect(setup["inputAudioTranscription"] as? [String: Any] != nil)
+    #expect(setup["outputAudioTranscription"] as? [String: Any] != nil)
 }
 
 @Test func composesAssistantCallInstructions() {
@@ -92,6 +94,8 @@ import Testing
         "setupComplete": [:],
         "serverContent": [
             "turnComplete": true,
+            "inputTranscription": ["text": "Ich brauche einen Termin."],
+            "outputTranscription": ["text": "Gern, wann passt es?"],
             "modelTurn": [
                 "parts": [
                     ["inlineData": ["mimeType": "audio/pcm;rate=24000", "data": first.base64EncodedString()]],
@@ -106,6 +110,55 @@ import Testing
     #expect(message.setupComplete)
     #expect(message.audioChunks == [first, second])
     #expect(message.turnComplete)
+    #expect(message.inputTranscription == "Ich brauche einen Termin.")
+    #expect(message.outputTranscription == "Gern, wann passt es?")
+}
+
+@Test func buffersGeminiTranscriptionUntilSpeakerAndTurnBoundaries() {
+    var buffer = GeminiTranscriptionBuffer()
+
+    #expect(buffer.receive(inputTranscription: "Ich brauche", outputTranscription: nil, turnComplete: false).isEmpty)
+    #expect(buffer.receive(inputTranscription: " einen Termin", outputTranscription: nil, turnComplete: false).isEmpty)
+
+    let speakerSwitch = buffer.receive(
+        inputTranscription: nil,
+        outputTranscription: "Gern",
+        turnComplete: false
+    )
+    #expect(speakerSwitch == [
+        GeminiTranscriptUtterance(speaker: .caller, text: "Ich brauche einen Termin")
+    ])
+
+    let turnComplete = buffer.receive(
+        inputTranscription: nil,
+        outputTranscription: ", ich rufe zurück.",
+        turnComplete: true
+    )
+    #expect(turnComplete == [
+        GeminiTranscriptUtterance(speaker: .me, text: "Gern, ich rufe zurück.")
+    ])
+}
+
+@Test func summaryPromptPrioritizesCallerIntentAndFallbackIsMarked() {
+    let prompt = callSummaryPrompt(transcript: "Caller: Ich brauche am Dienstag einen Termin.")
+
+    #expect(prompt.contains("Wer hat angerufen"))
+    #expect(prompt.contains("WAS DER ANRUFER WOLLTE"))
+    #expect(prompt.contains("Name, Rückrufnummer und Termine"))
+    #expect(prompt.contains("Vereinbarte nächste Schritte"))
+    #expect(prompt.contains("Keine Dialognacherzählung"))
+    #expect(callSummaryInstructions.contains("immer auf Deutsch"))
+
+    let fallback = fallbackCallSummary([
+        TranscriptEntry(
+            speaker: .caller,
+            text: "Ich brauche am Dienstag einen Termin.",
+            isFinal: true,
+            createdAt: Date(timeIntervalSince1970: 1)
+        )
+    ])
+    #expect(fallback.hasPrefix("(Ohne KI-Zusammenfassung) "))
+    #expect(fallback.contains("Ich brauche am Dienstag einen Termin."))
 }
 
 @Test func resamplesGeminiAudioFrom24kTo8k() {

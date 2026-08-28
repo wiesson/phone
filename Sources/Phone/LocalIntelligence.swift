@@ -65,18 +65,25 @@ actor SpeechLane {
         self.analyzer = analyzer
 
         resultTask = Task { [speaker] in
+            var lastVolatile: String?
             do {
                 var results = 0
                 for try await result in transcriber.results {
                     results += 1
                     if results == 1 { phoneDiagnosticLog("phone-app: \(speaker.title) transcriber produced its first result\n") }
-                    onResult(speaker, String(result.text.characters), result.isFinal)
+                    let text = String(result.text.characters)
+                    lastVolatile = result.isFinal ? nil : text
+                    onResult(speaker, text, result.isFinal)
                 }
                 phoneDiagnosticLog("phone-app: \(speaker.title) transcriber finished after \(results) results\n")
             } catch {
                 if !(error is CancellationError) {
                     onError(speaker, "Transcriber failed: \(error.localizedDescription)")
                 }
+            }
+            if let lastVolatile {
+                phoneDiagnosticLog("phone-app: \(speaker.title) transcriber persisted its last volatile result\n")
+                onResult(speaker, lastVolatile, true)
             }
         }
         analysisTask = Task { [speaker] in
@@ -160,7 +167,15 @@ actor SpeechLane {
         droppedBuffers = 0
         continuation?.finish()
         try? await analyzer?.finalizeAndFinishThroughEndOfInput()
-        resultTask?.cancel()
+        if let resultTask {
+            let timeoutTask = Task {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled else { return }
+                resultTask.cancel()
+            }
+            await resultTask.value
+            timeoutTask.cancel()
+        }
         analysisTask?.cancel()
         resultTask = nil
         analysisTask = nil
@@ -223,8 +238,10 @@ actor LocalIntelligence {
     }
 
     func summarize(entries: [TranscriptEntry]) async throws -> String {
-        guard SystemLanguageModel.default.isAvailable else {
-            return fallbackSummary(entries)
+        let model = SystemLanguageModel.default
+        guard model.isAvailable else {
+            phoneDiagnosticLog("phone-app: using fallback summary — Foundation Models availability: \(String(describing: model.availability))\n")
+            return fallbackCallSummary(entries)
         }
         let transcript = entries
             .filter { $0.isFinal && !$0.text.isEmpty }
@@ -232,18 +249,39 @@ actor LocalIntelligence {
             .joined(separator: "\n")
         guard !transcript.isEmpty else { return "There is no transcript for this call yet." }
 
-        let session = LanguageModelSession(instructions: "You summarize phone calls concisely and factually, in the language of the conversation. Do not invent anything.")
-        let response = try await session.respond(to: """
-        Summarize the following phone call in at most four short sentences, in the language of the conversation. Only add a "Next steps" heading afterwards if concrete tasks, dates, or commitments were mentioned.
-
-        \(transcript)
-        """)
-        return response.content
+        let session = LanguageModelSession(instructions: callSummaryInstructions)
+        do {
+            let response = try await session.respond(to: callSummaryPrompt(transcript: transcript))
+            return response.content
+        } catch {
+            phoneDiagnosticLog("phone-app: using fallback summary — Foundation Models error: \(String(describing: error))\n")
+            return fallbackCallSummary(entries)
+        }
     }
+}
 
-    private func fallbackSummary(_ entries: [TranscriptEntry]) -> String {
-        let final = entries.filter { $0.isFinal && !$0.text.isEmpty }
-        guard !final.isEmpty else { return "There is no transcript for this call yet." }
-        return final.suffix(6).map { "\($0.speakerTitle): \($0.text)" }.joined(separator: "\n")
-    }
+let callSummaryInstructions = """
+Du fasst Telefongespräche kurz, sachlich und immer auf Deutsch zusammen. Erfinde nichts und erzähle den Dialog nicht nach. Das konkrete Anliegen des Anrufers ist die wichtigste Information.
+"""
+
+func callSummaryPrompt(transcript: String) -> String {
+    """
+    Erstelle eine kurze, sachliche Zusammenfassung auf Deutsch. Sie muss immer in dieser Reihenfolge enthalten:
+    1. Wer hat angerufen und für wen war der Anruf bestimmt? Falls unbekannt, ausdrücklich „nicht genannt“ schreiben.
+    2. WAS DER ANRUFER WOLLTE: das konkrete Anliegen klar und vorrangig nennen. Falls unklar, ausdrücklich „nicht eindeutig genannt“ schreiben.
+    3. Hinterlassene Daten: Name, Rückrufnummer und Termine. Fehlende Daten knapp als „nicht genannt“ kennzeichnen.
+    4. Vereinbarte nächste Schritte. Falls keine vereinbart wurden, „keine vereinbart“ schreiben.
+
+    Keine Dialognacherzählung, keine Einleitung und keine Spekulation. Verwende höchstens vier kurze Sätze oder vier knappe Punkte.
+
+    Transkript:
+    \(transcript)
+    """
+}
+
+func fallbackCallSummary(_ entries: [TranscriptEntry]) -> String {
+    let prefix = "(Ohne KI-Zusammenfassung) "
+    let final = entries.filter { $0.isFinal && !$0.text.isEmpty }
+    guard !final.isEmpty else { return prefix + "There is no transcript for this call yet." }
+    return prefix + final.suffix(6).map { "\($0.speakerTitle): \($0.text)" }.joined(separator: "\n")
 }
