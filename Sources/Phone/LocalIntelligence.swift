@@ -172,13 +172,20 @@ actor SpeechLane {
     }
 }
 
+func configuredTranscriptionLocale() -> Locale {
+    if let identifier = UserDefaults.standard.string(forKey: "transcriptionLocale"), !identifier.isEmpty {
+        return Locale(identifier: identifier)
+    }
+    return .current
+}
+
 actor LocalIntelligence {
-    private let me = SpeechLane(speaker: .me)
-    private let caller = SpeechLane(speaker: .caller)
+    private var me = SpeechLane(speaker: .me)
+    private var caller = SpeechLane(speaker: .caller)
 
     func prepare() async throws {
         guard SpeechTranscriber.isAvailable else { throw SpeechLane.LaneError.unavailable }
-        let requested = Locale.current
+        let requested = configuredTranscriptionLocale()
         let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requested) ?? requested
         let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
         let modules: [any SpeechModule] = [transcriber]
@@ -192,6 +199,10 @@ actor LocalIntelligence {
         onResult: @escaping @Sendable (Speaker, String, Bool) -> Void,
         onError: @escaping @Sendable (Speaker, String) -> Void
     ) async throws {
+        let locale = configuredTranscriptionLocale()
+        me = SpeechLane(speaker: .me, locale: locale)
+        caller = SpeechLane(speaker: .caller, locale: locale)
+        phoneDiagnosticLog("phone-app: transcription locale: \(locale.identifier)\n")
         try await me.start(onResult: onResult, onError: onError)
         do {
             try await caller.start(onResult: onResult, onError: onError)
