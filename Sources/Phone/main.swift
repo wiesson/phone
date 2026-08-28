@@ -78,6 +78,11 @@ private struct MenuBarPhoneLabel: View {
                 if !wasConnected && isConnected {
                     openWindow(id: "conversation")
                     NSApp.activate(ignoringOtherApps: true)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        NSApp.activate(ignoringOtherApps: true)
+                        NSApp.windows.first { $0.identifier?.rawValue.contains("conversation") == true }?
+                            .orderFrontRegardless()
+                    }
                 }
             }
     }
