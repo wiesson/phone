@@ -46,6 +46,17 @@ private func parsesCallerNames(testCase: CallerNameCase) throws {
     #expect(parseContacts(content) == ["alice": "Alice", "bob": "Bob Smith"])
 }
 
+@Test func parsesFirstUnmanagedAccountAOR() {
+    let content = """
+    # Account managed by the user
+
+    "Private" <sip:%2B49123@tel.t-online.de>;regint=300
+    <sip:second@example.com>
+    """
+
+    #expect(parseAccountAOR(from: content) == "+49123@tel.t-online.de")
+}
+
 @Test(arguments: dialTargetCases)
 private func normalizesDialURLs(testCase: DialTargetCase) throws {
     let url = try #require(URL(string: testCase.value))

@@ -31,6 +31,13 @@ enum SIPProviderPreset: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
+    var shortName: String {
+        switch self {
+        case .telekom: "Telekom"
+        default: rawValue
+        }
+    }
+
     var defaults: (domain: String, outboundProxy: String, stunServer: String, mediaEncryption: String) {
         switch self {
         case .telekom: ("tel.t-online.de", "sip:tel.t-online.de", "stun:stun.t-online.de", "srtp-mand")
@@ -42,15 +49,25 @@ enum SIPProviderPreset: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
-struct ManagedSIPAccount: Codable, Equatable, Sendable {
+struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
     var provider: SIPProviderPreset
     var username: String
     var domain: String
     var outboundProxy: String
     var stunServer: String
     var mediaEncryption: String
+    var label: String? = nil
 
+    var id: String { sipAddress }
     var sipAddress: String { "\(username)@\(domain)" }
+    var displayName: String {
+        let value = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? username : value
+    }
+    var registrationDisplay: String {
+        let address = provider == .custom ? sipAddress : username
+        return "\(address) · \(provider.shortName)"
+    }
 
     func accountLine(password: String) throws -> String {
         try validate(password: password)
@@ -80,6 +97,80 @@ struct ManagedSIPAccount: Codable, Equatable, Sendable {
         value.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
     }
+}
+
+struct ManagedSIPAccountsState: Equatable, Sendable {
+    private(set) var accounts: [ManagedSIPAccount]
+    private(set) var activeSIPAddress: String?
+
+    init(accounts: [ManagedSIPAccount], activeSIPAddress: String?) {
+        var unique: [ManagedSIPAccount] = []
+        for account in accounts {
+            if let index = unique.firstIndex(where: { $0.sipAddress == account.sipAddress }) {
+                unique[index] = account
+            } else {
+                unique.append(account)
+            }
+        }
+        self.accounts = unique
+        self.activeSIPAddress = unique.contains { $0.sipAddress == activeSIPAddress } ? activeSIPAddress : unique.first?.sipAddress
+    }
+
+    var activeAccount: ManagedSIPAccount? {
+        accounts.first { $0.sipAddress == activeSIPAddress }
+    }
+
+    mutating func add(_ account: ManagedSIPAccount) {
+        if let index = accounts.firstIndex(where: { $0.sipAddress == account.sipAddress }) {
+            accounts[index] = account
+        } else {
+            accounts.append(account)
+        }
+        activeSIPAddress = account.sipAddress
+    }
+
+    mutating func select(_ account: ManagedSIPAccount) {
+        guard accounts.contains(where: { $0.sipAddress == account.sipAddress }) else { return }
+        activeSIPAddress = account.sipAddress
+    }
+
+    mutating func remove(_ account: ManagedSIPAccount) {
+        accounts.removeAll { $0.sipAddress == account.sipAddress }
+        if activeSIPAddress == account.sipAddress {
+            activeSIPAddress = accounts.first?.sipAddress
+        }
+    }
+}
+
+struct ManagedSIPAccountsLoadResult: Equatable, Sendable {
+    let state: ManagedSIPAccountsState
+    let migratedLegacyAccount: Bool
+}
+
+func decodeManagedSIPAccounts(
+    accountsData: Data?,
+    legacyAccountData: Data?,
+    activeSIPAddress: String?
+) -> ManagedSIPAccountsLoadResult {
+    let decoder = JSONDecoder()
+    if let accountsData,
+       let accounts = try? decoder.decode([ManagedSIPAccount].self, from: accountsData) {
+        return ManagedSIPAccountsLoadResult(
+            state: ManagedSIPAccountsState(accounts: accounts, activeSIPAddress: activeSIPAddress),
+            migratedLegacyAccount: false
+        )
+    }
+    if let legacyAccountData,
+       let account = try? decoder.decode(ManagedSIPAccount.self, from: legacyAccountData) {
+        return ManagedSIPAccountsLoadResult(
+            state: ManagedSIPAccountsState(accounts: [account], activeSIPAddress: account.sipAddress),
+            migratedLegacyAccount: true
+        )
+    }
+    return ManagedSIPAccountsLoadResult(
+        state: ManagedSIPAccountsState(accounts: [], activeSIPAddress: nil),
+        migratedLegacyAccount: false
+    )
 }
 
 enum SIPAccountError: LocalizedError {
@@ -147,13 +238,14 @@ enum SIPPasswordStore {
         return password
     }
 
-    static func remove(account: String) {
+    static func remove(account: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw SIPAccountError.keychain(status) }
     }
 }
 
@@ -162,6 +254,7 @@ struct SetupWizard: View {
     @Environment(\.dismiss) private var dismiss
     @State private var step = 0
     @State private var provider = SIPProviderPreset.telekom
+    @State private var label = ""
     @State private var username = ""
     @State private var password = ""
     @State private var domain = SIPProviderPreset.telekom.defaults.domain
@@ -169,7 +262,6 @@ struct SetupWizard: View {
     @State private var stunServer = SIPProviderPreset.telekom.defaults.stunServer
     @State private var mediaEncryption = SIPProviderPreset.telekom.defaults.mediaEncryption
     @State private var submissionError: String?
-    @State private var loaded = false
     @FocusState private var focusedField: Field?
 
     private enum Field {
@@ -195,7 +287,7 @@ struct SetupWizard: View {
         }
         .frame(width: 620, height: 520)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear(perform: loadStoredAccount)
+        .onAppear(perform: reset)
     }
 
     private var wizardHeader: some View {
@@ -337,6 +429,7 @@ struct SetupWizard: View {
                     .foregroundStyle(.secondary)
             }
             VStack(spacing: 14) {
+                setupField("Label", text: $label, prompt: "Optional, for example Private or Work")
                 setupField("Number or username", text: $username, prompt: provider == .telekom ? "+49…" : "SIP username")
                     .focused($focusedField, equals: .username)
                 LabeledContent("Password") {
@@ -423,13 +516,15 @@ struct SetupWizard: View {
     }
 
     private var account: ManagedSIPAccount {
-        ManagedSIPAccount(
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ManagedSIPAccount(
             provider: provider,
             username: username.trimmingCharacters(in: .whitespacesAndNewlines),
             domain: domain.trimmingCharacters(in: .whitespacesAndNewlines),
             outboundProxy: outboundProxy.trimmingCharacters(in: .whitespacesAndNewlines),
             stunServer: stunServer.trimmingCharacters(in: .whitespacesAndNewlines),
-            mediaEncryption: mediaEncryption
+            mediaEncryption: mediaEncryption,
+            label: trimmedLabel.isEmpty ? nil : trimmedLabel
         )
     }
 
@@ -512,21 +607,15 @@ struct SetupWizard: View {
         applyPreset(value)
     }
 
-    private func loadStoredAccount() {
-        guard !loaded else { return }
-        loaded = true
-        guard let stored = phone.managedAccount else { return }
-        provider = stored.provider
-        username = stored.username
-        domain = stored.domain
-        outboundProxy = stored.outboundProxy
-        stunServer = stored.stunServer
-        mediaEncryption = stored.mediaEncryption
-        do {
-            password = try phone.storedPassword(for: stored)
-        } catch {
-            submissionError = error.localizedDescription
-        }
+    private func reset() {
+        step = 0
+        provider = .telekom
+        label = ""
+        username = ""
+        password = ""
+        submissionError = nil
+        applyPreset(.telekom)
+        focusedField = nil
     }
 
     private func startRegistrationTest() {

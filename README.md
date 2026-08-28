@@ -80,11 +80,13 @@ configuration" button opens the same location.
 
 When no existing account is present, Phone opens a three-step setup assistant.
 It includes presets for Deutsche Telekom, FRITZ!Box, sipgate, and Easybell, as
-well as custom SIP settings. Reopen it from Settings > Phone with "Set up
-account…". Accounts created by the assistant keep their password in the macOS
-Keychain and regenerate the protected baresip account file when Phone starts.
-Existing hand-edited account files remain supported and are not changed until
-the setup assistant is used.
+well as custom SIP settings. Add and manage accounts from Settings > Phone.
+Accounts created by the assistant keep their passwords in the macOS Keychain
+and regenerate the protected baresip account file when Phone starts. Multiple
+accounts are supported, with one active account registered at a time. The
+outgoing caller ID is the registered number of the active account, subject to
+the provider's configuration. Existing hand-edited account files remain
+supported and are not changed until the setup assistant is used.
 
 ### Deutsche Telekom (direct)
 

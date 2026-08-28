@@ -42,9 +42,15 @@ struct PhonePanel: View {
                 Text(phone.state.label)
                     .font(.system(size: 14, weight: .semibold))
                     .lineLimit(1)
+                if let accountDisplay = phone.accountDisplay {
+                    Text(accountDisplay)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 Text(phone.intelligenceStatus)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
             Spacer()
@@ -448,6 +454,9 @@ struct PhoneSettingsView: View {
     @ObservedObject var phone: PhoneController
     @AppStorage("transcriptionEnabled") private var transcriptionEnabled = true
     @AppStorage("retainTranscript") private var retainTranscript = true
+    @State private var selectedAccountAddress: String?
+    @State private var accountToRemove: ManagedSIPAccount?
+    @State private var accountError: String?
 
     var body: some View {
         TabView {
@@ -457,7 +466,7 @@ struct PhoneSettingsView: View {
             phoneSettings
                 .tabItem { Label("Phone", systemImage: "phone") }
         }
-        .frame(width: 460, height: 240)
+        .frame(width: 520, height: 360)
     }
 
     private var intelligenceSettings: some View {
@@ -485,36 +494,157 @@ struct PhoneSettingsView: View {
     }
 
     private var phoneSettings: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            settingsRow("Provider", value: phone.managedAccount?.provider.rawValue ?? "Manual account file")
-            settingsRow("Telephony", value: "baresip")
-
-            Divider()
-
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(phone.managedAccount == nil ? "Account managed through the technical configuration" : "Password stored in Keychain")
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("SIP accounts")
+                        .font(.headline)
+                    Text(phone.accountDisplay ?? "No account configured")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("The setup assistant can replace the current account configuration.")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
                 }
                 Spacer()
-                Button("Set up account…") { phone.requestAccountSetup() }
+                Text("baresip")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            if phone.managedAccounts.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    Label("Manual account file", systemImage: "doc.text")
+                        .fontWeight(.medium)
+                    if let address = phone.unmanagedAccountAOR {
+                        Text(address)
+                            .font(.system(.callout, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                    Text("This account is managed through the technical configuration.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 150, alignment: .center)
+                .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            } else {
+                List(selection: $selectedAccountAddress) {
+                    ForEach(phone.managedAccounts) { account in
+                        accountRow(account)
+                            .tag(account.sipAddress)
+                    }
+                }
+                .listStyle(.bordered)
+                .frame(minHeight: 150)
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    phone.requestAccountSetup()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .help("Add account")
+
+                Button {
+                    accountToRemove = selectedAccount
+                } label: {
+                    Image(systemName: "minus")
+                }
+                .disabled(selectedAccount == nil)
+                .help("Remove selected account")
+
+                Spacer()
+                if let accountError {
+                    Text(accountError)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                } else {
+                    Text(phone.managedAccounts.isEmpty ? "Add an account with the setup assistant." : "Passwords are stored in Keychain.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
-        .padding(24)
+        .padding(20)
+        .onAppear {
+            selectedAccountAddress = phone.activeManagedSIPAddress
+        }
+        .onChange(of: phone.activeManagedSIPAddress) { _, address in
+            if selectedAccountAddress == nil { selectedAccountAddress = address }
+        }
+        .onChange(of: phone.managedAccounts) { _, accounts in
+            if !accounts.contains(where: { $0.sipAddress == selectedAccountAddress }) {
+                selectedAccountAddress = phone.activeManagedSIPAddress
+            }
+        }
+        .confirmationDialog(
+            accountToRemove.map { "Remove \($0.displayName)?" } ?? "Remove account?",
+            isPresented: isConfirmingRemoval,
+            titleVisibility: .visible
+        ) {
+            Button("Remove Account", role: .destructive, action: removeSelectedAccount)
+            Button("Cancel", role: .cancel) { accountToRemove = nil }
+        } message: {
+            Text("Its password will also be removed from Keychain.")
+        }
     }
 
-    private func settingsRow(_ title: String, value: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(title)
-                .foregroundStyle(.secondary)
-                .frame(width: 92, alignment: .trailing)
-            Text(value)
-                .textSelection(.enabled)
+    private var selectedAccount: ManagedSIPAccount? {
+        phone.managedAccounts.first { $0.sipAddress == selectedAccountAddress }
+    }
+
+    private var isConfirmingRemoval: Binding<Bool> {
+        Binding(
+            get: { accountToRemove != nil },
+            set: { if !$0 { accountToRemove = nil } }
+        )
+    }
+
+    private func accountRow(_ account: ManagedSIPAccount) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                selectAccount(account)
+            } label: {
+                Image(systemName: phone.activeManagedSIPAddress == account.sipAddress ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(phone.activeManagedSIPAddress == account.sipAddress ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(phone.activeManagedSIPAddress == account.sipAddress ? "Active account" : "Make active")
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(account.displayName)
+                    .fontWeight(.medium)
+                Text(account.sipAddress)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
             Spacer()
+            Text(account.provider.shortName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func selectAccount(_ account: ManagedSIPAccount) {
+        selectedAccountAddress = account.sipAddress
+        accountError = nil
+        do {
+            try phone.selectManagedAccount(account)
+        } catch {
+            accountError = error.localizedDescription
+        }
+    }
+
+    private func removeSelectedAccount() {
+        guard let account = accountToRemove else { return }
+        accountToRemove = nil
+        accountError = nil
+        do {
+            try phone.removeManagedAccount(account)
+            selectedAccountAddress = phone.activeManagedSIPAddress
+        } catch {
+            accountError = error.localizedDescription
         }
     }
 }

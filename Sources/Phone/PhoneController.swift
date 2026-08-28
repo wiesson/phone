@@ -48,6 +48,21 @@ func parseCallerName(from line: String) -> String? {
     return String(caller).removingPercentEncoding ?? String(caller)
 }
 
+func parseAccountAOR(from content: String) -> String? {
+    guard let line = content.split(separator: "\n").lazy
+        .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        .first(where: { !$0.isEmpty && !$0.hasPrefix("#") }),
+          let marker = line.range(of: "sip:", options: .caseInsensitive) else { return nil }
+    let remainder = line[marker.upperBound...]
+    let end = remainder.firstIndex {
+        $0 == ">" || $0 == ";" || $0 == "\"" || $0.isWhitespace
+    } ?? remainder.endIndex
+    let address = String(remainder[..<end])
+    let parts = address.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false)
+    guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+    return address.removingPercentEncoding ?? address
+}
+
 @MainActor
 final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserNotificationCenterDelegate {
     let menuBar = MenuBarModel()
@@ -64,7 +79,9 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
     @Published private(set) var history: [CallRecord] = []
     @Published private(set) var isMuted = false
-    @Published private(set) var managedAccount: ManagedSIPAccount?
+    @Published private(set) var managedAccounts: [ManagedSIPAccount] = []
+    @Published private(set) var activeManagedSIPAddress: String?
+    @Published private(set) var unmanagedAccountAOR: String?
     @Published private(set) var registrationStatus: RegistrationStatus = .idle
 
     private var process: Process?
@@ -87,15 +104,27 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         applicationSupportDirectory.appendingPathComponent("baresip.pid")
     }
 
+    var activeManagedAccount: ManagedSIPAccount? {
+        managedAccounts.first { $0.sipAddress == activeManagedSIPAddress }
+    }
+
+    var accountDisplay: String? {
+        activeManagedAccount?.registrationDisplay ?? unmanagedAccountAOR
+    }
+
     override init() {
         super.init()
-        if UserDefaults.standard.bool(forKey: "managedAccount"),
-           let data = UserDefaults.standard.data(forKey: "managedSIPAccount"),
-           let account = try? JSONDecoder().decode(ManagedSIPAccount.self, from: data) {
-            managedAccount = account
-        }
-        number = UserDefaults.standard.string(forKey: "lastDialedNumber") ?? ""
-        if let data = UserDefaults.standard.data(forKey: "callHistory"),
+        let defaults = UserDefaults.standard
+        let result = decodeManagedSIPAccounts(
+            accountsData: defaults.data(forKey: "managedSIPAccounts"),
+            legacyAccountData: defaults.data(forKey: "managedSIPAccount"),
+            activeSIPAddress: defaults.string(forKey: "activeManagedSIPAccount")
+        )
+        managedAccounts = result.state.accounts
+        activeManagedSIPAddress = result.state.activeSIPAddress
+        try? persistManagedAccounts()
+        number = defaults.string(forKey: "lastDialedNumber") ?? ""
+        if let data = defaults.data(forKey: "callHistory"),
            let stored = try? JSONDecoder().decode([CallRecord].self, from: data) {
             history = stored
         }
@@ -112,6 +141,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             state = .error("Phone data could not be prepared")
             return
         }
+        loadUnmanagedAccountAOR()
         loadContacts()
         installNotifications()
         do {
@@ -119,7 +149,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         } catch {
             intelligenceStatus = "Audio bridge unavailable"
         }
-        if managedAccount == nil && !FileManager.default.fileExists(atPath: configDirectory.appendingPathComponent("accounts").path) {
+        if managedAccounts.isEmpty && !FileManager.default.fileExists(atPath: configDirectory.appendingPathComponent("accounts").path) {
             state = .stopped
             requestAccountSetup()
         } else {
@@ -144,23 +174,44 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         menuBar.setupRequest &+= 1
     }
 
-    func storedPassword(for account: ManagedSIPAccount) throws -> String {
-        try SIPPasswordStore.password(account: account.sipAddress)
-    }
-
     func saveManagedAccountAndTest(_ account: ManagedSIPAccount, password: String) throws {
         guard !state.isInCall else { throw SIPAccountError.activeCall }
         try account.validate(password: password)
-        let previousAddress = managedAccount?.sipAddress
         try SIPPasswordStore.save(password, account: account.sipAddress)
-        let data = try JSONEncoder().encode(account)
-        UserDefaults.standard.set(data, forKey: "managedSIPAccount")
-        UserDefaults.standard.set(true, forKey: "managedAccount")
-        managedAccount = account
-        if let previousAddress, previousAddress != account.sipAddress {
-            SIPPasswordStore.remove(account: previousAddress)
-        }
+        var state = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
+        state.add(account)
+        try saveManagedAccountsState(state)
+        unmanagedAccountAOR = nil
         restartBaresipForRegistrationTest()
+    }
+
+    func selectManagedAccount(_ account: ManagedSIPAccount) throws {
+        guard !state.isInCall else { throw SIPAccountError.activeCall }
+        var accountsState = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
+        guard accountsState.activeSIPAddress != account.sipAddress else { return }
+        accountsState.select(account)
+        guard accountsState.activeSIPAddress == account.sipAddress else { return }
+        try saveManagedAccountsState(accountsState)
+        restartBaresipForRegistrationTest()
+    }
+
+    func removeManagedAccount(_ account: ManagedSIPAccount) throws {
+        guard !state.isInCall else { throw SIPAccountError.activeCall }
+        guard managedAccounts.contains(where: { $0.sipAddress == account.sipAddress }) else { return }
+        var accountsState = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
+        let removedActiveAccount = accountsState.activeSIPAddress == account.sipAddress
+        accountsState.remove(account)
+        try SIPPasswordStore.remove(account: account.sipAddress)
+        try saveManagedAccountsState(accountsState)
+        if accountsState.accounts.isEmpty {
+            stopBaresipAndWait()
+            try? FileManager.default.removeItem(at: configDirectory.appendingPathComponent("accounts"))
+            registrationStatus = .idle
+            state = .stopped
+            requestAccountSetup()
+        } else if removedActiveAccount {
+            restartBaresipForRegistrationTest()
+        }
     }
 
     func recoverFromError() {
@@ -413,10 +464,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func regenerateManagedAccountsFile() throws {
-        guard UserDefaults.standard.bool(forKey: "managedAccount") else { return }
-        guard let managedAccount else { throw SIPAccountError.missingManagedAccount }
-        let password = try SIPPasswordStore.password(account: managedAccount.sipAddress)
-        let line = try managedAccount.accountLine(password: password)
+        guard !managedAccounts.isEmpty else { return }
+        guard let account = activeManagedAccount else { throw SIPAccountError.missingManagedAccount }
+        let password = try SIPPasswordStore.password(account: account.sipAddress)
+        let line = try account.accountLine(password: password)
         let url = configDirectory.appendingPathComponent("accounts")
         let descriptor = Darwin.open(url.path, O_WRONLY | O_CREAT | O_TRUNC, mode_t(0o600))
         guard descriptor >= 0 else {
@@ -430,6 +481,27 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         try handle.write(contentsOf: Data(line.utf8))
         try handle.synchronize()
         try handle.close()
+    }
+
+    private func persistManagedAccounts() throws {
+        let state = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
+        try saveManagedAccountsState(state)
+    }
+
+    private func saveManagedAccountsState(_ state: ManagedSIPAccountsState) throws {
+        let defaults = UserDefaults.standard
+        if state.accounts.isEmpty {
+            defaults.removeObject(forKey: "managedSIPAccounts")
+            defaults.removeObject(forKey: "activeManagedSIPAccount")
+        } else {
+            let data = try JSONEncoder().encode(state.accounts)
+            defaults.set(data, forKey: "managedSIPAccounts")
+            defaults.set(state.activeSIPAddress, forKey: "activeManagedSIPAccount")
+        }
+        defaults.removeObject(forKey: "managedSIPAccount")
+        defaults.removeObject(forKey: "managedAccount")
+        managedAccounts = state.accounts
+        activeManagedSIPAddress = state.activeSIPAddress
     }
 
     private func restartBaresipForRegistrationTest() {
@@ -614,6 +686,19 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             return
         }
         contacts = parseContacts(content)
+    }
+
+    private func loadUnmanagedAccountAOR() {
+        guard managedAccounts.isEmpty else {
+            unmanagedAccountAOR = nil
+            return
+        }
+        let url = configDirectory.appendingPathComponent("accounts")
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            unmanagedAccountAOR = nil
+            return
+        }
+        unmanagedAccountAOR = parseAccountAOR(from: content)
     }
 
     /// Returns a display name for a dial target or caller id, if known.

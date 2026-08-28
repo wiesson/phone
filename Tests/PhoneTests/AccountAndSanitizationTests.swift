@@ -87,6 +87,52 @@ private func redactsAuthenticationPasswords(testCase: RedactionCase) {
     #expect(redactSensitiveValues(in: testCase.input) == testCase.expected)
 }
 
+@Test func migratesLegacyManagedAccountData() throws {
+    let legacyData = try #require(
+        #"{"provider":"Deutsche Telekom","username":"+49123","domain":"tel.t-online.de","outboundProxy":"sip:tel.t-online.de","stunServer":"stun:stun.t-online.de","mediaEncryption":"srtp-mand"}"#.data(using: .utf8)
+    )
+
+    let result = decodeManagedSIPAccounts(
+        accountsData: nil,
+        legacyAccountData: legacyData,
+        activeSIPAddress: nil
+    )
+
+    #expect(result.migratedLegacyAccount)
+    #expect(result.state.accounts.count == 1)
+    #expect(result.state.activeAccount?.sipAddress == "+49123@tel.t-online.de")
+    #expect(result.state.activeAccount?.label == nil)
+}
+
+@Test func maintainsOneActiveManagedAccount() {
+    let privateAccount = accountCase(.telekom, expected: "").account
+    let workAccount = ManagedSIPAccount(
+        provider: .sipgate,
+        username: "work",
+        domain: "sipgate.de",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: "",
+        label: "Work"
+    )
+    var state = ManagedSIPAccountsState(
+        accounts: [privateAccount, workAccount, privateAccount],
+        activeSIPAddress: "missing@example.com"
+    )
+
+    #expect(state.accounts.count == 2)
+    #expect(activeCount(in: state) == 1)
+    state.select(workAccount)
+    #expect(state.activeAccount == workAccount)
+    #expect(activeCount(in: state) == 1)
+    state.remove(workAccount)
+    #expect(state.activeAccount == privateAccount)
+    #expect(activeCount(in: state) == 1)
+    state.remove(privateAccount)
+    #expect(state.activeAccount == nil)
+    #expect(activeCount(in: state) == 0)
+}
+
 private func accountCase(_ provider: SIPProviderPreset, expected: String) -> AccountLineCase {
     let defaults = provider.defaults
     return AccountLineCase(
@@ -118,4 +164,8 @@ private func invalidAccount(
         ),
         password: password
     )
+}
+
+private func activeCount(in state: ManagedSIPAccountsState) -> Int {
+    state.accounts.count { $0.sipAddress == state.activeSIPAddress }
 }
