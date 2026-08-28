@@ -351,7 +351,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
            let stored = try? JSONDecoder().decode([CallRecord].self, from: data) {
             history = stored
         }
-        isGeminiConfigured = GeminiAPIKeyStore.apiKey() != nil
+        refreshAssistantConfiguration()
     }
 
     func start() {
@@ -621,7 +621,17 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         let value = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { throw GeminiLiveError.invalidAPIKey }
         try GeminiAPIKeyStore.save(value)
-        isGeminiConfigured = true
+        refreshAssistantConfiguration()
+    }
+
+    func refreshAssistantConfiguration() {
+        let endpoint = resolveAssistantLiveEndpoint(UserDefaults.standard.string(forKey: "assistantBrainURL"))
+        switch endpoint {
+        case .brain:
+            isGeminiConfigured = true
+        case .gemini:
+            isGeminiConfigured = GeminiAPIKeyStore.apiKey() != nil
+        }
     }
 
     func toggleGeminiLive() {
@@ -636,13 +646,24 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private func startGeminiLive(sendsInitialGreeting: Bool, instructions instructionOverride: String? = nil) {
         guard state.isConnected else { return }
-        guard let apiKey = GeminiAPIKeyStore.apiKey() else {
-            geminiLiveState = .failed(GeminiLiveError.invalidAPIKey.localizedDescription)
-            isGeminiConfigured = false
-            clearAssistantCall()
-            return
-        }
         let defaults = UserDefaults.standard
+        let endpoint = resolveAssistantLiveEndpoint(defaults.string(forKey: "assistantBrainURL"))
+        let apiKey: String
+        let brainURL: URL?
+        switch endpoint {
+        case .brain(let url):
+            apiKey = ""
+            brainURL = url
+        case .gemini:
+            guard let storedAPIKey = GeminiAPIKeyStore.apiKey() else {
+                geminiLiveState = .failed(GeminiLiveError.invalidAPIKey.localizedDescription)
+                isGeminiConfigured = false
+                clearAssistantCall()
+                return
+            }
+            apiKey = storedAPIKey
+            brainURL = nil
+        }
         let storedModel = defaults.string(forKey: "geminiLiveModel")?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let model = storedModel.flatMap { $0.isEmpty ? nil : $0 } ?? defaultGeminiLiveModel
@@ -669,6 +690,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             guard !Task.isCancelled else { return }
             await bridge.start(
                 apiKey: apiKey,
+                brainURL: brainURL,
                 model: model,
                 instructions: instructions,
                 sendsInitialGreeting: sendsInitialGreeting,

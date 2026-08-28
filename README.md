@@ -254,6 +254,24 @@ streamed to Google's Gemini Live API and generated audio is injected into the
 call. Review Google's data and privacy terms before enabling it. Local
 transcription remains independent and can continue alongside the bridge.
 
+## External brain (experimental)
+
+Phone can route the live call-audio bridge through the companion service in
+`brain/` instead of connecting to Gemini directly. Set its WebSocket URL under
+Settings > Assistant, then start the service with:
+
+```sh
+cd brain
+npm install
+GEMINI_API_KEY=... npm start
+```
+
+`GEMINI_API_KEY` enables Gemini Live, `BRAIN_PORT` changes the loopback port
+from its default of `8791`, and optional `CONVEX_URL` enables the Tourvy tool
+backend instead of deterministic fixtures. When this mode is enabled, call
+audio flows through the brain process; review the privacy and deployment
+implications before using it with real calls.
+
 ## Assistant answering mode (experimental)
 
 In Settings > Assistant, choose whether the assistant answers incoming calls

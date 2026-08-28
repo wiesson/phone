@@ -2,6 +2,7 @@
 .swiftpm/
 dist/
 .DS_Store
+brain/node_modules/
 runtime/*.log
 runtime/*.pid
 runtime/modules/
