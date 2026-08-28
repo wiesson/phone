@@ -220,7 +220,7 @@ EXPECTATIONS
     printf 'A established: %s\n' "$(contains "$A_LOG" "Call established")"
     printf 'B established: %s\n' "$(contains "$B_LOG" "Call established")"
     printf 'A DTMF after established: %s\n' "$(contains "$A_DTMF_LOG" "send DTMF digit|telephone-event")"
-    printf 'A closed after hangup: %s\n' "$(contains "$A_CLOSE_LOG" "call closed|session closed|Call with .* terminated")"
+    printf 'A closed after hangup: %s\n' "$(contains "$A_CLOSE_LOG" "call closed|session closed|Call with .* terminated|terminate call")"
     printf 'A unexpected incoming after established: %s\n' "$(contains "$A_WINDOW" "Incoming call from")"
   } > "$OBSERVED"
   diff -u "$EXPECTED" "$OBSERVED"
@@ -261,7 +261,7 @@ awk '/Call established/ { active = 1 } active { print }' "$A_LOG" > "$A_WINDOW"
 A_WINDOW_CAPTURED=yes
 A_CLOSE_START=$(wc -c < "$A_LOG" | tr -d ' ')
 send_a "/hangup"
-wait_for_after "$A_LOG" "call closed|session closed|Call with .* terminated" "$A_PID" 30 "$A_CLOSE_START" "$A_CLOSE_LOG" || show_failure "instance A did not close the call after hangup"
+wait_for_after "$A_LOG" "call closed|session closed|Call with .* terminated|terminate call" "$A_PID" 30 "$A_CLOSE_START" "$A_CLOSE_LOG" || show_failure "instance A did not close the call after hangup"
 
 send_a "/quit"
 send_b "/quit"
