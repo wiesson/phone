@@ -35,6 +35,10 @@ func phoneDiagnosticLog(_ text: String) {
 
 func redactSensitiveValues(in text: String) -> String {
     text.replacingOccurrences(
+        of: #"([?&]key=)[A-Za-z0-9._-]+"#,
+        with: "$1••••",
+        options: .regularExpression
+    ).replacingOccurrences(
         of: #"auth_pass=(?:\"(?:[^\"\\]|\\.)*\"|[^;\s]*)"#,
         with: "auth_pass=••••",
         options: .regularExpression
