@@ -237,20 +237,20 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         guard case .ringing(let caller) = state else { return }
         state = .answering(caller)
         clearIncomingCallNotification()
-        send("a")
+        send("/accept")
     }
 
     func reject() {
         guard state.isRinging else { return }
         clearIncomingCallNotification()
         recordCall(missed: false)
-        send("b")
+        send("/hangup")
         state = .ready
     }
 
     func hangup() {
         guard state.isInCall else { return }
-        send("b")
+        send("/hangup")
         recordCall(missed: false)
         finishCall()
         state = .ready
