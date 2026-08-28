@@ -86,22 +86,22 @@ import Testing
 @Test func composesAssistantInstructionsWithContextData() {
     #expect(
         composeAssistantSystemInstruction(instructions: "  Profilanweisung  ", contextData: "  Zimmer: frei  ") ==
-        "Profilanweisung\n\nDaten:\nZimmer: frei"
+        phoneEtiquettePreamble + "\n\nProfilanweisung\n\nDaten:\nZimmer: frei"
     )
     #expect(
         composeAssistantSystemInstruction(instructions: "Profilanweisung", contextData: nil) ==
-        "Profilanweisung"
+        phoneEtiquettePreamble + "\n\nProfilanweisung"
     )
     #expect(
         composeAssistantSystemInstruction(instructions: "", contextData: "Kontakt: Beispiel") ==
-        "Daten:\nKontakt: Beispiel"
+        phoneEtiquettePreamble + "\n\nDaten:\nKontakt: Beispiel"
     )
     #expect(
         composeAssistantSystemInstruction(
             instructions: "Profilanweisung",
             contextData: "Zimmer: frei",
             includesGreetingTrigger: true
-        ) == "Profilanweisung\n\nDaten:\nZimmer: frei\n\n\(assistantGreetingTrigger)"
+        ) == phoneEtiquettePreamble + "\n\nProfilanweisung\n\nDaten:\nZimmer: frei\n\n\(assistantGreetingTrigger)"
     )
 }
 
