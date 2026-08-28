@@ -141,7 +141,7 @@ actor SpeechLane {
             noteAppended()
         } else {
             droppedBuffers += 1
-            if droppedBuffers == 1 || droppedBuffers % 250 == 0 {
+            if droppedBuffers == 1 || droppedBuffers % 2_500 == 0 {
                 phoneDiagnosticLog("phone-app: \(speaker.title) lane dropped \(droppedBuffers) buffers (status \(status.rawValue), error: \(conversionError?.localizedDescription ?? "none"))\n")
             }
         }
@@ -149,7 +149,7 @@ actor SpeechLane {
 
     private func noteAppended() {
         appendedBuffers += 1
-        if appendedBuffers == 1 || appendedBuffers % 250 == 0 {
+        if appendedBuffers == 1 || appendedBuffers % 2_500 == 0 {
             phoneDiagnosticLog("phone-app: \(speaker.title) lane fed \(appendedBuffers) buffers to the analyzer (target \(Int(targetFormat?.sampleRate ?? 0)) Hz)\n")
         }
     }
