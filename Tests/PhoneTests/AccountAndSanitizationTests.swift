@@ -274,6 +274,113 @@ private func redactsAuthenticationPasswords(testCase: RedactionCase) {
     )
 }
 
+private struct AccountFieldClassificationCase: Sendable {
+    let field: ManagedSIPAccountField
+    let isRegistrationRelevant: Bool
+}
+
+private let accountFieldClassificationCases = [
+    AccountFieldClassificationCase(field: .provider, isRegistrationRelevant: false),
+    AccountFieldClassificationCase(field: .username, isRegistrationRelevant: true),
+    AccountFieldClassificationCase(field: .domain, isRegistrationRelevant: true),
+    AccountFieldClassificationCase(field: .password, isRegistrationRelevant: true),
+    AccountFieldClassificationCase(field: .outboundProxy, isRegistrationRelevant: true),
+    AccountFieldClassificationCase(field: .stunServer, isRegistrationRelevant: true),
+    AccountFieldClassificationCase(field: .mediaEncryption, isRegistrationRelevant: true),
+    AccountFieldClassificationCase(field: .label, isRegistrationRelevant: false),
+    AccountFieldClassificationCase(field: .sipDisplayName, isRegistrationRelevant: true),
+    AccountFieldClassificationCase(field: .assistantProfile, isRegistrationRelevant: false),
+    AccountFieldClassificationCase(field: .assistantInstructionsOverride, isRegistrationRelevant: false),
+    AccountFieldClassificationCase(field: .assistantContextData, isRegistrationRelevant: false)
+]
+
+@Test(arguments: accountFieldClassificationCases)
+private func classifiesManagedAccountFields(testCase: AccountFieldClassificationCase) {
+    #expect(testCase.field.isRegistrationRelevant == testCase.isRegistrationRelevant)
+}
+
+@Test func classificationCoversEveryManagedAccountField() {
+    #expect(Set(accountFieldClassificationCases.map(\.field)) == Set(ManagedSIPAccountField.allCases))
+}
+
+@Test func metadataOnlyEditRequiresNoRestartOrRegistrationTest() {
+    let original = editableAccount()
+    var updated = original
+    updated.label = "Front desk"
+    updated.assistantProfile = .custom
+    updated.assistantInstructionsOverride = "Answer briefly"
+    updated.assistantContextData = "Hours: 09:00–17:00"
+
+    let plan = managedSIPAccountEditPlan(
+        original: original,
+        updated: updated,
+        replacementPassword: ""
+    )
+
+    #expect(
+        plan.changedFields == [
+            .label,
+            .assistantProfile,
+            .assistantInstructionsOverride,
+            .assistantContextData
+        ]
+    )
+    #expect(!plan.requiresEngineRestart)
+    #expect(!plan.requiresRegistrationTest)
+}
+
+@Test func displayNameOnlyEditRestartsWithoutRegistrationTest() {
+    let original = editableAccount()
+    var updated = original
+    updated.sipDisplayName = "Support Desk"
+
+    let plan = managedSIPAccountEditPlan(
+        original: original,
+        updated: updated,
+        replacementPassword: ""
+    )
+
+    #expect(plan.changedFields == [.sipDisplayName])
+    #expect(plan.requiresEngineRestart)
+    #expect(!plan.requiresRegistrationTest)
+}
+
+@Test func accountLineOrPasswordEditRestartsWithRegistrationTest() {
+    let original = editableAccount()
+    var updated = original
+    updated.outboundProxy = "sip:new-proxy.example.test"
+
+    let accountLinePlan = managedSIPAccountEditPlan(
+        original: original,
+        updated: updated,
+        replacementPassword: ""
+    )
+    let passwordPlan = managedSIPAccountEditPlan(
+        original: original,
+        updated: original,
+        replacementPassword: "new-secret"
+    )
+
+    #expect(accountLinePlan.requiresEngineRestart)
+    #expect(accountLinePlan.requiresRegistrationTest)
+    #expect(passwordPlan.changedFields == [.password])
+    #expect(passwordPlan.requiresEngineRestart)
+    #expect(passwordPlan.requiresRegistrationTest)
+}
+
+private func editableAccount() -> ManagedSIPAccount {
+    ManagedSIPAccount(
+        provider: .custom,
+        username: "user",
+        domain: "example.test",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: "",
+        label: "Office",
+        assistantProfile: .personalAssistant
+    )
+}
+
 private func accountCase(_ provider: SIPProviderPreset, expected: String) -> AccountLineCase {
     let defaults = provider.defaults
     return AccountLineCase(

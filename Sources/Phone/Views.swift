@@ -592,6 +592,8 @@ struct PhoneSettingsView: View {
     @State private var selectedAccountAddress: String?
     @State private var accountToEdit: ManagedSIPAccount?
     @State private var accountToRemove: ManagedSIPAccount?
+    @State private var accountToRename: ManagedSIPAccount?
+    @State private var renameLabel = ""
     @State private var accountError: String?
     @State private var showsAccountInstructions = false
     @State private var showsAccountData = false
@@ -620,6 +622,13 @@ struct PhoneSettingsView: View {
             Button("Cancel", role: .cancel) { accountToRemove = nil }
         } message: {
             Text("Its password will also be removed from Keychain.")
+        }
+        .alert("Rename account", isPresented: isRenamingAccount) {
+            TextField("Label", text: $renameLabel)
+            Button("Save", action: saveAccountRename)
+            Button("Cancel", role: .cancel) { accountToRename = nil }
+        } message: {
+            Text("Enter a local label for this account.")
         }
         .alert("Delete all archived conversations?", isPresented: $isConfirmingArchiveDeletion) {
             Button("Delete All", role: .destructive) {
@@ -1005,6 +1014,13 @@ struct PhoneSettingsView: View {
         )
     }
 
+    private var isRenamingAccount: Binding<Bool> {
+        Binding(
+            get: { accountToRename != nil },
+            set: { if !$0 { accountToRename = nil } }
+        )
+    }
+
     private func accountRow(_ account: ManagedSIPAccount) -> some View {
         HStack(spacing: 10) {
             Button {
@@ -1057,6 +1073,11 @@ struct PhoneSettingsView: View {
             accountToEdit = account
         }
         .contextMenu {
+            Button("Rename…") {
+                selectedAccountAddress = account.sipAddress
+                renameLabel = account.label ?? ""
+                accountToRename = account
+            }
             Button("Edit…") {
                 selectedAccountAddress = account.sipAddress
                 accountToEdit = account
@@ -1172,7 +1193,7 @@ struct PhoneSettingsView: View {
         change(&updated)
         accountError = nil
         do {
-            try phone.updateManagedAccount(updated)
+            try phone.updateManagedAccountMetadata(updated)
         } catch {
             accountError = error.localizedDescription
         }
@@ -1225,6 +1246,20 @@ struct PhoneSettingsView: View {
         accountError = nil
         do {
             try phone.selectManagedAccount(account)
+        } catch {
+            accountError = error.localizedDescription
+        }
+    }
+
+    private func saveAccountRename() {
+        guard let account = accountToRename else { return }
+        var updated = phone.managedAccounts.first(where: { $0.sipAddress == account.sipAddress }) ?? account
+        let trimmedLabel = renameLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.label = trimmedLabel.isEmpty ? nil : trimmedLabel
+        accountError = nil
+        do {
+            try phone.updateManagedAccountMetadata(updated)
+            accountToRename = nil
         } catch {
             accountError = error.localizedDescription
         }
