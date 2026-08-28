@@ -110,10 +110,10 @@ enum GeminiLiveProtocol {
     static func realtimeInputMessage(pcm: Data) throws -> String {
         let object: [String: Any] = [
             "realtimeInput": [
-                "mediaChunks": [[
+                "audio": [
                     "mimeType": "audio/pcm;rate=16000",
                     "data": pcm.base64EncodedString()
-                ]]
+                ]
             ]
         ]
         return try jsonString(object)
@@ -390,7 +390,8 @@ actor GeminiLiveBridge {
             if requestID == sessionID, state != .off && !(error is CancellationError) {
                 let code = socket?.closeCode.rawValue ?? -1
                 let reason = socket?.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? "none"
-                phoneDiagnosticLog("phone-app: Gemini socket closed — code \(code), reason: \(reason), error: \(error)\n")
+                let redactedError = redactSensitiveValues(in: String(describing: error))
+                phoneDiagnosticLog("phone-app: Gemini socket closed — code \(code), reason: \(reason), error: \(redactedError)\n")
                 fail(error.localizedDescription)
             }
         }

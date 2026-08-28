@@ -18,11 +18,10 @@ import Testing
     let message = try GeminiLiveProtocol.realtimeInputMessage(pcm: pcm)
     let root = try #require(JSONSerialization.jsonObject(with: Data(message.utf8)) as? [String: Any])
     let realtimeInput = try #require(root["realtimeInput"] as? [String: Any])
-    let mediaChunks = try #require(realtimeInput["mediaChunks"] as? [[String: Any]])
-    let chunk = try #require(mediaChunks.first)
+    let audio = try #require(realtimeInput["audio"] as? [String: Any])
 
-    #expect(chunk["mimeType"] as? String == "audio/pcm;rate=16000")
-    #expect(chunk["data"] as? String == pcm.base64EncodedString())
+    #expect(audio["mimeType"] as? String == "audio/pcm;rate=16000")
+    #expect(audio["data"] as? String == pcm.base64EncodedString())
 }
 
 @Test func decodesGeminiServerAudioFraming() throws {
