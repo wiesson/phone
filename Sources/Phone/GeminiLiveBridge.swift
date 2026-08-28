@@ -381,7 +381,14 @@ private final class AudioInjectionSender {
                 }
             }
         }
-        guard sent == packet.count else { throw GeminiLiveError.socket(errno) }
+        guard sent == packet.count else {
+            let code = errno
+            if code == ENOBUFS || code == ECONNREFUSED || code == ENOENT {
+                phoneDiagnosticLog("phone-app: injection packet dropped (\(code)) — receiver not draining\n")
+                return
+            }
+            throw GeminiLiveError.socket(code)
+        }
         if !samples.isEmpty { lastSampleRate = sampleRate }
     }
 
