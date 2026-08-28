@@ -242,13 +242,14 @@ transcription remains independent and can continue alongside the bridge.
 
 ## Assistant answering mode (experimental)
 
-In Settings > Assistant, enable **Assistant answers incoming calls**, choose the
-answer delay, and tailor the instructions for your callers. With a Gemini API
-key configured, Phone answers an incoming call after the delay, starts the
-Gemini Live bridge, and has the assistant greet the caller. You can still answer
-or decline before the delay expires. While the assistant is active, call audio
-is streamed to Google; review the Google data and privacy terms before enabling
-this mode.
+In Settings > Assistant, choose whether the assistant answers incoming calls
+**Never**, **Always**, or **Outside business hours**, then choose the answer
+delay and tailor the instructions for your callers. Weekday and weekend
+attended hours can be configured separately. With a Gemini API key configured,
+Phone answers eligible incoming calls after the delay, starts the Gemini Live
+bridge, and has the assistant greet the caller. You can still answer or decline
+before the delay expires. While the assistant is active, call audio is streamed
+to Google; review the Google data and privacy terms before enabling this mode.
 
 ## Privacy
 
