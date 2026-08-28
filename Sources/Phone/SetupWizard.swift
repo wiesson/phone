@@ -229,7 +229,71 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+enum ManagedSIPAccountField: CaseIterable, Hashable, Sendable {
+    case provider
+    case username
+    case domain
+    case password
+    case outboundProxy
+    case stunServer
+    case mediaEncryption
+    case label
+    case sipDisplayName
+    case assistantProfile
+    case assistantInstructionsOverride
+    case assistantContextData
+
+    var isRegistrationRelevant: Bool {
+        switch self {
+        case .username, .domain, .password, .outboundProxy, .stunServer, .mediaEncryption, .sipDisplayName:
+            true
+        case .provider, .label, .assistantProfile, .assistantInstructionsOverride, .assistantContextData:
+            false
+        }
+    }
+
+    var requiresRegistrationTest: Bool {
+        isRegistrationRelevant && self != .sipDisplayName
+    }
+}
+
+struct ManagedSIPAccountEditPlan: Equatable, Sendable {
+    let changedFields: Set<ManagedSIPAccountField>
+
+    var requiresEngineRestart: Bool {
+        changedFields.contains { $0.isRegistrationRelevant }
+    }
+
+    var requiresRegistrationTest: Bool {
+        changedFields.contains { $0.requiresRegistrationTest }
+    }
+}
+
+func managedSIPAccountEditPlan(
+    original: ManagedSIPAccount,
+    updated: ManagedSIPAccount,
+    replacementPassword: String
+) -> ManagedSIPAccountEditPlan {
+    var changedFields: Set<ManagedSIPAccountField> = []
+    if original.provider != updated.provider { changedFields.insert(.provider) }
+    if original.username != updated.username { changedFields.insert(.username) }
+    if original.domain != updated.domain { changedFields.insert(.domain) }
+    if !replacementPassword.isEmpty { changedFields.insert(.password) }
+    if original.outboundProxy != updated.outboundProxy { changedFields.insert(.outboundProxy) }
+    if original.stunServer != updated.stunServer { changedFields.insert(.stunServer) }
+    if original.mediaEncryption != updated.mediaEncryption { changedFields.insert(.mediaEncryption) }
+    if original.label != updated.label { changedFields.insert(.label) }
+    if original.sipDisplayName != updated.sipDisplayName { changedFields.insert(.sipDisplayName) }
+    if original.assistantProfile != updated.assistantProfile { changedFields.insert(.assistantProfile) }
+    if original.assistantInstructionsOverride != updated.assistantInstructionsOverride {
+        changedFields.insert(.assistantInstructionsOverride)
+    }
+    if original.assistantContextData != updated.assistantContextData { changedFields.insert(.assistantContextData) }
+    return ManagedSIPAccountEditPlan(changedFields: changedFields)
+}
+
 extension ManagedSIPAccount {
+
     private enum CodingKeys: String, CodingKey {
         case provider
         case username
@@ -528,17 +592,21 @@ struct SetupWizard: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(editingAccount == nil ? "Set up your SIP account" : "Edit SIP account")
                     .font(.title2.weight(.semibold))
-                Text(editingAccount == nil ? "Connect Phone directly to your provider or local router." : "Update the account and test its registration.")
+                Text(editingAccount == nil ? "Connect Phone directly to your provider or local router." : "Update account details. Registration is tested only when needed.")
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: 0) {
-                ForEach(Array(["Provider", "Credentials", "Test"].enumerated()), id: \.offset) { index, title in
+                ForEach(Array(wizardStepTitles.enumerated()), id: \.offset) { index, title in
                     HStack(spacing: 8) {
                         ZStack {
                             Circle()
                                 .fill(index <= step ? Color.accentColor : Color.secondary.opacity(0.16))
                                 .frame(width: 24, height: 24)
-                            if index < step {
+                            if index == 2 && !requiresRegistrationTest {
+                                Image(systemName: "minus")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(.secondary)
+                            } else if index < step {
                                 Image(systemName: "checkmark")
                                     .font(.system(size: 10, weight: .bold))
                                     .foregroundStyle(.white)
@@ -702,7 +770,7 @@ struct SetupWizard: View {
                     .frame(maxWidth: 440)
             }
             if case .failed = displayedStatus {
-                Button("Test again", action: startRegistrationTest)
+                Button("Test again", action: retryRegistrationTest)
                     .buttonStyle(.bordered)
             }
             Spacer()
@@ -724,7 +792,7 @@ struct SetupWizard: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(domain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } else if step == 1 {
-                Button("Test registration", action: startRegistrationTest)
+                Button(requiresRegistrationTest ? "Test registration" : "Save", action: saveAccount)
                     .buttonStyle(.borderedProminent)
                     .disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (editingAccount == nil && password.isEmpty) || domain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } else if displayedStatus == .registered {
@@ -752,6 +820,20 @@ struct SetupWizard: View {
             assistantInstructionsOverride: editingAccount?.assistantInstructionsOverride,
             assistantContextData: editingAccount?.assistantContextData
         )
+    }
+
+    private var editPlan: ManagedSIPAccountEditPlan? {
+        editingAccount.map {
+            managedSIPAccountEditPlan(original: $0, updated: account, replacementPassword: password)
+        }
+    }
+
+    private var requiresRegistrationTest: Bool {
+        editPlan?.requiresRegistrationTest ?? true
+    }
+
+    private var wizardStepTitles: [String] {
+        ["Provider", "Credentials", requiresRegistrationTest ? "Test" : "Test not needed"]
     }
 
     private var displayedStatus: RegistrationStatus {
@@ -864,22 +946,40 @@ struct SetupWizard: View {
         focusedField = nil
     }
 
-    private func startRegistrationTest() {
+    private func saveAccount() {
         submissionError = nil
-        step = 2
         let account = account
         let password = password
-        Task { @MainActor in
-            do {
-                if let editingSIPAddress {
-                    try phone.editManagedAccountAndTest(account, replacing: editingSIPAddress, password: password)
-                    self.editingSIPAddress = account.sipAddress
-                } else {
-                    try phone.saveManagedAccountAndTest(account, password: password)
-                }
-            } catch {
-                submissionError = error.localizedDescription
+        do {
+            if let editingSIPAddress {
+                let plan = managedSIPAccountEditPlan(
+                    original: editingAccount ?? account,
+                    updated: account,
+                    replacementPassword: password
+                )
+                if plan.requiresRegistrationTest { step = 2 }
+                let performedPlan = try phone.editManagedAccount(
+                    account,
+                    replacing: editingSIPAddress,
+                    password: password
+                )
+                self.editingSIPAddress = account.sipAddress
+                if !performedPlan.requiresRegistrationTest { dismiss() }
+            } else {
+                step = 2
+                try phone.saveManagedAccountAndTest(account, password: password)
             }
+        } catch {
+            submissionError = error.localizedDescription
+        }
+    }
+
+    private func retryRegistrationTest() {
+        submissionError = nil
+        do {
+            try phone.restartManagedAccountRegistrationTest()
+        } catch {
+            submissionError = error.localizedDescription
         }
     }
 }
