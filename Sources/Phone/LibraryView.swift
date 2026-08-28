@@ -18,10 +18,10 @@ struct LibraryView: View {
                 .navigationSplitViewColumnWidth(min: 250, ideal: 300, max: 380)
         } detail: {
             detail
-        }
-        .inspector(isPresented: $isAssistantInspectorPresented) {
-            AssistantCallInspector(phone: phone)
-                .inspectorColumnWidth(min: 320, ideal: 350, max: 380)
+                .inspector(isPresented: $isAssistantInspectorPresented) {
+                    AssistantCallInspector(phone: phone)
+                        .inspectorColumnWidth(min: 300, ideal: 330, max: 360)
+                }
         }
         .searchable(text: $query, placement: .sidebar, prompt: "Search calls")
         .toolbar {
@@ -61,7 +61,7 @@ struct LibraryView: View {
                 await loadUtterances(for: selection?.callID)
             }
         }
-        .frame(minWidth: 980, idealWidth: 1_100, minHeight: 640, idealHeight: 700)
+        .frame(minWidth: 720, idealWidth: 1_100, minHeight: 560, idealHeight: 700)
     }
 
     private var sidebar: some View {
@@ -564,21 +564,23 @@ private struct AssistantCallInspector: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
                     Label("Assistant Call", systemImage: "sparkles")
-                        .font(.title2.weight(.semibold))
+                        .font(.headline)
+                        .foregroundStyle(.purple)
                     Text("Describe the outcome, then review the brief before calling.")
-                        .font(.subheadline)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text("What should the assistant do?")
-                        .font(.headline)
+                        .font(.subheadline.weight(.semibold))
                     TextEditor(text: $rawIntent)
                         .font(.body)
-                        .frame(minHeight: 100)
+                        .frame(minHeight: 88)
                         .padding(6)
                         .scrollContentBackground(.hidden)
                         .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
@@ -616,13 +618,13 @@ private struct AssistantCallInspector: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text("Generated task brief")
-                        .font(.headline)
+                        .font(.subheadline.weight(.semibold))
                     ZStack(alignment: .topLeading) {
                         TextEditor(text: $taskBrief)
                             .font(.body)
-                            .frame(minHeight: 150)
+                            .frame(minHeight: 140)
                             .padding(6)
                             .scrollContentBackground(.hidden)
                         if taskBrief.isEmpty {
@@ -630,7 +632,7 @@ private struct AssistantCallInspector: View {
                                 .font(.body)
                                 .foregroundStyle(.tertiary)
                                 .padding(.horizontal, 11)
-                                .padding(.vertical, 14)
+                                .padding(.vertical, 6)
                                 .allowsHitTesting(false)
                         }
                     }
@@ -643,15 +645,21 @@ private struct AssistantCallInspector: View {
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Call from")
-                        .font(.headline)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Number to call")
+                        .font(.subheadline.weight(.semibold))
+                    TextField("Phone number or SIP address", text: $phone.number)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 14, design: .rounded))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(.primary.opacity(0.12))
+                        }
                     PhoneAccountPicker(phone: phone, presentation: .labeled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    TextField("Phone number or SIP address", text: $phone.number)
-                        .textFieldStyle(.roundedBorder)
-                        .controlSize(.large)
-                        .font(.system(size: 15, design: .rounded))
                 }
 
                 Button {
