@@ -1431,33 +1431,51 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
+    private func switchAccountForControl(_ accountQuery: String?) -> ControlError? {
+        guard let accountQuery else { return nil }
+        let query = accountQuery.lowercased()
+        guard let match = managedAccounts.first(where: {
+            $0.label?.lowercased() == query
+                || $0.username.lowercased() == query
+                || $0.sipAddress.lowercased() == query
+        }) else {
+            return ControlError(code: "unknown_account", message: "No configured account matches '\(accountQuery)'.")
+        }
+        do {
+            try selectManagedAccount(match)
+            return nil
+        } catch {
+            return ControlError(code: "invalid_state", message: "Cannot switch account: \(error.localizedDescription)")
+        }
+    }
+
     private func handleControlCommand(_ command: ControlCommand) -> ControlResponse {
         guard hasRegisteredAccount else {
             return .failure(ControlError(code: "not_registered", message: "Phone is not registered with a SIP provider."))
         }
         switch command {
         case .dial(let target, let accountQuery):
-            if let accountQuery {
-                let query = accountQuery.lowercased()
-                guard let match = managedAccounts.first(where: {
-                    $0.label?.lowercased() == query
-                        || $0.username.lowercased() == query
-                        || $0.sipAddress.lowercased() == query
-                }) else {
-                    return .failure(ControlError(code: "unknown_account", message: "No configured account matches '\(accountQuery)'."))
-                }
-                do {
-                    try selectManagedAccount(match)
-                } catch {
-                    return .failure(ControlError(code: "invalid_state", message: "Cannot switch account: \(error.localizedDescription)"))
-                }
-            }
+            if let error = switchAccountForControl(accountQuery) { return .failure(error) }
             guard state.isReady else {
                 return .failure(ControlError(code: "invalid_state", message: "Phone is not ready to dial."))
             }
             number = target
             dial()
             return .success(.object(["state": .string("dialing"), "target": .string(target)]))
+        case .assistantCall(let target, let task, let accountQuery):
+            if let error = switchAccountForControl(accountQuery) { return .failure(error) }
+            guard state.isReady else {
+                return .failure(ControlError(code: "invalid_state", message: "Phone is not ready to dial."))
+            }
+            guard isGeminiConfigured else {
+                return .failure(ControlError(code: "invalid_state", message: "No Gemini API key is configured for assistant calls."))
+            }
+            number = target
+            dialWithAssistant(task: task)
+            guard case .dialing = state else {
+                return .failure(ControlError(code: "invalid_state", message: "Assistant call could not be started."))
+            }
+            return .success(.object(["state": .string("dialing"), "target": .string(target), "assistant": .bool(true)]))
         case .answer:
             guard state.isRinging else {
                 return .failure(ControlError(code: "invalid_state", message: "There is no incoming call to answer."))

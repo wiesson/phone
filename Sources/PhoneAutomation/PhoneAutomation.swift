@@ -160,6 +160,7 @@ public func validatedDialTarget(_ value: String) -> String? {
 
 public enum ControlCommand: Equatable, Sendable {
     case dial(String, account: String?)
+    case assistantCall(String, task: String, account: String?)
     case answer
     case hangup
     case sendDTMF(String)
@@ -210,6 +211,27 @@ public enum ControlRequestParser {
                 account = nil
             }
             return .success(.dial(target, account: account))
+        case "assistant_call":
+            guard Set(args.keys).isSubset(of: ["number", "task", "account"]),
+                  case .string(let number) = args["number"],
+                  let target = validatedDialTarget(number),
+                  case .string(let rawTask) = args["task"] else {
+                return .failure(ControlError(code: "invalid_arguments", message: "assistant_call requires number and task, optionally account."))
+            }
+            let task = rawTask.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !task.isEmpty, task.utf8.count <= 4096 else {
+                return .failure(ControlError(code: "invalid_arguments", message: "task must be a non-empty string of at most 4096 bytes."))
+            }
+            let account: String?
+            if let value = args["account"] {
+                guard case .string(let name) = value, !name.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    return .failure(ControlError(code: "invalid_arguments", message: "account must be a non-empty string."))
+                }
+                account = name.trimmingCharacters(in: .whitespaces)
+            } else {
+                account = nil
+            }
+            return .success(.assistantCall(target, task: task, account: account))
         case "answer":
             return noArguments(args, command: .answer)
         case "hangup":
@@ -276,6 +298,7 @@ public enum MCPProtocol {
 
     public static let tools: [JSONValue] = [
         tool("dial", "Dial a phone number or SIP address. Optionally select the outgoing line first via account (label, username, or SIP address of a configured account).", properties: ["number": schema("string"), "account": schema("string")], required: ["number"]),
+        tool("assistant_call", "Place an outbound call handled by the AI voice assistant. The task describes what the assistant should accomplish on the call (goal, tone, key details); it navigates IVR menus itself and hands over to the user when a human answers.", properties: ["number": schema("string"), "task": schema("string"), "account": schema("string")], required: ["number", "task"]),
         tool("answer", "Answer the incoming call."),
         tool("hangup", "Hang up the active call."),
         tool("send_dtmf", "Send a DTMF digit during the active call.", properties: ["digit": .object(["type": .string("string"), "pattern": .string("^[0-9*#]$")])], required: ["digit"]),

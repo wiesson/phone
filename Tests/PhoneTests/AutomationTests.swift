@@ -34,6 +34,11 @@ import Testing
     let badAccount = Data(#"{"cmd":"dial","args":{"number":"+4930123456","account":"  "}}"#.utf8)
     #expect(throws: ControlError.self) { try ControlRequestParser.parse(badAccount).get() }
 
+    let assistantCall = Data(#"{"cmd":"assistant_call","args":{"number":"+4930123456","task":" Bestelle eine Pizza. ","account":"sipgate"}}"#.utf8)
+    #expect(try ControlRequestParser.parse(assistantCall).get() == .assistantCall("+4930123456", task: "Bestelle eine Pizza.", account: "sipgate"))
+    let emptyTask = Data(#"{"cmd":"assistant_call","args":{"number":"+4930123456","task":"  "}}"#.utf8)
+    #expect(throws: ControlError.self) { try ControlRequestParser.parse(emptyTask).get() }
+
     let history = Data(#"{"cmd":"get_history","args":{"limit":7}}"#.utf8)
     #expect(try ControlRequestParser.parse(history).get() == .getHistory(7))
 
@@ -86,7 +91,7 @@ import Testing
         guard case .object(let object) = tool, case .string(let name) = object["name"] else { return nil }
         return name
     }
-    #expect(names == ["dial", "answer", "hangup", "send_dtmf", "get_state", "get_history", "get_last_summary"])
+    #expect(names == ["dial", "assistant_call", "answer", "hangup", "send_dtmf", "get_state", "get_history", "get_last_summary"])
     for tool in tools {
         guard case .object(let object) = tool, case .object(let schema) = object["inputSchema"] else {
             Issue.record("Tool is missing an input schema")
