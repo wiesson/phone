@@ -13,7 +13,8 @@ let package = Package(
         .executableTarget(
             name: "Phone",
             dependencies: ["PhoneAutomation"],
-            swiftSettings: [.unsafeFlags(["-parse-as-library"])]
+            swiftSettings: [.unsafeFlags(["-parse-as-library"])],
+            linkerSettings: [.linkedLibrary("sqlite3")]
         ),
         .executableTarget(
             name: "phone-mcp",
