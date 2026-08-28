@@ -576,6 +576,28 @@ struct PhoneSettingsView: View {
         .padding(24)
     }
 
+    private var knownGeminiModels: [String] { [defaultGeminiLiveModel, "gemini-3.5-live-translate-preview"] }
+
+    private var isCustomModel: Bool {
+        !geminiLiveModel.isEmpty && !knownGeminiModels.contains(geminiLiveModel)
+    }
+
+    private var modelChoice: Binding<String> {
+        Binding(
+            get: {
+                let value = geminiLiveModel.isEmpty ? defaultGeminiLiveModel : geminiLiveModel
+                return knownGeminiModels.contains(value) ? value : "custom"
+            },
+            set: { choice in
+                if choice == "custom" {
+                    if knownGeminiModels.contains(geminiLiveModel) || geminiLiveModel.isEmpty { geminiLiveModel = " " }
+                } else {
+                    geminiLiveModel = choice == defaultGeminiLiveModel ? "" : choice
+                }
+            }
+        )
+    }
+
     private var assistantSettings: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -603,9 +625,20 @@ struct PhoneSettingsView: View {
                 }
 
                 LabeledContent("Model") {
-                    TextField(defaultGeminiLiveModel, text: $geminiLiveModel)
-                        .textFieldStyle(.roundedBorder)
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Picker("", selection: modelChoice) {
+                            Text("Assistant · gemini-3.1-flash-live-preview").tag(defaultGeminiLiveModel)
+                            Text("Live translation · gemini-3.5-live-translate-preview").tag("gemini-3.5-live-translate-preview")
+                            Text("Custom …").tag("custom")
+                        }
+                        .labelsHidden()
                         .frame(maxWidth: 300)
+                        if isCustomModel {
+                            TextField("model id", text: $geminiLiveModel)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 300)
+                        }
+                    }
                 }
 
                 HStack {
