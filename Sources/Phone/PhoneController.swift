@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Darwin
 import Foundation
+import PhoneAutomation
 import UserNotifications
 
 func normalizedDialTarget(from url: URL) -> String? {
@@ -108,6 +109,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     @Published private(set) var geminiLiveState: GeminiLiveState = .off
     @Published private(set) var isGeminiConfigured = false
     @Published private(set) var isAutoAnswerArmed = false
+    @Published private(set) var automationStatus: String?
 
     private var process: Process?
     private var input: Pipe?
@@ -125,6 +127,11 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private var contacts: [String: String] = [:]
     private var hasRegisteredAccount = false
     private var isShuttingDown = false
+    private var hasActiveEventCall = false
+    private var automationStatusTask: Task<Void, Never>?
+    private let eventBus = PhoneEventBus()
+    private let webhookTransport = PhoneWebhookTransport()
+    private let controlServer = PhoneControlServer()
 
     private var diagnosticLogURL: URL {
         applicationSupportDirectory.appendingPathComponent("phone.log")
@@ -132,6 +139,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private var pidFileURL: URL {
         applicationSupportDirectory.appendingPathComponent("baresip.pid")
+    }
+
+    private var controlSocketURL: URL {
+        applicationSupportDirectory.appendingPathComponent("control.sock")
     }
 
     var activeManagedAccount: ManagedSIPAccount? {
@@ -147,6 +158,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     var activityStatus: String {
+        if let automationStatus { return automationStatus }
         if isAutoAnswerArmed { return "Assistant will answer" }
         return switch geminiLiveState {
         case .off: intelligenceStatus
@@ -158,6 +170,20 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     override init() {
         super.init()
+        eventBus.subscribe { [weak self] event in
+            self?.webhookTransport.deliver(event)
+        }
+        webhookTransport.onFailure = { [weak self] message in
+            self?.showAutomationStatus(message)
+        }
+        controlServer.onCommand = { [weak self] command in
+            await MainActor.run {
+                guard let self else {
+                    return .failure(ControlError(code: "unavailable", message: "Phone control is unavailable."))
+                }
+                return self.handleControlCommand(command)
+            }
+        }
         let defaults = UserDefaults.standard
         let result = decodeManagedSIPAccounts(
             accountsData: defaults.data(forKey: "managedSIPAccounts"),
@@ -184,8 +210,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     func start() {
         do {
             try prepareRuntime()
+            try controlServer.start(at: controlSocketURL.path)
         } catch {
             state = .error("Phone data could not be prepared")
+            phoneDiagnosticLog("phone-app: startup preparation failed\n")
             return
         }
         loadUnmanagedAccountAOR()
@@ -268,15 +296,16 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     func dial() {
         guard state.isReady else { return }
-        let value = number.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty, !value.contains("\n"), !value.contains("\r") else {
+        guard let value = validatedDialTarget(number) else {
             state = .error("Please enter a valid number")
             return
         }
         number = value
         UserDefaults.standard.set(value, forKey: "lastDialedNumber")
         currentDirection = .outgoing
+        hasActiveEventCall = true
         state = .dialing(value)
+        eventBus.publish(.callOutgoing(target: value))
         send("/dial \(value)")
     }
 
@@ -298,6 +327,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         clearIncomingCallNotification()
         recordCall(missed: false)
         send("/hangup")
+        finishCall(missed: false)
         state = .ready
     }
 
@@ -371,6 +401,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     func sendDTMF(_ digit: Character) {
         guard state.isConnected, "0123456789*#".contains(digit) else { return }
         send("/sndcode \(digit)")
+        eventBus.publish(.callDTMF(digit: String(digit)))
     }
 
     /// Handles tel:, callto:, and sip: URLs from other applications.
@@ -410,6 +441,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         clearIncomingCallNotification()
         stopGeminiLive()
         audioTap.stop()
+        controlServer.stop()
         stopBaresipAndWait()
     }
 
@@ -704,7 +736,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         process = nil
         input = nil
         try? FileManager.default.removeItem(at: pidFileURL)
-        if intelligenceRunning || geminiLiveState != .off { finishCall() }
+        if hasActiveEventCall { finishCall() }
+        hasRegisteredAccount = false
         if registrationStatus == .registering {
             registrationStatus = .failed("baresip stopped before registration completed")
         }
@@ -751,20 +784,26 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             if case .starting = state { state = .ready }
             if UserDefaults.standard.bool(forKey: "sipTrace") { send("/siptrace") }
         case .registrationFailed(let failure):
+            hasRegisteredAccount = false
             registrationStatus = .failed(failure)
             state = .error(failure)
         case .incoming:
+            guard !state.isRinging else { return }
             let caller = callerName(from: line)
             currentDirection = .incoming
+            hasActiveEventCall = true
             state = .ringing(caller)
+            eventBus.publish(.callIncoming(peer: caller))
             showIncomingCallNotification(caller: caller)
             armAutoAnswerIfNeeded()
         case .established:
+            guard !state.isConnected else { return }
             pendingDialRetry = nil
             let startsAssistant = startsAssistantWhenConnected
             cancelAutoAnswer(resetAssistant: false)
             startsAssistantWhenConnected = false
             state = .connected(state.peer)
+            eventBus.publish(.callAnswered(peer: state.peer))
             clearIncomingCallNotification()
             beginCallIntelligence()
             if startsAssistant { startGeminiLive(sendsInitialGreeting: true) }
@@ -804,11 +843,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             let missed = state.isRinging
             let caller = state.peer
             recordCall(missed: missed)
-            finishCall()
+            finishCall(missed: missed)
             state = hasRegisteredAccount ? .ready : .starting
             clearIncomingCallNotification()
             if missed { showMissedCallNotification(caller: caller) }
         case .noAccounts(let failure):
+            hasRegisteredAccount = false
             registrationStatus = .failed(failure.isEmpty ? "No SIP account configured" : failure)
             state = .error("No SIP account configured")
         }
@@ -894,6 +934,92 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     func clearHistory() {
         history = []
         UserDefaults.standard.removeObject(forKey: "callHistory")
+    }
+
+    private func showAutomationStatus(_ message: String) {
+        automationStatusTask?.cancel()
+        automationStatus = message
+        automationStatusTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(8))
+            } catch {
+                return
+            }
+            self?.automationStatus = nil
+            self?.automationStatusTask = nil
+        }
+    }
+
+    private func handleControlCommand(_ command: ControlCommand) -> ControlResponse {
+        guard hasRegisteredAccount else {
+            return .failure(ControlError(code: "not_registered", message: "Phone is not registered with a SIP provider."))
+        }
+        switch command {
+        case .dial(let target):
+            guard state.isReady else {
+                return .failure(ControlError(code: "invalid_state", message: "Phone is not ready to dial."))
+            }
+            number = target
+            dial()
+            return .success(.object(["state": .string("dialing"), "target": .string(target)]))
+        case .answer:
+            guard state.isRinging else {
+                return .failure(ControlError(code: "invalid_state", message: "There is no incoming call to answer."))
+            }
+            answer()
+            return .success(.object(["state": .string("answering")]))
+        case .hangup:
+            guard state.isInCall else {
+                return .failure(ControlError(code: "invalid_state", message: "There is no active call to hang up."))
+            }
+            hangup()
+            return .success(.object(["state": .string("ready")]))
+        case .sendDTMF(let digit):
+            guard state.isConnected, let character = digit.first else {
+                return .failure(ControlError(code: "invalid_state", message: "DTMF requires a connected call."))
+            }
+            sendDTMF(character)
+            return .success(.object(["digit": .string(digit)]))
+        case .getState:
+            return .success(.object([
+                "state": .string(controlStateName),
+                "peer": state.peer.map(JSONValue.string) ?? .null,
+                "registered": .bool(hasRegisteredAccount),
+                "muted": .bool(isMuted)
+            ]))
+        case .getHistory(let limit):
+            let formatter = ISO8601DateFormatter()
+            let records = history.prefix(limit).map { record in
+                JSONValue.object([
+                    "id": .string(record.id.uuidString),
+                    "direction": .string(record.direction.rawValue),
+                    "peer": record.peer.map(JSONValue.string) ?? .null,
+                    "timestamp": .string(formatter.string(from: record.date)),
+                    "duration": .double(record.duration),
+                    "missed": .bool(record.missed)
+                ])
+            }
+            return .success(.array(records))
+        case .getLastSummary:
+            guard let summary else { return .success(.null) }
+            return .success(.object([
+                "text": .string(summary.text),
+                "timestamp": .string(ISO8601DateFormatter().string(from: summary.createdAt))
+            ]))
+        }
+    }
+
+    private var controlStateName: String {
+        switch state {
+        case .stopped: "stopped"
+        case .starting: "starting"
+        case .ready: "ready"
+        case .ringing: "ringing"
+        case .dialing: "dialing"
+        case .answering: "answering"
+        case .connected: "connected"
+        case .error: "error"
+        }
     }
 
     private func recordCall(missed: Bool) {
@@ -997,6 +1123,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return }
         let isAssistant = speaker == .me && geminiLiveState == .live
+        var didFinalize = false
         if transcript.isEmpty { appendDiagnostic("phone-app: first transcript result received\n") }
         if let draftID = draftIDs[speaker], let index = transcript.firstIndex(where: { $0.id == draftID }) {
             guard transcript[index].text != cleaned ||
@@ -1005,7 +1132,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             transcript[index].text = cleaned
             transcript[index].isFinal = isFinal
             if isAssistant { transcript[index].isAssistant = true }
-            if isFinal { draftIDs[speaker] = nil }
+            if isFinal {
+                draftIDs[speaker] = nil
+                didFinalize = true
+            }
         } else {
             let entry = TranscriptEntry(
                 speaker: speaker,
@@ -1016,13 +1146,24 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             )
             transcript.append(entry)
             if !isFinal { draftIDs[speaker] = entry.id }
+            didFinalize = isFinal
+        }
+        if didFinalize {
+            let label = isAssistant ? "Assistant" : speaker.title
+            eventBus.publish(.transcriptFinal(speaker: label, text: cleaned))
         }
     }
 
-    private func finishCall() {
+    private func finishCall(missed: Bool = false) {
         cancelAutoAnswer()
         stopGeminiLive()
         isMuted = false
+        let peer = state.peer
+        let duration = callStartedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
+        if hasActiveEventCall {
+            hasActiveEventCall = false
+            eventBus.publish(.callHungup(peer: peer, duration: duration, missed: missed))
+        }
         let counts = audioTap.drainFrameCounts()
         appendDiagnostic("phone-app: audio frames this call — me: \(counts[.me] ?? 0), caller: \(counts[.caller] ?? 0)\n")
         guard intelligenceRunning else {
@@ -1039,6 +1180,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 let text = try await intelligence.summarize(entries: entries)
                 await MainActor.run {
                     self.summary = CallSummary(text: text, createdAt: Date())
+                    self.eventBus.publish(.callSummary(text: text))
                     self.intelligenceStatus = "Processed locally"
                     if !self.retainTranscript { self.clearConversation() }
                 }
