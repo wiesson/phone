@@ -245,8 +245,8 @@ static void send_frame(const struct auframe *frame, uint8_t direction)
 static int encode(struct aufilt_enc_st *state, struct auframe *frame)
 {
     (void)state;
-    send_frame(frame, PHONE_DIRECTION_TX);
     inject_frame(frame);
+    send_frame(frame, PHONE_DIRECTION_TX);
     return 0;
 }
 

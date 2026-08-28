@@ -51,7 +51,7 @@ struct PhonePanel: View {
                 }
                 Text(phone.activityStatus)
                     .font(.system(size: 10))
-                    .foregroundStyle(phone.geminiLiveState == .off ? Color.secondary.opacity(0.7) : Color.purple)
+                    .foregroundStyle(phone.geminiLiveState == .off && !phone.isAutoAnswerArmed ? Color.secondary.opacity(0.7) : Color.purple)
                     .lineLimit(1)
             }
             Spacer()
@@ -240,10 +240,13 @@ struct PhonePanel: View {
             } else {
                 ForEach(phone.transcript.suffix(2)) { entry in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(entry.speaker.title)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(entry.speaker == .me ? .blue : .purple)
-                            .frame(width: 42, alignment: .leading)
+                        Label(
+                            entry.speakerTitle,
+                            systemImage: entry.isAssistant ? "sparkles" : (entry.speaker == .me ? "person.fill" : "phone.fill")
+                        )
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(entry.isAssistant ? .orange : (entry.speaker == .me ? .blue : .purple))
+                        .frame(width: 72, alignment: .leading)
                         Text(entry.text)
                             .font(.system(size: 12))
                             .foregroundStyle(entry.isFinal ? .primary : .secondary)
@@ -401,20 +404,28 @@ struct ConversationView: View {
 private struct TranscriptRow: View {
     let entry: TranscriptEntry
 
+    private var tint: Color {
+        entry.isAssistant ? .orange : (entry.speaker == .me ? .blue : .purple)
+    }
+
+    private var symbol: String {
+        entry.isAssistant ? "sparkles" : (entry.speaker == .me ? "person.fill" : "phone.fill")
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             Circle()
-                .fill((entry.speaker == .me ? Color.blue : Color.purple).opacity(0.14))
+                .fill(tint.opacity(0.14))
                 .frame(width: 34, height: 34)
                 .overlay {
-                    Image(systemName: entry.speaker == .me ? "person.fill" : "phone.fill")
+                    Image(systemName: symbol)
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(entry.speaker == .me ? .blue : .purple)
+                        .foregroundStyle(tint)
                 }
             VStack(alignment: .leading, spacing: 4) {
-                Text(entry.speaker.title)
+                Text(entry.speakerTitle)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(entry.isAssistant ? tint : .secondary)
                 Text(entry.text)
                     .font(.system(size: 15))
                     .textSelection(.enabled)
@@ -473,6 +484,9 @@ struct PhoneSettingsView: View {
     @AppStorage("transcriptionLocale") private var transcriptionLocale = ""
     @AppStorage("showDockIcon") private var showDockIcon = false
     @AppStorage("geminiLiveModel") private var geminiLiveModel = defaultGeminiLiveModel
+    @AppStorage("assistantAnswersIncomingCalls") private var assistantAnswersIncomingCalls = false
+    @AppStorage("assistantAnswerDelay") private var assistantAnswerDelay = 5
+    @AppStorage("assistantInstructions") private var assistantInstructions = defaultAssistantInstructions
     @State private var geminiAPIKey = ""
     @State private var geminiSettingsMessage: String?
     @State private var selectedAccountAddress: String?
@@ -490,7 +504,7 @@ struct PhoneSettingsView: View {
             phoneSettings
                 .tabItem { Label("Phone", systemImage: "phone") }
         }
-        .frame(width: 520, height: 360)
+        .frame(width: 520, height: 580)
         .alert(
             accountToRemove.map { "Remove \($0.displayName)?" } ?? "Remove account?",
             isPresented: isConfirmingRemoval
@@ -538,64 +552,87 @@ struct PhoneSettingsView: View {
     }
 
     private var assistantSettings: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text("Gemini Live call bridge")
-                        .font(.headline)
-                    Text("BETA")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.purple)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.purple.opacity(0.12), in: Capsule())
-                }
-                Text("When you turn it on during a call, caller audio is streamed to Google and Gemini's audio is sent back into the call.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            LabeledContent("API key") {
-                SecureField(phone.isGeminiConfigured ? "Configured" : "Required", text: $geminiAPIKey)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 300)
-            }
-
-            LabeledContent("Model") {
-                TextField(defaultGeminiLiveModel, text: $geminiLiveModel)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 300)
-            }
-
-            HStack {
-                Button("Save API Key", action: saveGeminiAPIKey)
-                    .disabled(geminiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                if let geminiSettingsMessage {
-                    Text(geminiSettingsMessage)
-                        .font(.caption)
-                        .foregroundStyle(geminiSettingsMessage == "API key saved." ? .green : .orange)
-                } else if phone.isGeminiConfigured {
-                    Text("An API key is configured.")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text("Gemini Live call bridge")
+                            .font(.headline)
+                        Text("BETA")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.purple)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.purple.opacity(0.12), in: Capsule())
+                    }
+                    Text("When active, caller audio is streamed to Google and Gemini audio is sent back into the call.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                LabeledContent("API key") {
+                    SecureField(phone.isGeminiConfigured ? "Configured" : "Required", text: $geminiAPIKey)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 300)
+                }
+
+                LabeledContent("Model") {
+                    TextField(defaultGeminiLiveModel, text: $geminiLiveModel)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 300)
+                }
+
+                HStack {
+                    Button("Save API Key", action: saveGeminiAPIKey)
+                        .disabled(geminiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if let geminiSettingsMessage {
+                        Text(geminiSettingsMessage)
+                            .font(.caption)
+                            .foregroundStyle(geminiSettingsMessage == "API key saved." ? .green : .orange)
+                    } else if phone.isGeminiConfigured {
+                        Text("An API key is configured.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Divider()
+
+                Toggle("Assistant answers incoming calls", isOn: $assistantAnswersIncomingCalls)
+                Stepper(
+                    "Answer after \(assistantAnswerDelay) seconds",
+                    value: $assistantAnswerDelay,
+                    in: 0...30
+                )
+                .disabled(!assistantAnswersIncomingCalls)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Assistant instructions")
+                        .fontWeight(.medium)
+                    TextEditor(text: $assistantInstructions)
+                        .font(.system(size: 12))
+                        .frame(minHeight: 100)
+                        .padding(5)
+                        .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+                    Text("Add useful business context such as opening hours, services, or preferred callback details.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Label {
+                    Text("Manual bridge controls remain available during calls. Local transcription stays independent.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "hand.raised.fill")
+                        .foregroundStyle(.purple)
                 }
             }
-
-            Divider()
-
-            Label {
-                Text("The bridge is off by default and never starts automatically. Local transcription remains independent.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } icon: {
-                Image(systemName: "hand.raised.fill")
-                    .foregroundStyle(.purple)
-            }
-            Spacer()
+            .padding(24)
         }
-        .padding(24)
     }
 
     private var phoneSettings: some View {

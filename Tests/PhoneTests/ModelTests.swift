@@ -39,6 +39,31 @@ import Testing
     #expect(CallState.error("Registration failed").label == "Registration failed")
 }
 
+@Test func roundTripsAssistantTranscriptEntryThroughJSON() throws {
+    let entry = TranscriptEntry(
+        id: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+        speaker: .me,
+        text: "Guten Tag.",
+        isFinal: true,
+        isAssistant: true,
+        createdAt: Date(timeIntervalSince1970: 1_725_000_000)
+    )
+
+    let data = try JSONEncoder().encode(entry)
+    let decoded = try JSONDecoder().decode(TranscriptEntry.self, from: data)
+
+    #expect(decoded == entry)
+    #expect(decoded.isAssistant)
+    #expect(decoded.speakerTitle == "Assistant")
+}
+
+@Test func transcriptEntryDefaultsToHumanSpeaker() {
+    let entry = TranscriptEntry(speaker: .me, text: "Hello", isFinal: true, createdAt: Date())
+
+    #expect(!entry.isAssistant)
+    #expect(entry.speakerTitle == "Me")
+}
+
 @Test func roundTripsCallRecordThroughJSON() throws {
     let record = CallRecord(
         id: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
