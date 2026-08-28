@@ -176,6 +176,15 @@ The most important baresip commands are:
 - `b` — reject a call or hang up
 - `/quit` — shut baresip down cleanly
 
+## Experimental: Gemini Live bridge
+
+The Gemini Live call bridge is a beta feature and is off by default. Configure
+a Gemini API key and model under Settings > Assistant, then use the sparkles
+button during an active call to start or stop it. While active, caller audio is
+streamed to Google's Gemini Live API and generated audio is injected into the
+call. Review Google's data and privacy terms before enabling it. Local
+transcription remains independent and can continue alongside the bridge.
+
 ## Privacy
 
 - SIP credentials stay in
