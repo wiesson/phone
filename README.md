@@ -144,6 +144,7 @@ Useful scripts:
 | `scripts/build-audio-tap.sh` | link baresip modules and build the local audio module |
 | `scripts/build-app.sh` | build the Swift app and produce `dist/Phone.app` |
 | `scripts/run.sh` | build and open the app |
+| `scripts/e2e-live-test.sh` | live call between two of your own numbers over the real provider |
 | `scripts/integration-test.sh` | run a provider-free baresip loopback call |
 
 Run the loopback integration test with:
