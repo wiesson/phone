@@ -73,7 +73,7 @@ enum AssistantProfile: String, CaseIterable, Codable, Identifiable, Sendable {
         case .hotelDemo:
             "Du bist die freundliche Telefonrezeption des fiktiven Hotels 'Strandhof' (Demo). Beantworte Fragen zu Verfügbarkeit und Preisen NUR anhand der folgenden Daten, erfinde nichts darüber hinaus. Nimm Reservierungswünsche mit Name und Rückrufnummer entgegen und bestätige sie als vorgemerkt (Demo, keine echte Buchung)."
         case .travelIntake:
-            "Du bist der Reise-Anfrage-Assistent eines Reisebüros. Nimm die Anfrage strukturiert auf und frage gezielt nach, bis du hast: Reiseziel/Region, Zeitraum oder Dauer, Anzahl und Alter der Reisenden, Budgetrahmen, Anlass und Vorlieben (z. B. Strand, Aktiv, Kultur), besondere Wünsche, Name und Rückrufnummer. Fasse am Ende alles kurz zusammen und bestätige, dass sich das Büro mit einem Angebot meldet."
+            "Du bist der Telefon-Assistent eines Reisebüros (Demo). Es gibt zwei Anliegen:\n1) NEUE ANFRAGE: Nimm die Anfrage strukturiert auf und frage gezielt nach, bis du hast: Reiseziel/Region, Zeitraum oder Dauer, Anzahl und Alter der Reisenden, Budgetrahmen, Anlass und Vorlieben (z. B. Strand, Aktiv, Kultur), besondere Wünsche, Name und Rückrufnummer. Fasse am Ende alles kurz zusammen und bestätige, dass sich das Büro mit einem Angebot meldet.\n2) BESTEHENDE REISE: Wenn jemand nach einer gebuchten Reise fragt, verifiziere die Person zuerst: erfrage Nachnamen und Geburtsdatum und gleiche BEIDE mit den folgenden Buchungsdaten ab. Nur bei Übereinstimmung gibst du Auskunft (Reiseziel, Termine, Status, gebuchte Leistungen); bei Nichtübereinstimmung bittest du freundlich, sich mit der Buchungsnummer per E-Mail zu melden, und nennst keine Details. Erfinde keine Buchungen, die nicht in den Daten stehen."
         case .custom:
             ""
         }
@@ -82,9 +82,38 @@ enum AssistantProfile: String, CaseIterable, Codable, Identifiable, Sendable {
     func presetContextData(startingAt date: Date, calendar: Calendar = .current) -> String? {
         switch self {
         case .hotelDemo: hotelAvailabilityTable(startingAt: date, calendar: calendar)
-        case .personalAssistant, .travelIntake, .custom: nil
+        case .travelIntake: travelDemoBookings(startingAt: date, calendar: calendar)
+        case .personalAssistant, .custom: nil
         }
     }
+}
+
+func travelDemoBookings(startingAt date: Date, calendar: Calendar = .current) -> String {
+    var calendar = calendar
+    let start = calendar.startOfDay(for: date)
+    let formatter = DateFormatter()
+    formatter.calendar = calendar
+    formatter.locale = Locale(identifier: "de_DE_POSIX")
+    formatter.timeZone = calendar.timeZone
+    formatter.dateFormat = "dd.MM.yyyy"
+    func day(_ offset: Int) -> String {
+        formatter.string(from: calendar.date(byAdding: .day, value: offset, to: start) ?? start)
+    }
+    return """
+    Buchungsdaten (Demo, vertraulich — nur nach Verifikation herausgeben):
+
+    Buchung TRV-2417
+    Name: Petra Sommerfeld, Geburtsdatum: 14.03.1978
+    Reise: Rundreise Andalusien, \(day(21))–\(day(31)), 2 Erwachsene
+    Status: bestätigt, Restzahlung fällig am \(day(7))
+    Leistungen: Flug ab Düsseldorf, Mietwagen, 4 Hotels, Alhambra-Führung
+
+    Buchung TRV-2508
+    Name: Familie Brandt (Ansprechpartner Jonas Brandt), Geburtsdatum: 02.11.1985
+    Reise: Familienurlaub Kreta, \(day(42))–\(day(52)), 2 Erwachsene + 2 Kinder (6, 9)
+    Status: Angebot angenommen, Anzahlung eingegangen
+    Leistungen: Flug ab Köln, Familiensuite halbpension, Kinderclub
+    """
 }
 
 func hotelAvailabilityTable(startingAt date: Date, calendar: Calendar = .current) -> String {
