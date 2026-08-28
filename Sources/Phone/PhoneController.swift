@@ -724,6 +724,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             hasRegisteredAccount = true
             registrationStatus = .registered
             if case .starting = state { state = .ready }
+            if UserDefaults.standard.bool(forKey: "sipTrace") { send("/siptrace") }
         case .registrationFailed(let failure):
             registrationStatus = .failed(failure)
             state = .error(failure)
