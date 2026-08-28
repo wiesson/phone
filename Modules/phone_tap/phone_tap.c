@@ -4,6 +4,7 @@
 #include <rem.h>
 #include <baresip.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -268,6 +269,8 @@ static struct aufilt phone_tap = {
 static int module_init(void)
 {
     struct sockaddr_un inject_address;
+    const char *tap_path;
+    const char *configured_inject_path;
 
     tap_socket = socket(AF_UNIX, SOCK_DGRAM, 0);
     if (tap_socket < 0)
@@ -276,9 +279,18 @@ static int module_init(void)
     (void)fcntl(tap_socket, F_SETFL, O_NONBLOCK);
     memset(&tap_address, 0, sizeof(tap_address));
     tap_address.sun_family = AF_UNIX;
-    /* Per-user socket path, matching AudioTapServer.socketPath on the app side. */
-    (void)snprintf(tap_address.sun_path, sizeof(tap_address.sun_path),
-                   PHONE_TAP_SOCKET_FORMAT, (unsigned)getuid());
+    tap_path = getenv("PHONE_TAP_SOCKET");
+    if (tap_path && strlen(tap_path) >= sizeof(tap_address.sun_path)) {
+        close(tap_socket);
+        tap_socket = -1;
+        return ENAMETOOLONG;
+    }
+    if (tap_path && tap_path[0])
+        (void)snprintf(tap_address.sun_path, sizeof(tap_address.sun_path),
+                       "%s", tap_path);
+    else
+        (void)snprintf(tap_address.sun_path, sizeof(tap_address.sun_path),
+                       PHONE_TAP_SOCKET_FORMAT, (unsigned)getuid());
 
     inject_socket = socket(AF_UNIX, SOCK_DGRAM, 0);
     if (inject_socket < 0) {
@@ -290,8 +302,21 @@ static int module_init(void)
     (void)fcntl(inject_socket, F_SETFL, O_NONBLOCK);
     memset(&inject_address, 0, sizeof(inject_address));
     inject_address.sun_family = AF_UNIX;
-    (void)snprintf(inject_path, sizeof(inject_path),
-                   PHONE_INJECT_SOCKET_FORMAT, (unsigned)getuid());
+    configured_inject_path = getenv("PHONE_INJECT_SOCKET");
+    if (configured_inject_path &&
+        strlen(configured_inject_path) >= sizeof(inject_path)) {
+        close(inject_socket);
+        close(tap_socket);
+        inject_socket = -1;
+        tap_socket = -1;
+        return ENAMETOOLONG;
+    }
+    if (configured_inject_path && configured_inject_path[0])
+        (void)snprintf(inject_path, sizeof(inject_path), "%s",
+                       configured_inject_path);
+    else
+        (void)snprintf(inject_path, sizeof(inject_path),
+                       PHONE_INJECT_SOCKET_FORMAT, (unsigned)getuid());
     (void)snprintf(inject_address.sun_path, sizeof(inject_address.sun_path),
                    "%s", inject_path);
     (void)unlink(inject_path);

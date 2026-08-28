@@ -81,12 +81,16 @@ configuration" button opens the same location.
 When no existing account is present, Phone opens a three-step setup assistant.
 It includes presets for Deutsche Telekom, FRITZ!Box, sipgate, and Easybell, as
 well as custom SIP settings. Add and manage accounts from Settings > Phone.
-Accounts created by the assistant keep their passwords in the macOS Keychain
-and regenerate the protected baresip account file when Phone starts. All
-managed accounts register simultaneously. The active account is used only for
-outgoing calls, subject to the provider's caller-ID configuration. Existing
-hand-edited account files remain supported and are not changed until the setup
-assistant is used.
+Accounts created by the assistant keep their passwords in the macOS Keychain.
+Phone runs a separate baresip process for every managed number, with an isolated
+configuration, network connection, RTP port range, UUID, and audio bridge under
+`~/Library/Application Support/Phone/instances`. All managed accounts
+therefore register and remain reachable simultaneously. The active account
+selects the process used for outgoing calls; incoming calls retain the account
+and assistant profile of the process that received them. Phone presents one call
+at a time, so a second incoming call keeps ringing until the current call ends.
+Existing hand-edited account files remain supported and are not changed until
+the setup assistant is used.
 
 ### Per-number assistant profiles
 
@@ -263,9 +267,10 @@ to Google; review the Google data and privacy terms before enabling this mode.
 
 ## Privacy
 
-- SIP credentials stay in
-  `~/Library/Application Support/Phone/baresip/accounts`. The optional
-  development source at `runtime/baresip/accounts` is ignored by Git.
+- SIP credentials for managed accounts stay in protected per-number `accounts`
+  files below `~/Library/Application Support/Phone/instances`; manual
+  setups continue to use `~/Library/Application Support/Phone/baresip/accounts`.
+  The optional development source at `runtime/baresip/accounts` is ignored by Git.
 - Call audio is not persistently recorded.
 - Transcription and summarization run locally.
 - Diagnostic logs are written to

@@ -827,6 +827,12 @@ struct PhoneSettingsView: View {
                 Text("SIP accounts")
                     .font(.headline)
 
+                if let summary = phone.registrationSummary {
+                    Label(summary, systemImage: phone.registrationStatus == .registered ? "checkmark.circle.fill" : "network")
+                        .font(.caption)
+                        .foregroundStyle(phone.registrationStatus == .registered ? .green : .secondary)
+                }
+
                 if phone.managedAccounts.isEmpty {
                     VStack(alignment: .leading, spacing: 5) {
                         Label("Manual account file", systemImage: "doc.text")
@@ -998,6 +1004,7 @@ struct PhoneSettingsView: View {
                     .textSelection(.enabled)
             }
             Spacer()
+            registrationIndicator(for: account)
             Text(account.assistantProfile.displayName)
                 .font(.caption2.weight(.medium))
                 .padding(.horizontal, 7)
@@ -1015,6 +1022,25 @@ struct PhoneSettingsView: View {
             }
             .buttonStyle(.plain)
             .help("Remove account")
+        }
+    }
+
+
+    @ViewBuilder
+    private func registrationIndicator(for account: ManagedSIPAccount) -> some View {
+        switch phone.registrationStatus(for: account) {
+        case .idle:
+            Image(systemName: "circle")
+                .foregroundStyle(.secondary)
+        case .registering:
+            ProgressView()
+                .controlSize(.small)
+        case .registered:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .failed:
+            Image(systemName: "exclamationmark.circle.fill")
+                .foregroundStyle(.orange)
         }
     }
 
