@@ -21,6 +21,11 @@ final class PhoneAppDelegate: NSObject, NSApplicationDelegate {
         guard let url = urls.first else { return }
         controller?.handleDialURL(url)
     }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        NotificationCenter.default.post(name: .phoneOpenLibrary, object: nil)
+        return true
+    }
 }
 
 @main
@@ -46,6 +51,12 @@ struct PhoneApp: App {
             MenuBarPhoneLabel(model: phone.menuBar)
         }
         .menuBarExtraStyle(.window)
+
+        Window("Phone", id: "library") {
+            LibraryView(phone: phone, store: phone.store)
+        }
+        .defaultSize(width: 980, height: 680)
+        .windowResizability(.contentMinSize)
 
         Window("Conversation", id: "conversation") {
             ConversationView(phone: phone)
@@ -82,6 +93,9 @@ private struct MenuBarPhoneLabel: View {
             .onChange(of: model.setupRequest) { _, request in
                 if request > 0 { openSetup() }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .phoneOpenLibrary)) { _ in
+                openLibrary()
+            }
             .onChange(of: model.state.isConnected) { wasConnected, isConnected in
                 if !wasConnected && isConnected {
                     openWindow(id: "conversation")
@@ -93,6 +107,15 @@ private struct MenuBarPhoneLabel: View {
                     }
                 }
             }
+    }
+
+    private func openLibrary() {
+        openWindow(id: "library")
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            NSApp.windows.first { $0.identifier?.rawValue.contains("library") == true }?
+                .orderFrontRegardless()
+        }
     }
 
     private func openSetup() {

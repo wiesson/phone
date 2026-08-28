@@ -286,6 +286,18 @@ struct PhonePanel: View {
     private var footer: some View {
         HStack(spacing: 14) {
             Button {
+                NSApp.activate(ignoringOtherApps: true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    openWindow(id: "library")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            } label: {
+                Image(systemName: "rectangle.stack")
+            }
+            .buttonStyle(.plain)
+            .help("Open call library")
+
+            Button {
                 // From the menu bar popover, the settings window only opens
                 // reliably once the app is active and the popover has closed.
                 NSApp.activate(ignoringOtherApps: true)
@@ -426,7 +438,7 @@ struct ConversationView: View {
     }
 }
 
-private struct TranscriptRow: View {
+struct TranscriptRow: View {
     let entry: TranscriptEntry
 
     private var tint: Color {
@@ -461,7 +473,7 @@ private struct TranscriptRow: View {
     }
 }
 
-private struct SummaryCard: View {
+struct SummaryCard: View {
     let summary: CallSummary
 
     var body: some View {
@@ -506,6 +518,7 @@ struct PhoneSettingsView: View {
     @ObservedObject var phone: PhoneController
     @AppStorage("transcriptionEnabled") private var transcriptionEnabled = true
     @AppStorage("retainTranscript") private var retainTranscript = true
+    @AppStorage("archiveConversations") private var archiveConversations = true
     @AppStorage("transcriptionLocale") private var transcriptionLocale = ""
     @AppStorage("showDockIcon") private var showDockIcon = false
     @AppStorage("geminiLiveModel") private var geminiLiveModel = defaultGeminiLiveModel
@@ -523,6 +536,7 @@ struct PhoneSettingsView: View {
     @State private var selectedAccountAddress: String?
     @State private var accountToRemove: ManagedSIPAccount?
     @State private var accountError: String?
+    @State private var isConfirmingArchiveDeletion = false
 
     var body: some View {
         TabView {
@@ -548,6 +562,14 @@ struct PhoneSettingsView: View {
         } message: {
             Text("Its password will also be removed from Keychain.")
         }
+        .alert("Delete all archived conversations?", isPresented: $isConfirmingArchiveDeletion) {
+            Button("Delete All", role: .destructive) {
+                Task { await phone.deleteAllArchivedConversations() }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This removes all locally archived transcripts, summaries, and call metadata. Recent calls in the menu bar are unaffected.")
+        }
     }
 
     private var intelligenceSettings: some View {
@@ -555,6 +577,16 @@ struct PhoneSettingsView: View {
             Toggle("Transcribe calls live", isOn: $transcriptionEnabled)
             Toggle("Keep the last transcript after hanging up", isOn: $retainTranscript)
                 .disabled(!transcriptionEnabled)
+            Toggle("Archive conversations on this Mac", isOn: $archiveConversations)
+            Text("When enabled, final transcripts and summaries are stored locally on this Mac. Call metadata is always kept in the library.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Delete all archived conversations", role: .destructive) {
+                isConfirmingArchiveDeletion = true
+            }
+
+            Divider()
 
             Picker("Language", selection: $transcriptionLocale) {
                 Text("System (\(Locale.current.identifier))").tag("")
