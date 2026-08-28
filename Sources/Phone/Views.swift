@@ -133,7 +133,7 @@ struct PhonePanel: View {
                         phone.number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                         !phone.isGeminiConfigured
                     )
-                    .help(phone.isGeminiConfigured ? "Call with Assistant" : "Configure a Gemini API key in Settings")
+                    .help(phone.isGeminiConfigured ? "Call with Assistant" : "Configure the Assistant in Settings")
                     .popover(isPresented: $showAssistantCall, arrowEdge: .bottom) {
                         assistantCallPopover
                     }
@@ -176,7 +176,7 @@ struct PhonePanel: View {
                         .buttonBorderShape(.circle)
                         .tint(phone.isGeminiLiveActive ? .purple : nil)
                         .disabled(!phone.state.isConnected)
-                        .help(phone.isGeminiLiveActive ? "Stop Gemini Live" : "Start Gemini Live")
+                        .help(phone.isGeminiLiveActive ? "Stop Assistant" : "Start Assistant")
                     }
 
                     Button(action: phone.hangup) {
@@ -585,6 +585,7 @@ struct PhoneSettingsView: View {
     @AppStorage("transcriptionLocale") private var transcriptionLocale = ""
     @AppStorage("showDockIcon") private var showDockIcon = false
     @AppStorage("geminiLiveModel") private var geminiLiveModel = defaultGeminiLiveModel
+    @AppStorage("assistantBrainURL") private var assistantBrainURL = ""
     @AppStorage(assistantAnswerModeDefaultsKey) private var assistantAnswerMode: AssistantAnswerMode = .never
     @AppStorage(businessHoursDefaultsKey) private var businessHoursData = (try? JSONEncoder().encode(BusinessHoursSchedule())) ?? Data()
     @AppStorage("assistantAnswerDelay") private var assistantAnswerDelay = 5
@@ -718,12 +719,17 @@ struct PhoneSettingsView: View {
         )
     }
 
+    private var usesExternalBrain: Bool {
+        if case .brain = resolveAssistantLiveEndpoint(assistantBrainURL) { return true }
+        return false
+    }
+
     private var assistantSettings: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
-                        Text("Gemini Live call bridge")
+                        Text("Live call bridge")
                             .font(.headline)
                         Text("BETA")
                             .font(.caption2.weight(.bold))
@@ -732,14 +738,24 @@ struct PhoneSettingsView: View {
                             .padding(.vertical, 2)
                             .background(.purple.opacity(0.12), in: Capsule())
                     }
-                    Text("When active, caller audio is streamed to Google and Gemini audio is sent back into the call.")
+                    Text(usesExternalBrain ? "When active, call audio flows through the configured external brain." : "When active, caller audio is streamed to Google and Gemini audio is sent back into the call.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                LabeledContent("Brain URL") {
+                    TextField("ws://127.0.0.1:8791", text: $assistantBrainURL)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 300)
+                }
+                Text("Leave empty to connect to Gemini directly. A valid ws:// or wss:// URL does not require an API key in Phone.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 LabeledContent("API key") {
-                    SecureField(phone.isGeminiConfigured ? "Configured" : "Required", text: $geminiAPIKey)
+                    SecureField(usesExternalBrain ? "Not required in brain mode" : (phone.isGeminiConfigured ? "Configured" : "Required"), text: $geminiAPIKey)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 300)
                 }
@@ -768,6 +784,10 @@ struct PhoneSettingsView: View {
                         Text(geminiSettingsMessage)
                             .font(.caption)
                             .foregroundStyle(geminiSettingsMessage == "API key saved." ? .green : .orange)
+                    } else if usesExternalBrain {
+                        Text("External brain configured.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     } else if phone.isGeminiConfigured {
                         Text("An API key is configured.")
                             .font(.caption)
@@ -831,6 +851,8 @@ struct PhoneSettingsView: View {
             }
             .padding(24)
         }
+        .onAppear { phone.refreshAssistantConfiguration() }
+        .onChange(of: assistantBrainURL) { _, _ in phone.refreshAssistantConfiguration() }
     }
 
     private var phoneSettings: some View {
