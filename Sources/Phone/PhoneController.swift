@@ -20,6 +20,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
     @Published private(set) var history: [CallRecord] = []
     @Published private(set) var isMuted = false
+    @Published private(set) var managedAccount: ManagedSIPAccount?
+    @Published private(set) var registrationStatus: RegistrationStatus = .idle
 
     private var process: Process?
     private var input: Pipe?
@@ -43,6 +45,11 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     override init() {
         super.init()
+        if UserDefaults.standard.bool(forKey: "managedAccount"),
+           let data = UserDefaults.standard.data(forKey: "managedSIPAccount"),
+           let account = try? JSONDecoder().decode(ManagedSIPAccount.self, from: data) {
+            managedAccount = account
+        }
         number = UserDefaults.standard.string(forKey: "lastDialedNumber") ?? ""
         if let data = UserDefaults.standard.data(forKey: "callHistory"),
            let stored = try? JSONDecoder().decode([CallRecord].self, from: data) {
@@ -68,7 +75,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         } catch {
             intelligenceStatus = "Audio bridge unavailable"
         }
-        startBaresip()
+        if managedAccount == nil && !FileManager.default.fileExists(atPath: configDirectory.appendingPathComponent("accounts").path) {
+            state = .stopped
+            requestAccountSetup()
+        } else {
+            startBaresip()
+        }
         intelligenceStatus = "Preparing local models …"
         Task {
             do {
@@ -82,6 +94,29 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     func toggleBaresip() {
         process == nil ? startBaresip() : stopBaresip()
+    }
+
+    func requestAccountSetup() {
+        menuBar.setupRequest &+= 1
+    }
+
+    func storedPassword(for account: ManagedSIPAccount) throws -> String {
+        try SIPPasswordStore.password(account: account.sipAddress)
+    }
+
+    func saveManagedAccountAndTest(_ account: ManagedSIPAccount, password: String) throws {
+        guard !state.isInCall else { throw SIPAccountError.activeCall }
+        try account.validate(password: password)
+        let previousAddress = managedAccount?.sipAddress
+        try SIPPasswordStore.save(password, account: account.sipAddress)
+        let data = try JSONEncoder().encode(account)
+        UserDefaults.standard.set(data, forKey: "managedSIPAccount")
+        UserDefaults.standard.set(true, forKey: "managedAccount")
+        managedAccount = account
+        if let previousAddress, previousAddress != account.sipAddress {
+            SIPPasswordStore.remove(account: previousAddress)
+        }
+        restartBaresipForRegistrationTest()
     }
 
     func recoverFromError() {
@@ -230,10 +265,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             to: configDirectory.appendingPathComponent("contacts"),
             from: [developmentConfig?.appendingPathComponent("contacts"), bundledBaresipDirectory.appendingPathComponent("contacts")]
         )
-        try copyIfMissing(
-            to: configDirectory.appendingPathComponent("accounts"),
-            from: [developmentConfig?.appendingPathComponent("accounts"), bundledBaresipDirectory.appendingPathComponent("accounts.example")]
-        )
+        if let developmentAccount = developmentConfig?.appendingPathComponent("accounts"),
+           fileManager.fileExists(atPath: developmentAccount.path) {
+            try copyIfMissing(to: configDirectory.appendingPathComponent("accounts"), from: [developmentAccount])
+        }
         try updateModulePath(bundledModulesDirectory)
     }
 
@@ -281,11 +316,26 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         guard process == nil else { return }
         isShuttingDown = false
         cleanupOrphanedBaresip()
+        do {
+            try regenerateManagedAccountsFile()
+        } catch {
+            registrationStatus = .failed(error.localizedDescription)
+            state = .error(error.localizedDescription)
+            return
+        }
+        guard FileManager.default.fileExists(atPath: configDirectory.appendingPathComponent("accounts").path) else {
+            registrationStatus = .failed("No SIP account configured")
+            state = .error("No SIP account configured")
+            requestAccountSetup()
+            return
+        }
         guard let executable = baresipExecutable else {
+            registrationStatus = .failed("baresip was not found")
             state = .error("baresip was not found")
             return
         }
         guard FileManager.default.fileExists(atPath: configDirectory.appendingPathComponent("config").path) else {
+            registrationStatus = .failed("baresip configuration is missing")
             state = .error("baresip configuration is missing")
             return
         }
@@ -304,20 +354,54 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
             Task { @MainActor in self?.consume(text) }
         }
-        task.terminationHandler = { [weak self] _ in
-            Task { @MainActor in self?.didStop() }
+        task.terminationHandler = { [weak self, weak task] _ in
+            guard let task else { return }
+            Task { @MainActor in self?.didStop(task) }
         }
 
+        process = task
+        input = stdin
         do {
             try task.run()
-            process = task
-            input = stdin
             try? String(task.processIdentifier).write(to: pidFileURL, atomically: true, encoding: .utf8)
             hasRegisteredAccount = false
+            registrationStatus = .registering
             state = .starting
         } catch {
+            process = nil
+            input = nil
+            registrationStatus = .failed("baresip could not be started")
             state = .error("baresip could not be started")
         }
+    }
+
+    private func regenerateManagedAccountsFile() throws {
+        guard UserDefaults.standard.bool(forKey: "managedAccount") else { return }
+        guard let managedAccount else { throw SIPAccountError.missingManagedAccount }
+        let password = try SIPPasswordStore.password(account: managedAccount.sipAddress)
+        let line = try managedAccount.accountLine(password: password)
+        let url = configDirectory.appendingPathComponent("accounts")
+        let descriptor = Darwin.open(url.path, O_WRONLY | O_CREAT | O_TRUNC, mode_t(0o600))
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        guard fchmod(descriptor, mode_t(0o600)) == 0 else {
+            Darwin.close(descriptor)
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        try handle.write(contentsOf: Data(line.utf8))
+        try handle.synchronize()
+        try handle.close()
+    }
+
+    private func restartBaresipForRegistrationTest() {
+        stopBaresipAndWait()
+        guard process == nil else {
+            registrationStatus = .failed("baresip could not be restarted")
+            return
+        }
+        startBaresip()
     }
 
     private func stopBaresip() {
@@ -356,8 +440,13 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
         if task.isRunning {
             kill(task.processIdentifier, SIGKILL)
+            let killedDeadline = Date().addingTimeInterval(0.75)
+            while task.isRunning, Date() < killedDeadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            }
         }
         try? FileManager.default.removeItem(at: pidFileURL)
+        if !task.isRunning { didStop(task) }
     }
 
     private func cleanupOrphanedBaresip() {
@@ -392,11 +481,15 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         try? FileManager.default.removeItem(at: pidFileURL)
     }
 
-    private func didStop() {
+    private func didStop(_ stoppedProcess: Process) {
+        guard process === stoppedProcess else { return }
         process = nil
         input = nil
         try? FileManager.default.removeItem(at: pidFileURL)
         if intelligenceRunning { finishCall() }
+        if registrationStatus == .registering {
+            registrationStatus = .failed("baresip stopped before registration completed")
+        }
         state = .stopped
     }
 
@@ -421,7 +514,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func consume(_ text: String) {
-        appendDiagnostic(text)
+        appendDiagnostic(redactSensitiveValues(in: text))
         lineBuffer += text.replacingOccurrences(of: "\r", with: "\n")
         while let newline = lineBuffer.firstIndex(of: "\n") {
             let line = String(lineBuffer[..<newline])
@@ -435,9 +528,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         let lower = line.lowercased()
         if lower.contains("useragent registered successfully") || lower.contains("useragents registered successfully") {
             hasRegisteredAccount = true
+            registrationStatus = .registered
             if case .starting = state { state = .ready }
         } else if lower.contains("registration failed") || lower.contains("register failed") {
-            state = .error("SIP registration failed")
+            let failure = redactSensitiveValues(in: line).trimmingCharacters(in: .whitespacesAndNewlines)
+            registrationStatus = .failed(failure)
+            state = .error(failure)
         } else if lower.contains("incoming call") || lower.contains("call incoming") {
             let caller = callerName(from: line)
             currentDirection = .incoming
@@ -466,8 +562,18 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             clearIncomingCallNotification()
             if missed { showMissedCallNotification(caller: caller) }
         } else if lower.contains("no accounts") {
+            let failure = redactSensitiveValues(in: line).trimmingCharacters(in: .whitespacesAndNewlines)
+            registrationStatus = .failed(failure.isEmpty ? "No SIP account configured" : failure)
             state = .error("No SIP account configured")
         }
+    }
+
+    private func redactSensitiveValues(in text: String) -> String {
+        text.replacingOccurrences(
+            of: #"auth_pass=(?:\"(?:[^\"\\]|\\.)*\"|[^;\s]*)"#,
+            with: "auth_pass=••••",
+            options: .regularExpression
+        )
     }
 
     /// Parses baresip contacts lines of the form `"Name" <sip:user@domain>`

@@ -45,8 +45,14 @@ struct PhoneApp: App {
         .defaultSize(width: 680, height: 620)
         .windowResizability(.contentMinSize)
 
+        Window("Set Up Phone", id: "setup") {
+            SetupWizard(phone: phone)
+        }
+        .defaultSize(width: 620, height: 520)
+        .windowResizability(.contentSize)
+
         Settings {
-            PhoneSettingsView()
+            PhoneSettingsView(phone: phone)
         }
     }
 }
@@ -69,6 +75,12 @@ private struct MenuBarPhoneLabel: View {
             }
         }
         .accessibilityLabel(state.label)
+        .onAppear {
+            if model.setupRequest > 0 { openSetup() }
+        }
+        .onChange(of: model.setupRequest) { _, request in
+            if request > 0 { openSetup() }
+        }
         // The menu bar label is the only view that exists for the whole app
         // lifetime, so the conversation window must be opened from here.
         .onChange(of: state.isConnected) { wasConnected, isConnected in
@@ -88,5 +100,11 @@ private struct MenuBarPhoneLabel: View {
             return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
         }
         return String(format: "%02d:%02d", minutes, remainingSeconds)
+    }
+
+    private func openSetup() {
+        openWindow(id: "setup")
+        NSApp.activate(ignoringOtherApps: true)
+        model.setupRequest = 0
     }
 }

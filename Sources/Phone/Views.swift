@@ -445,6 +445,7 @@ private struct CallDuration: View {
 }
 
 struct PhoneSettingsView: View {
+    @ObservedObject var phone: PhoneController
     @AppStorage("transcriptionEnabled") private var transcriptionEnabled = true
     @AppStorage("retainTranscript") private var retainTranscript = true
 
@@ -456,7 +457,7 @@ struct PhoneSettingsView: View {
             phoneSettings
                 .tabItem { Label("Phone", systemImage: "phone") }
         }
-        .frame(width: 460, height: 220)
+        .frame(width: 460, height: 240)
     }
 
     private var intelligenceSettings: some View {
@@ -485,15 +486,23 @@ struct PhoneSettingsView: View {
 
     private var phoneSettings: some View {
         VStack(alignment: .leading, spacing: 14) {
-            settingsRow("Provider", value: "Telekom")
+            settingsRow("Provider", value: phone.managedAccount?.provider.rawValue ?? "Manual account file")
             settingsRow("Telephony", value: "baresip")
 
             Divider()
 
-            Text("Provider account configuration will move directly into this panel in a future step.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(phone.managedAccount == nil ? "Account managed through the technical configuration" : "Password stored in Keychain")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("The setup assistant can replace the current account configuration.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Button("Set up account…") { phone.requestAccountSetup() }
+            }
         }
         .padding(24)
     }

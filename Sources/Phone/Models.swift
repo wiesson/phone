@@ -67,12 +67,20 @@ enum CallState: Equatable {
     }
 }
 
+enum RegistrationStatus: Equatable {
+    case idle
+    case registering
+    case registered
+    case failed(String)
+}
+
 /// Tiny observable model for the menu bar label, so the label only re-renders
 /// on call state changes and not on every transcript update.
 @MainActor
 final class MenuBarModel: ObservableObject {
     @Published var state: CallState = .stopped
     @Published var callStartedAt: Date?
+    @Published var setupRequest = 0
 }
 
 enum Speaker: UInt8, Codable, Sendable {

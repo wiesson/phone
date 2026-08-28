@@ -78,6 +78,14 @@ baresip reads its configuration from
 the `accounts` file in that directory. The menu bar window's "Open technical
 configuration" button opens the same location.
 
+When no existing account is present, Phone opens a three-step setup assistant.
+It includes presets for Deutsche Telekom, FRITZ!Box, sipgate, and Easybell, as
+well as custom SIP settings. Reopen it from Settings > Phone with "Set up
+account…". Accounts created by the assistant keep their password in the macOS
+Keychain and regenerate the protected baresip account file when Phone starts.
+Existing hand-edited account files remain supported and are not changed until
+the setup assistant is used.
+
 ### Deutsche Telekom (direct)
 
 The bundled example file contains a template for a Telekom landline:
