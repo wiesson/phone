@@ -471,6 +471,7 @@ struct PhoneSettingsView: View {
     @AppStorage("transcriptionEnabled") private var transcriptionEnabled = true
     @AppStorage("retainTranscript") private var retainTranscript = true
     @AppStorage("transcriptionLocale") private var transcriptionLocale = ""
+    @AppStorage("showDockIcon") private var showDockIcon = false
     @AppStorage("geminiLiveModel") private var geminiLiveModel = defaultGeminiLiveModel
     @State private var geminiAPIKey = ""
     @State private var geminiSettingsMessage: String?
@@ -599,6 +600,15 @@ struct PhoneSettingsView: View {
 
     private var phoneSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Toggle("Show the app in the Dock and app switcher", isOn: $showDockIcon)
+            if showDockIcon != (NSApp.activationPolicy() == .regular) {
+                Text("Takes effect after restarting Phone.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            Divider()
+
             Text("SIP accounts")
                 .font(.headline)
 
