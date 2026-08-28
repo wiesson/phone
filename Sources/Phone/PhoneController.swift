@@ -27,6 +27,7 @@ func assistantCallInstructions(general: String, task: String, userDisplayName: S
         : "Ich verbinde Sie mit \(displayName)."
     let callControl = """
     Anrufsteuerung:
+    DU rufst an. Sprich NICHT zuerst: Warte still, bis sich die Gegenseite gemeldet hat (z. B. „Pizzeria Luigi, hallo?“). Erst dann begrüßt du kurz und nennst dein Anliegen. Meldet sich länger niemand, obwohl der Anruf angenommen wurde, sage nach etwa fünf Sekunden ein einzelnes freundliches „Hallo?“.
     Du kannst auf automatische Telefonmenüs (IVR) und Warteschleifen treffen. Höre aufmerksam zu, wähle die passende Menüoption und rufe send_dtmf mit genau der benötigten Taste auf. Bleibe in Warteschleifen geduldig und warte weiter.
     Sobald ein echter Mensch antwortet, trage das Anliegen kurz vor. Sage danach exakt „\(handoverPhrase)“ und rufe unmittelbar handover_to_user auf.
     """
@@ -1269,7 +1270,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                     task: assistantCallTask,
                     userDisplayName: displayName
                 )
-                startGeminiLive(sendsInitialGreeting: true, instructions: instructions)
+                startGeminiLive(sendsInitialGreeting: false, instructions: instructions)
             } else if startsAssistant {
                 startGeminiLive(sendsInitialGreeting: true)
             }
