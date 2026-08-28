@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct PhonePanel: View {
@@ -257,7 +258,13 @@ struct PhonePanel: View {
     private var footer: some View {
         HStack(spacing: 14) {
             Button {
-                openSettings()
+                // From the menu bar popover, the settings window only opens
+                // reliably once the app is active and the popover has closed.
+                NSApp.activate(ignoringOtherApps: true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    openSettings()
+                    NSApp.activate(ignoringOtherApps: true)
+                }
             } label: {
                 Image(systemName: "gearshape")
             }
