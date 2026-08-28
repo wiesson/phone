@@ -27,6 +27,31 @@ import Testing
     #expect(parts.first?["text"] as? String == "Sei kurz und freundlich.")
 }
 
+@Test func composesAssistantCallInstructions() {
+    #expect(
+        assistantCallInstructions(general: "Allgemeine Anweisung", task: "Termin vereinbaren") ==
+        "Allgemeine Anweisung\n\nAuftrag für diesen Anruf:\nTermin vereinbaren"
+    )
+    #expect(
+        assistantCallInstructions(general: "", task: "Termin vereinbaren") ==
+        "Auftrag für diesen Anruf:\nTermin vereinbaren"
+    )
+    #expect(assistantCallInstructions(general: "Allgemeine Anweisung", task: "") == "Allgemeine Anweisung")
+}
+
+@Test func clearsPendingAssistantCallOnFailure() {
+    var plan = AssistantCallPlan()
+    plan.begin(task: "Termin vereinbaren")
+
+    #expect(plan.isPending)
+    #expect(plan.isActive)
+
+    plan.callFailed()
+
+    #expect(!plan.isPending)
+    #expect(!plan.isActive)
+}
+
 @Test func omitsEmptyGeminiSystemInstruction() throws {
     let message = try GeminiLiveProtocol.setupMessage(model: "models/gemini-live-test", instructions: "  \n ")
     let root = try #require(JSONSerialization.jsonObject(with: Data(message.utf8)) as? [String: Any])
