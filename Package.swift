@@ -14,7 +14,8 @@ let package = Package(
         ),
         .testTarget(
             name: "PhoneTests",
-            dependencies: ["Phone"]
+            dependencies: ["Phone"],
+            resources: [.process("Fixtures")]
         )
     ]
 )

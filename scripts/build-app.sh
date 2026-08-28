@@ -45,6 +45,8 @@ for module in $(awk '$1 == "module" || $1 == "module_app" {print $2}' "$ROOT/run
   cp -L "$source" "$APP/Contents/Resources/baresip/modules/$module"
 done
 
+cp -L "$BARESIP_PREFIX/lib/baresip/modules/aubridge.so" "$APP/Contents/Resources/baresip/modules/aubridge.so"
+
 FRAMEWORKS="$APP/Contents/Frameworks"
 HELPER="$APP/Contents/Helpers/baresip"
 MODULES="$APP/Contents/Resources/baresip/modules"
