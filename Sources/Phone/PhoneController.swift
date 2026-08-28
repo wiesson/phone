@@ -259,15 +259,14 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     /// Toggles the microphone for the active call (baresip single-key command).
     func toggleMute() {
         guard state.isConnected else { return }
-        send("m")
+        send("/mute")
         isMuted.toggle()
     }
 
-    /// Sends a DTMF digit during an active call. baresip relays bare digit
-    /// keys as DTMF while a call is established.
+    /// Sends a DTMF digit during an active call via the menu module.
     func sendDTMF(_ digit: Character) {
         guard state.isConnected, "0123456789*#".contains(digit) else { return }
-        send(String(digit))
+        send("/sndcode \(digit)")
     }
 
     /// Handles tel:, callto:, and sip: URLs from other applications.
@@ -634,35 +633,35 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func consumeLine(_ line: String) {
-        let lower = line.lowercased()
-        if lower.contains("useragent registered successfully") || lower.contains("useragents registered successfully") {
+        guard let event = Self.parseCallEvent(line) else { return }
+        switch event {
+        case .registered:
             hasRegisteredAccount = true
             registrationStatus = .registered
             if case .starting = state { state = .ready }
-        } else if lower.contains("registration failed") || lower.contains("register failed") {
-            let failure = redactSensitiveValues(in: line).trimmingCharacters(in: .whitespacesAndNewlines)
+        case .registrationFailed(let failure):
             registrationStatus = .failed(failure)
             state = .error(failure)
-        } else if lower.contains("incoming call") || lower.contains("call incoming") {
+        case .incoming:
             let caller = callerName(from: line)
             currentDirection = .incoming
             state = .ringing(caller)
             showIncomingCallNotification(caller: caller)
-        } else if lower.contains("call established") || lower.contains("answered") {
+        case .established:
             state = .connected(state.peer)
             clearIncomingCallNotification()
             beginCallIntelligence()
-        } else if lower.contains("call uri:") || lower.contains("connecting to") {
+        case .dialing:
             state = .dialing(number)
             clearIncomingCallNotification()
-        } else if lower.contains("security violation") {
+        case .securityViolation:
             finishCall()
             state = .error("The provider rejected the audio encryption")
-        } else if lower.contains("ua_connect failed") || lower.contains("call failed") {
+        case .failed:
             recordCall(missed: false)
             finishCall()
             state = .error("The call could not be established")
-        } else if lower.contains("call closed") || lower.contains("session closed") || lower.contains("disconnected") {
+        case .closed:
             let missed = state.isRinging
             let caller = state.peer
             recordCall(missed: missed)
@@ -670,11 +669,45 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             state = hasRegisteredAccount ? .ready : .starting
             clearIncomingCallNotification()
             if missed { showMissedCallNotification(caller: caller) }
-        } else if lower.contains("no accounts") {
-            let failure = redactSensitiveValues(in: line).trimmingCharacters(in: .whitespacesAndNewlines)
+        case .noAccounts(let failure):
             registrationStatus = .failed(failure.isEmpty ? "No SIP account configured" : failure)
             state = .error("No SIP account configured")
         }
+    }
+
+    enum CallEvent: Equatable {
+        case registered
+        case registrationFailed(String)
+        case incoming
+        case established
+        case dialing
+        case securityViolation
+        case failed
+        case closed
+        case noAccounts(String)
+    }
+
+    /// Pure classification of a baresip output line. Help/menu chatter
+    /// (lines starting with "/") must never be treated as call events.
+    nonisolated static func parseCallEvent(_ line: String) -> CallEvent? {
+        let lower = line.lowercased()
+        if lower.trimmingCharacters(in: .whitespaces).hasPrefix("/") { return nil }
+        if lower.contains("useragent registered successfully") || lower.contains("useragents registered successfully") {
+            return .registered
+        }
+        if lower.contains("registration failed") || lower.contains("register failed") {
+            return .registrationFailed(redactSensitiveValues(in: line).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if lower.contains("incoming call from") { return .incoming }
+        if lower.contains("call established") || lower.contains("answered") { return .established }
+        if lower.contains("call uri:") || lower.contains("connecting to") { return .dialing }
+        if lower.contains("security violation") { return .securityViolation }
+        if lower.contains("ua_connect failed") || lower.contains("call failed") { return .failed }
+        if lower.contains("call closed") || lower.contains("session closed") || lower.contains("disconnected") { return .closed }
+        if lower.contains("no accounts") {
+            return .noAccounts(redactSensitiveValues(in: line).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return nil
     }
 
     /// Parses baresip contacts lines of the form `"Name" <sip:user@domain>`
