@@ -347,10 +347,6 @@ struct ConversationView: View {
         }
         .frame(minWidth: 560, idealWidth: 680, minHeight: 460, idealHeight: 620)
         .background(Color(nsColor: .windowBackgroundColor))
-        // Show a Dock icon while the conversation window exists, so the
-        // window participates in Cmd-Tab; drop back to menu-bar-only after.
-        .onAppear { NSApp.setActivationPolicy(.regular) }
-        .onDisappear { NSApp.setActivationPolicy(.accessory) }
     }
 
     private var conversationHeader: some View {
