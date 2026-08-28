@@ -578,20 +578,8 @@ struct PhoneSettingsView: View {
 
     private var phoneSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("SIP accounts")
-                        .font(.headline)
-                    Text(phone.accountDisplay ?? "No account configured")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-                Spacer()
-                Text("baresip")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
+            Text("SIP accounts")
+                .font(.headline)
 
             if phone.managedAccounts.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
@@ -660,10 +648,9 @@ struct PhoneSettingsView: View {
                 selectedAccountAddress = phone.activeManagedSIPAddress
             }
         }
-        .confirmationDialog(
+        .alert(
             accountToRemove.map { "Remove \($0.displayName)?" } ?? "Remove account?",
-            isPresented: isConfirmingRemoval,
-            titleVisibility: .visible
+            isPresented: isConfirmingRemoval
         ) {
             Button("Remove Account", role: .destructive, action: removeSelectedAccount)
             Button("Cancel", role: .cancel) { accountToRemove = nil }
