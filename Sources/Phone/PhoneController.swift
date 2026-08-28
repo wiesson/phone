@@ -89,6 +89,7 @@ func parseAccountAOR(from content: String) -> String? {
 @MainActor
 final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserNotificationCenterDelegate {
     let menuBar = MenuBarModel()
+    let store: PhoneStore
 
     @Published private(set) var state: CallState = .stopped {
         didSet { if menuBar.state != state { menuBar.state = state } }
@@ -123,6 +124,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private var draftIDs: [Speaker: UUID] = [:]
     private var intelligenceRunning = false
     private var currentDirection: CallDirection?
+    private var currentCallStartedAt: Date?
+    private var pendingArchiveRecord: CallRecord?
     private var pendingDialRetry: String?
     private var contacts: [String: String] = [:]
     private var hasRegisteredAccount = false
@@ -169,6 +172,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     override init() {
+        store = (try? PhoneStore()) ?? (try! PhoneStore(path: ":memory:"))
         super.init()
         eventBus.subscribe { [weak self] event in
             self?.webhookTransport.deliver(event)
@@ -218,6 +222,17 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
         loadUnmanagedAccountAOR()
         loadContacts()
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let count = try await CallHistoryMigration.migrate(
+                    defaults: .standard,
+                    store: self.store,
+                    displayName: self.displayName(for:)
+                )
+                if count > 0 { NotificationCenter.default.post(name: .phoneArchiveChanged, object: nil) }
+            } catch { }
+        }
         installNotifications()
         do {
             try audioTap.start()
@@ -303,6 +318,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         number = value
         UserDefaults.standard.set(value, forKey: "lastDialedNumber")
         currentDirection = .outgoing
+        currentCallStartedAt = Date()
         hasActiveEventCall = true
         state = .dialing(value)
         eventBus.publish(.callOutgoing(target: value))
@@ -736,7 +752,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         process = nil
         input = nil
         try? FileManager.default.removeItem(at: pidFileURL)
-        if hasActiveEventCall { finishCall() }
+        if hasActiveEventCall {
+            recordCall(missed: false)
+            finishCall()
+        }
         hasRegisteredAccount = false
         if registrationStatus == .registering {
             registrationStatus = .failed("baresip stopped before registration completed")
@@ -791,6 +810,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             guard !state.isRinging else { return }
             let caller = callerName(from: line)
             currentDirection = .incoming
+            currentCallStartedAt = Date()
             hasActiveEventCall = true
             state = .ringing(caller)
             eventBus.publish(.callIncoming(peer: caller))
@@ -811,6 +831,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             state = .dialing(number)
             clearIncomingCallNotification()
         case .securityViolation:
+            recordCall(missed: false)
             finishCall()
             state = .error("The provider rejected the audio encryption")
         case .failed:
@@ -936,6 +957,13 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         UserDefaults.standard.removeObject(forKey: "callHistory")
     }
 
+    func deleteAllArchivedConversations() async {
+        do {
+            try await store.deleteAll()
+            NotificationCenter.default.post(name: .phoneArchiveChanged, object: nil)
+        } catch { }
+    }
+
     private func showAutomationStatus(_ message: String) {
         automationStatusTask?.cancel()
         automationStatus = message
@@ -1026,13 +1054,16 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         guard let direction = currentDirection else { return }
         currentDirection = nil
         let duration = callStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+        let startedAt = currentCallStartedAt ?? callStartedAt ?? Date()
+        currentCallStartedAt = nil
         let record = CallRecord(
             direction: direction,
             peer: state.peer,
-            date: Date(),
+            date: startedAt,
             duration: duration,
             missed: missed
         )
+        pendingArchiveRecord = record
         history.insert(record, at: 0)
         if history.count > 50 { history.removeLast(history.count - 50) }
         if let data = try? JSONEncoder().encode(history) {
@@ -1046,6 +1077,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private var retainTranscript: Bool {
         UserDefaults.standard.object(forKey: "retainTranscript") as? Bool ?? true
+    }
+
+    private var archiveConversations: Bool {
+        UserDefaults.standard.object(forKey: "archiveConversations") as? Bool ?? true
     }
 
     private var assistantAnswersIncomingCalls: Bool {
@@ -1159,6 +1194,26 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         stopGeminiLive()
         isMuted = false
         let peer = state.peer
+        let archiveRecord = pendingArchiveRecord
+        pendingArchiveRecord = nil
+        let archivedEntries = transcript.filter(\.isFinal)
+        let includesContent = archiveConversations
+        let archiveTask = archiveRecord.map { record in
+            Task { [store] in
+                do {
+                    try await store.archiveCall(
+                        record,
+                        displayName: self.displayName(for: record.peer),
+                        utterances: archivedEntries,
+                        summary: nil,
+                        includeConversationContent: includesContent
+                    )
+                    await MainActor.run {
+                        NotificationCenter.default.post(name: .phoneArchiveChanged, object: nil)
+                    }
+                } catch { }
+            }
+        }
         let duration = callStartedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
         if hasActiveEventCall {
             hasActiveEventCall = false
@@ -1178,11 +1233,18 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             await intelligence.stop()
             do {
                 let text = try await intelligence.summarize(entries: entries)
+                if includesContent, let archiveRecord {
+                    await archiveTask?.value
+                    try? await store.attachSummary(text, to: archiveRecord.id)
+                }
                 await MainActor.run {
                     self.summary = CallSummary(text: text, createdAt: Date())
                     self.eventBus.publish(.callSummary(text: text))
                     self.intelligenceStatus = "Processed locally"
                     if !self.retainTranscript { self.clearConversation() }
+                    if includesContent, archiveRecord != nil {
+                        NotificationCenter.default.post(name: .phoneArchiveChanged, object: nil)
+                    }
                 }
             } catch {
                 await MainActor.run {
