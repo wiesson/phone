@@ -118,6 +118,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private var draftIDs: [Speaker: UUID] = [:]
     private var intelligenceRunning = false
     private var currentDirection: CallDirection?
+    private var pendingDialRetry: String?
     private var contacts: [String: String] = [:]
     private var hasRegisteredAccount = false
     private var isShuttingDown = false
@@ -734,6 +735,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             state = .ringing(caller)
             showIncomingCallNotification(caller: caller)
         case .established:
+            pendingDialRetry = nil
             state = .connected(state.peer)
             clearIncomingCallNotification()
             beginCallIntelligence()
@@ -749,12 +751,27 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             state = .error("The call could not be established")
         case .closed(let reason):
             if state.isInCall, !state.isConnected, let reason, !reason.isEmpty {
+                if case .dialing(let target) = state, reason.hasPrefix("403"), pendingDialRetry == nil {
+                    pendingDialRetry = target
+                    finishCall()
+                    state = .ready
+                    appendDiagnostic("phone-app: 403 on first INVITE, retrying dial once\n")
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(for: .seconds(1.5))
+                        guard let self, self.pendingDialRetry == target, self.state.isReady else { return }
+                        self.number = target
+                        self.dial()
+                    }
+                    return
+                }
+                pendingDialRetry = nil
                 recordCall(missed: false)
                 finishCall()
                 state = .error("Call rejected: \(reason)")
                 clearIncomingCallNotification()
                 return
             }
+            pendingDialRetry = nil
             let missed = state.isRinging
             let caller = state.peer
             recordCall(missed: missed)
