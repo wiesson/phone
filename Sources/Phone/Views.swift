@@ -57,15 +57,15 @@ struct PhonePanel: View {
                                 try? phone.selectManagedAccount(account)
                             } label: {
                                 if phone.activeManagedSIPAddress == account.sipAddress {
-                                    Label(account.displayName, systemImage: "checkmark")
+                                    Label("\(account.displayName) — \(account.assistantProfile.displayName)", systemImage: "checkmark")
                                 } else {
-                                    Text(account.displayName)
+                                    Text("\(account.displayName) — \(account.assistantProfile.displayName)")
                                 }
                             }
                         }
                     } label: {
                         HStack(spacing: 3) {
-                            Text(phone.accountDisplay ?? "Choose number")
+                            Text(headerAccountText)
                                 .font(.system(size: 11))
                             Image(systemName: "chevron.up.chevron.down")
                                 .font(.system(size: 8, weight: .semibold))
@@ -146,7 +146,7 @@ struct PhonePanel: View {
                 }
                 .overlay {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(numberFieldFocused ? Color.accentColor.opacity(0.65) : .clear, lineWidth: 1)
+                        .strokeBorder(numberFieldFocused ? Color.accentColor.opacity(0.65) : .clear, lineWidth: 1)
                 }
             } else if phone.state.isRinging {
                 HStack(spacing: 10) {
@@ -258,6 +258,14 @@ struct PhonePanel: View {
                 .buttonStyle(.bordered)
             }
         }
+    }
+
+    private var headerAccountText: String {
+        guard let display = phone.accountDisplay else { return "Choose number" }
+        if let active = phone.managedAccounts.first(where: { $0.sipAddress == phone.activeManagedSIPAddress }) {
+            return "\(display) · \(active.assistantProfile.displayName)"
+        }
+        return display
     }
 
     private var historySection: some View {
