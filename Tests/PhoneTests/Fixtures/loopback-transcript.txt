@@ -9,13 +9,17 @@ baresip is ready.
 Creating UA for <sip:test@127.0.0.1:5088>;regint=0 ...
 call uri: sip:test@127.0.0.1:5089
 call: connecting to 'sip:test@127.0.0.1:5089'..
+test@127.0.0.1:5088: Call in-progress: sip:test@127.0.0.1:5089
 audio: Set audio decoder: PCMU 8000Hz 1ch
 audio: Set audio encoder: PCMU 8000Hz 1ch
 audio tx pipeline: aubridge ---> auconv ---> auresamp ---> PCMU
 audio rx pipeline: aubridge <--- auconv <--- auresamp <--- PCMU
 test@127.0.0.1:5088: Call established: sip:test@127.0.0.1:5089
+srtp: audio: SRTP is Enabled (cryptosuite=AES_CM_128_HMAC_SHA1_80)
+received in-band DTMF event: '2' (end=0)
 audio: send DTMF digit: '2'
 audio: send DTMF digit end: '2'
 call muted
-call unmuted
+call un-muted
+test@127.0.0.1:5088: Call with sip:test@127.0.0.1:5089 terminated (duration: 00:00:01)
 test@127.0.0.1:5088: session closed
