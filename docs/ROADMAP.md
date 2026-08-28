@@ -47,7 +47,26 @@ This makes the phone scriptable without any cloud dependency. Webhooks (2) and
 MCP (3) share one internal event bus; the bus is the actual refactor, both
 transports are thin.
 
-## 4. Mac App Store
+## 4. Headless engine
+
+The call engine (SIP handling, transcription, summarization, assistant) split
+out of the menu bar app so it can run without a UI — on a server or a headless
+Mac, one instance per number:
+
+- **Missed-call flow first** (defensive by design): unanswered call →
+  transcript → structured ticket (caller, request, urgency, short summary) →
+  delivered via webhook — plus an optional SMS acknowledgement to the caller.
+  The live assistant stays opt-in and comes later here; it cannot
+  embarrassingly fail, the missed-call flow cannot.
+- Provider-agnostic input: own SIP registration, or ingesting transcripts from
+  provider webhook APIs where the line already produces them.
+- The menu bar app remains the interactive front end, demo stage, and R&D lab
+  for the same engine.
+
+This reorders the priorities: the event bus (2) and webhooks are the direct
+foundation for it, and the App Store packaging moves behind it.
+
+## 5. Mac App Store
 
 - App Sandbox: move the audio tap socket into the app container, entitlements
   for network client + microphone; Application Support already lives in the
@@ -57,7 +76,7 @@ transports are thin.
 - App Store signing/provisioning, screenshots, review notes with a test SIP
   account, €2 one-time price. "Everything on-device" is the store pitch.
 
-## 5. Later / ideas
+## 6. Later / ideas
 
 - Cloud transcription as explicit opt-in alternative to Apple's on-device
   models (e.g. Gemini live transcription), with API key in Keychain.
