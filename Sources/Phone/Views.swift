@@ -572,7 +572,8 @@ struct PhoneSettingsView: View {
     @AppStorage("transcriptionLocale") private var transcriptionLocale = ""
     @AppStorage("showDockIcon") private var showDockIcon = false
     @AppStorage("geminiLiveModel") private var geminiLiveModel = defaultGeminiLiveModel
-    @AppStorage("assistantAnswersIncomingCalls") private var assistantAnswersIncomingCalls = false
+    @AppStorage(assistantAnswerModeDefaultsKey) private var assistantAnswerMode: AssistantAnswerMode = .never
+    @AppStorage(businessHoursDefaultsKey) private var businessHoursData = (try? JSONEncoder().encode(BusinessHoursSchedule())) ?? Data()
     @AppStorage("assistantAnswerDelay") private var assistantAnswerDelay = 5
     @AppStorage("assistantInstructions") private var assistantInstructions = defaultAssistantInstructions
     @AppStorage("webhookURL") private var webhookURL = ""
@@ -748,14 +749,34 @@ struct PhoneSettingsView: View {
 
                 Divider()
 
-                Toggle("Assistant answers incoming calls", isOn: $assistantAnswersIncomingCalls)
+                Picker("Answer incoming calls", selection: $assistantAnswerMode) {
+                    Text("Never").tag(AssistantAnswerMode.never)
+                    Text("Always").tag(AssistantAnswerMode.always)
+                    Text("Outside business hours").tag(AssistantAnswerMode.outsideBusinessHours)
+                }
+
+                if assistantAnswerMode == .outsideBusinessHours {
+                    VStack(alignment: .leading, spacing: 10) {
+                        BusinessHoursRow(
+                            title: "Weekdays",
+                            group: businessHoursGroupBinding(\.weekdays)
+                        )
+                        BusinessHoursRow(
+                            title: "Weekend",
+                            group: businessHoursGroupBinding(\.weekend)
+                        )
+                        Text("The assistant answers when you are not attending.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Stepper(
                     "Answer after \(assistantAnswerDelay) seconds",
                     value: $assistantAnswerDelay,
                     in: 0...30
                 )
-                .disabled(!assistantAnswersIncomingCalls)
-
+                .disabled(assistantAnswerMode == .never)
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Assistant instructions")
                         .fontWeight(.medium)
@@ -978,6 +999,25 @@ struct PhoneSettingsView: View {
         }
     }
 
+    private func businessHoursGroupBinding(
+        _ keyPath: WritableKeyPath<BusinessHoursSchedule, BusinessHoursSchedule.DayGroup>
+    ) -> Binding<BusinessHoursSchedule.DayGroup> {
+        Binding(
+            get: {
+                (try? JSONDecoder().decode(BusinessHoursSchedule.self, from: businessHoursData))?[keyPath: keyPath]
+                    ?? BusinessHoursSchedule()[keyPath: keyPath]
+            },
+            set: { group in
+                var schedule = (try? JSONDecoder().decode(BusinessHoursSchedule.self, from: businessHoursData))
+                    ?? BusinessHoursSchedule()
+                schedule[keyPath: keyPath] = group
+                if let data = try? JSONEncoder().encode(schedule) {
+                    businessHoursData = data
+                }
+            }
+        )
+    }
+
     private func saveGeminiAPIKey() {
         geminiSettingsMessage = nil
         do {
@@ -1021,5 +1061,49 @@ struct PhoneSettingsView: View {
         } catch {
             accountError = error.localizedDescription
         }
+    }
+}
+
+private struct BusinessHoursRow: View {
+    let title: String
+    @Binding var group: BusinessHoursSchedule.DayGroup
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .frame(width: 70, alignment: .leading)
+            Toggle("Attended", isOn: $group.open)
+                .toggleStyle(.checkbox)
+            Spacer()
+            HStack(spacing: 5) {
+                Text("From")
+                DatePicker("Start", selection: timeBinding(\.start), displayedComponents: .hourAndMinute)
+                    .labelsHidden()
+                    .accessibilityLabel("\(title) start")
+                Text("to")
+                DatePicker("End", selection: timeBinding(\.end), displayedComponents: .hourAndMinute)
+                    .labelsHidden()
+                    .accessibilityLabel("\(title) end")
+            }
+            .disabled(!group.open)
+        }
+    }
+
+    private func timeBinding(_ keyPath: WritableKeyPath<BusinessHoursSchedule.DayGroup, Int>) -> Binding<Date> {
+        Binding(
+            get: {
+                let minutes = group[keyPath: keyPath]
+                return Calendar.current.date(
+                    bySettingHour: minutes / 60,
+                    minute: minutes % 60,
+                    second: 0,
+                    of: Date()
+                ) ?? Date()
+            },
+            set: { date in
+                let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+                group[keyPath: keyPath] = (components.hour ?? 0) * 60 + (components.minute ?? 0)
+            }
+        )
     }
 }

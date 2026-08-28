@@ -135,3 +135,85 @@ struct CallRecord: Identifiable, Codable, Equatable, Sendable {
     let duration: TimeInterval
     let missed: Bool
 }
+
+enum AssistantAnswerMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case never
+    case always
+    case outsideBusinessHours
+
+    var id: Self { self }
+}
+
+struct BusinessHoursSchedule: Codable, Equatable, Sendable {
+    struct DayGroup: Codable, Equatable, Sendable {
+        var open: Bool
+        var start: Int
+        var end: Int
+    }
+
+    var weekdays: DayGroup
+    var weekend: DayGroup
+
+    init(
+        weekdays: DayGroup = DayGroup(open: true, start: 9 * 60, end: 17 * 60),
+        weekend: DayGroup = DayGroup(open: false, start: 9 * 60, end: 17 * 60)
+    ) {
+        self.weekdays = weekdays
+        self.weekend = weekend
+    }
+}
+
+let assistantAnswerModeDefaultsKey = "assistantAnswerMode"
+let assistantAnswerModeMigrationDefaultsKey = "didMigrateAssistantAnswersIncomingCalls"
+let businessHoursDefaultsKey = "businessHours"
+
+@discardableResult
+func migrateAssistantAnswerMode(defaults: UserDefaults) -> AssistantAnswerMode {
+    if defaults.bool(forKey: assistantAnswerModeMigrationDefaultsKey) {
+        return defaults.string(forKey: assistantAnswerModeDefaultsKey)
+            .flatMap(AssistantAnswerMode.init(rawValue:)) ?? .never
+    }
+
+    let mode: AssistantAnswerMode
+    if let stored = defaults.string(forKey: assistantAnswerModeDefaultsKey),
+       let existingMode = AssistantAnswerMode(rawValue: stored) {
+        mode = existingMode
+    } else if let legacyValue = defaults.object(forKey: "assistantAnswersIncomingCalls") as? Bool {
+        mode = legacyValue ? .always : .never
+    } else {
+        mode = .never
+    }
+
+    defaults.set(mode.rawValue, forKey: assistantAnswerModeDefaultsKey)
+    defaults.set(true, forKey: assistantAnswerModeMigrationDefaultsKey)
+    return mode
+}
+
+func storedAssistantAnswerMode(defaults: UserDefaults) -> AssistantAnswerMode {
+    migrateAssistantAnswerMode(defaults: defaults)
+}
+
+func storedBusinessHoursSchedule(defaults: UserDefaults) -> BusinessHoursSchedule {
+    guard let data = defaults.data(forKey: businessHoursDefaultsKey),
+          let schedule = try? JSONDecoder().decode(BusinessHoursSchedule.self, from: data) else {
+        return BusinessHoursSchedule()
+    }
+    return schedule
+}
+
+func isWithinBusinessHours(
+    date: Date,
+    calendar: Calendar,
+    schedule: BusinessHoursSchedule
+) -> Bool {
+    let weekday = calendar.component(.weekday, from: date)
+    let group = weekday == 1 || weekday == 7 ? schedule.weekend : schedule.weekdays
+    guard group.open else { return false }
+
+    let components = calendar.dateComponents([.hour, .minute], from: date)
+    let minute = (components.hour ?? 0) * 60 + (components.minute ?? 0)
+    if group.end > group.start {
+        return minute >= group.start && minute < group.end
+    }
+    return minute >= group.start || minute < group.end
+}
