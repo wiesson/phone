@@ -1020,12 +1020,14 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func consume(_ text: String, from instance: BaresipInstance) {
-        appendDiagnostic(redactSensitiveValues(in: "baresip[\(instance.id)]: \(text)"))
         var buffer = lineBuffers[instance.id, default: ""]
         buffer += text.replacingOccurrences(of: "\r", with: "\n")
         while let newline = buffer.firstIndex(of: "\n") {
             let line = String(buffer[..<newline])
             buffer.removeSubrange(...newline)
+            if !line.isEmpty {
+                appendDiagnostic(redactSensitiveValues(in: "baresip[\(instance.id)]: \(line)\n"))
+            }
             consumeLine(line, from: instance)
         }
         if buffer.count > 16_000 { buffer.removeFirst(buffer.count - 16_000) }
