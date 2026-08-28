@@ -37,4 +37,10 @@ struct CallEventParsingTests {
         #expect(events.filter { if case .closed = $0 { true } else { false } }.count == 1)
         #expect(events.filter { $0 == .incoming }.isEmpty)
     }
+
+    @Test func filtersOnlyAudioStatisticsFromDiagnostics() {
+        let input = "kept before\n[0:00:07] audio=63978/62699 (bit/s)\rkept after\n"
+        #expect(filteringAudioStatistics(from: input) == "kept before\nkept after\n")
+        #expect(filteringAudioStatistics(from: "audio=63978/62699 (bit/s)\n") == "audio=63978/62699 (bit/s)\n")
+    }
 }

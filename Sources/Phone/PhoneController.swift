@@ -15,6 +15,71 @@ func normalizedDialTarget(from url: URL) -> String? {
     return target.isEmpty ? nil : target
 }
 
+func assistantCallInstructions(general: String, task: String) -> String {
+    let general = general.trimmingCharacters(in: .whitespacesAndNewlines)
+    let task = task.trimmingCharacters(in: .whitespacesAndNewlines)
+    let taskSection = task.isEmpty ? "" : "Auftrag für diesen Anruf:\n\(task)"
+    return [general, taskSection].filter { !$0.isEmpty }.joined(separator: "\n\n")
+}
+
+func filteringAudioStatistics(from text: String) -> String {
+    var result = ""
+    var segmentStart = text.startIndex
+    var index = text.startIndex
+
+    func isAudioStatistics(_ segment: Substring) -> Bool {
+        segment.range(
+            of: #"^\s*\[[0-9]+:[0-9]{2}:[0-9]{2}\]\s+audio=.*\(bit/s\)\s*$"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    while index < text.endIndex {
+        guard text[index] == "\r" || text[index] == "\n" else {
+            index = text.index(after: index)
+            continue
+        }
+        let segment = text[segmentStart..<index]
+        var separatorEnd = text.index(after: index)
+        if text[index] == "\r", separatorEnd < text.endIndex, text[separatorEnd] == "\n" {
+            separatorEnd = text.index(after: separatorEnd)
+        }
+        if !isAudioStatistics(segment) {
+            result += segment
+            result += text[index..<separatorEnd]
+        }
+        segmentStart = separatorEnd
+        index = separatorEnd
+    }
+
+    let trailingSegment = text[segmentStart...]
+    if !isAudioStatistics(trailingSegment) { result += trailingSegment }
+    return result
+}
+
+struct AssistantCallPlan {
+    private(set) var task: String?
+    private(set) var isActive = false
+
+    var isPending: Bool { task != nil }
+
+    mutating func begin(task: String) {
+        self.task = task
+        isActive = true
+    }
+
+    mutating func established() -> String? {
+        let pendingTask = task
+        task = nil
+        return pendingTask
+    }
+
+    mutating func callFailed() {
+        task = nil
+        isActive = false
+    }
+}
+
 let phoneDiagnosticQueue = DispatchQueue(label: "phone.diagnostic-log")
 
 func phoneDiagnosticLog(_ text: String) {
@@ -108,6 +173,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     @Published private(set) var geminiLiveState: GeminiLiveState = .off
     @Published private(set) var isGeminiConfigured = false
     @Published private(set) var isAutoAnswerArmed = false
+    @Published private(set) var isAssistantCallActive = false
 
     private var process: Process?
     private var input: Pipe?
@@ -118,12 +184,14 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private var geminiBridgeTask: Task<Void, Never>?
     private var autoAnswerTask: Task<Void, Never>?
     private var startsAssistantWhenConnected = false
+    private var assistantCallPlan = AssistantCallPlan()
     private var draftIDs: [Speaker: UUID] = [:]
     private var intelligenceRunning = false
     private var currentDirection: CallDirection?
     private var pendingDialRetry: String?
     private var contacts: [String: String] = [:]
     private var hasRegisteredAccount = false
+    private var hasSentSIPTrace = false
     private var isShuttingDown = false
 
     private var diagnosticLogURL: URL {
@@ -147,6 +215,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     var activityStatus: String {
+        if isAssistantCallActive { return "Assistant call" }
         if isAutoAnswerArmed { return "Assistant will answer" }
         return switch geminiLiveState {
         case .off: intelligenceStatus
@@ -158,6 +227,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     override init() {
         super.init()
+        rotateDiagnosticLogIfNeeded()
         let defaults = UserDefaults.standard
         let result = decodeManagedSIPAccounts(
             accountsData: defaults.data(forKey: "managedSIPAccounts"),
@@ -267,12 +337,37 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     func dial() {
+        clearAssistantCall()
+        pendingDialRetry = nil
         guard state.isReady else { return }
         let value = number.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, !value.contains("\n"), !value.contains("\r") else {
             state = .error("Please enter a valid number")
             return
         }
+        number = value
+        UserDefaults.standard.set(value, forKey: "lastDialedNumber")
+        currentDirection = .outgoing
+        state = .dialing(value)
+        send("/dial \(value)")
+    }
+
+    func dialWithAssistant(task: String) {
+        guard state.isReady, isGeminiConfigured else { return }
+        let value = number.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !value.contains("\n"), !value.contains("\r") else {
+            state = .error("Please enter a valid number")
+            return
+        }
+        let task = task.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !task.isEmpty else { return }
+        assistantCallPlan.begin(task: task)
+        isAssistantCallActive = true
+        beginDial(value, clearsRetry: true)
+    }
+
+    private func beginDial(_ value: String, clearsRetry: Bool) {
+        if clearsRetry { pendingDialRetry = nil }
         number = value
         UserDefaults.standard.set(value, forKey: "lastDialedNumber")
         currentDirection = .outgoing
@@ -294,6 +389,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     func reject() {
         guard state.isRinging else { return }
+        pendingDialRetry = nil
+        clearAssistantCall()
         cancelAutoAnswer()
         clearIncomingCallNotification()
         recordCall(missed: false)
@@ -326,24 +423,26 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     func toggleGeminiLive() {
         guard state.isConnected else { return }
         if isGeminiLiveActive {
+            clearAssistantCall()
             stopGeminiLive()
             return
         }
         startGeminiLive(sendsInitialGreeting: false)
     }
 
-    private func startGeminiLive(sendsInitialGreeting: Bool) {
+    private func startGeminiLive(sendsInitialGreeting: Bool, instructions instructionOverride: String? = nil) {
         guard state.isConnected else { return }
         guard let apiKey = GeminiAPIKeyStore.apiKey() else {
             geminiLiveState = .failed(GeminiLiveError.invalidAPIKey.localizedDescription)
             isGeminiConfigured = false
+            clearAssistantCall()
             return
         }
         let defaults = UserDefaults.standard
         let storedModel = defaults.string(forKey: "geminiLiveModel")?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let model = storedModel.flatMap { $0.isEmpty ? nil : $0 } ?? defaultGeminiLiveModel
-        let instructions = (defaults.string(forKey: "assistantInstructions") ?? defaultAssistantInstructions)
+        let instructions = instructionOverride ?? (defaults.string(forKey: "assistantInstructions") ?? defaultAssistantInstructions)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let bridge = geminiLiveBridge
         geminiLiveState = .connecting
@@ -359,6 +458,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 Task { @MainActor [weak self] in
                     self?.geminiLiveState = state
                     if case .failed(let message) = state {
+                        self?.clearAssistantCall()
                         self?.appendDiagnostic("phone-app: Gemini Live failed: \(message)\n")
                     }
                 }
@@ -508,6 +608,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private func startBaresip() {
         guard process == nil else { return }
         isShuttingDown = false
+        hasSentSIPTrace = false
         cleanupOrphanedBaresip()
         do {
             try regenerateManagedAccountsFile()
@@ -567,6 +668,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         } catch {
             process = nil
             input = nil
+            pendingDialRetry = nil
+            clearAssistantCall()
             registrationStatus = .failed("baresip could not be started")
             state = .error("baresip could not be started")
         }
@@ -703,6 +806,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         guard process === stoppedProcess else { return }
         process = nil
         input = nil
+        pendingDialRetry = nil
+        clearAssistantCall()
         try? FileManager.default.removeItem(at: pidFileURL)
         if intelligenceRunning || geminiLiveState != .off { finishCall() }
         if registrationStatus == .registering {
@@ -718,7 +823,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func appendDiagnostic(_ text: String) {
-        guard let data = text.data(using: .utf8) else { return }
+        let filtered = filteringAudioStatistics(from: text)
+        guard !filtered.isEmpty, let data = filtered.data(using: .utf8) else { return }
         let fileManager = FileManager.default
         if !fileManager.fileExists(atPath: diagnosticLogURL.path) {
             fileManager.createFile(atPath: diagnosticLogURL.path, contents: nil)
@@ -749,11 +855,18 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             hasRegisteredAccount = true
             registrationStatus = .registered
             if case .starting = state { state = .ready }
-            if UserDefaults.standard.bool(forKey: "sipTrace") { send("/siptrace") }
+            if UserDefaults.standard.bool(forKey: "sipTrace"), !hasSentSIPTrace {
+                hasSentSIPTrace = true
+                send("/siptrace")
+            }
         case .registrationFailed(let failure):
+            pendingDialRetry = nil
+            clearAssistantCall()
             registrationStatus = .failed(failure)
             state = .error(failure)
         case .incoming:
+            pendingDialRetry = nil
+            clearAssistantCall()
             let caller = callerName(from: line)
             currentDirection = .incoming
             state = .ringing(caller)
@@ -761,13 +874,21 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             armAutoAnswerIfNeeded()
         case .established:
             pendingDialRetry = nil
+            let assistantCallTask = assistantCallPlan.established()
             let startsAssistant = startsAssistantWhenConnected
             cancelAutoAnswer(resetAssistant: false)
             startsAssistantWhenConnected = false
             state = .connected(state.peer)
             clearIncomingCallNotification()
             beginCallIntelligence()
-            if startsAssistant { startGeminiLive(sendsInitialGreeting: true) }
+            if let assistantCallTask {
+                let defaults = UserDefaults.standard
+                let general = defaults.string(forKey: "assistantInstructions") ?? defaultAssistantInstructions
+                let instructions = assistantCallInstructions(general: general, task: assistantCallTask)
+                startGeminiLive(sendsInitialGreeting: true, instructions: instructions)
+            } else if startsAssistant {
+                startGeminiLive(sendsInitialGreeting: true)
+            }
         case .dialing:
             state = .dialing(number)
             clearIncomingCallNotification()
@@ -782,14 +903,19 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             if state.isInCall, !state.isConnected, let reason, !reason.isEmpty {
                 if case .dialing(let target) = state, reason.hasPrefix("403"), pendingDialRetry == nil {
                     pendingDialRetry = target
-                    finishCall()
+                    finishCall(preservingDialRetry: true, preservingAssistantCall: true)
                     state = .ready
                     appendDiagnostic("phone-app: 403 on first INVITE, retrying dial once\n")
                     Task { @MainActor [weak self] in
                         try? await Task.sleep(for: .seconds(1.5))
-                        guard let self, self.pendingDialRetry == target, self.state.isReady else { return }
+                        guard let self, self.pendingDialRetry == target else { return }
+                        guard self.state.isReady else {
+                            self.pendingDialRetry = nil
+                            self.clearAssistantCall()
+                            return
+                        }
                         self.number = target
-                        self.dial()
+                        self.beginDial(target, clearsRetry: false)
                     }
                     return
                 }
@@ -809,6 +935,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             clearIncomingCallNotification()
             if missed { showMissedCallNotification(caller: caller) }
         case .noAccounts(let failure):
+            pendingDialRetry = nil
+            clearAssistantCall()
             registrationStatus = .failed(failure.isEmpty ? "No SIP account configured" : failure)
             state = .error("No SIP account configured")
         }
@@ -1019,7 +1147,9 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
-    private func finishCall() {
+    private func finishCall(preservingDialRetry: Bool = false, preservingAssistantCall: Bool = false) {
+        if !preservingDialRetry { pendingDialRetry = nil }
+        if !preservingAssistantCall { clearAssistantCall() }
         cancelAutoAnswer()
         stopGeminiLive()
         isMuted = false
@@ -1057,6 +1187,21 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         geminiBridgeTask?.cancel()
         let bridge = geminiLiveBridge
         geminiBridgeTask = Task { await bridge.stop() }
+    }
+
+    private func clearAssistantCall() {
+        assistantCallPlan.callFailed()
+        isAssistantCallActive = false
+    }
+
+    private func rotateDiagnosticLogIfNeeded() {
+        let fileManager = FileManager.default
+        guard let attributes = try? fileManager.attributesOfItem(atPath: diagnosticLogURL.path),
+              let size = attributes[.size] as? NSNumber,
+              size.int64Value > 5 * 1_024 * 1_024 else { return }
+        let rotatedURL = diagnosticLogURL.appendingPathExtension("1")
+        try? fileManager.removeItem(at: rotatedURL)
+        try? fileManager.moveItem(at: diagnosticLogURL, to: rotatedURL)
     }
 
     private func installNotifications() {

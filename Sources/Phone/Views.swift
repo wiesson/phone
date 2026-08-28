@@ -7,6 +7,8 @@ struct PhonePanel: View {
     @Environment(\.openWindow) private var openWindow
     @FocusState private var numberFieldFocused: Bool
     @State private var showKeypad = false
+    @State private var showAssistantCall = false
+    @AppStorage("assistantCallTask") private var assistantCallTask = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,7 +78,7 @@ struct PhonePanel: View {
                 }
                 Text(phone.activityStatus)
                     .font(.system(size: 10))
-                    .foregroundStyle(phone.geminiLiveState == .off && !phone.isAutoAnswerArmed ? Color.secondary.opacity(0.7) : Color.purple)
+                    .foregroundStyle(phone.geminiLiveState == .off && !phone.isAutoAnswerArmed && !phone.isAssistantCallActive ? Color.secondary.opacity(0.7) : Color.purple)
                     .lineLimit(1)
             }
             Spacer()
@@ -106,6 +108,30 @@ struct PhonePanel: View {
                     .buttonBorderShape(.circle)
                     .tint(.green)
                     .help("Call")
+
+                    Button {
+                        showAssistantCall = true
+                    } label: {
+                        ZStack {
+                            Image(systemName: "phone.fill")
+                                .font(.system(size: 13, weight: .semibold))
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 8, weight: .bold))
+                                .offset(x: 8, y: -8)
+                        }
+                        .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
+                    .tint(.purple)
+                    .disabled(
+                        phone.number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        !phone.isGeminiConfigured
+                    )
+                    .help(phone.isGeminiConfigured ? "Call with Assistant" : "Configure a Gemini API key in Settings")
+                    .popover(isPresented: $showAssistantCall, arrowEdge: .bottom) {
+                        assistantCallPopover
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -184,6 +210,30 @@ struct PhonePanel: View {
             } else {
                 ProgressView("Registering with the provider …")
                     .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(16)
+    }
+
+    private var assistantCallPopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Task for the assistant")
+                .font(.headline)
+            TextEditor(text: $assistantCallTask)
+                .font(.system(size: 12))
+                .frame(width: 290, height: 100)
+                .padding(5)
+                .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+            HStack {
+                Button("Cancel") { showAssistantCall = false }
+                Spacer()
+                Button("Call with Assistant") {
+                    phone.dialWithAssistant(task: assistantCallTask)
+                    showAssistantCall = false
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.purple)
+                .disabled(assistantCallTask.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(16)
