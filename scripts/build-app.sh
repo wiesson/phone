@@ -8,12 +8,16 @@ SIGN_IDENTITY=${SIGN_IDENTITY:--}
 
 cd "$ROOT"
 sh "$ROOT/scripts/build-audio-tap.sh"
-swift build -c debug
+mkdir -p "$ROOT/.build/ModuleCache"
+export CLANG_MODULE_CACHE_PATH="$ROOT/.build/ModuleCache"
+export SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/.build/ModuleCache"
+swift build --disable-sandbox -c debug
 
-BIN_DIR=$(swift build -c debug --show-bin-path)
+BIN_DIR=$(swift build --disable-sandbox -c debug --show-bin-path)
 APP="$ROOT/dist/Phone.app"
 BARESIP_PREFIX=${BARESIP_PREFIX:-$(brew --prefix baresip 2>/dev/null || true)}
 LIBRE_PREFIX=${LIBRE_PREFIX:-$(brew --prefix libre 2>/dev/null || true)}
+SPANDSP_PREFIX=${SPANDSP_PREFIX:-$(brew --prefix spandsp 2>/dev/null || true)}
 BARESIP_EXECUTABLE="$BARESIP_PREFIX/bin/baresip"
 
 if [ ! -x "$BARESIP_EXECUTABLE" ]; then
@@ -36,8 +40,23 @@ cp "$ROOT/runtime/baresip/config" "$APP/Contents/Resources/baresip/config"
 cp "$ROOT/runtime/baresip/accounts.example" "$APP/Contents/Resources/baresip/accounts.example"
 cp "$ROOT/Resources/baresip/contacts" "$APP/Contents/Resources/baresip/contacts"
 
-for module in $(awk '$1 == "module" || $1 == "module_app" {print $2}' "$ROOT/runtime/baresip/config"); do
-  if [ "$module" = "phone_tap.so" ]; then
+if [ -f "$ROOT/runtime/modules/g722.so" ]; then
+  config="$APP/Contents/Resources/baresip/config"
+  temporary_config="$config.tmp"
+  awk '
+    /^[[:space:]]*#?[[:space:]]*module[[:space:]]+g722[.]so([[:space:]]|$)/ { next }
+    /^[[:space:]]*module[[:space:]]+g711[.]so([[:space:]]|$)/ && !added {
+      print "module\t\t\tg722.so"
+      added = 1
+    }
+    { print }
+    END { if (!added) print "module\t\t\tg722.so" }
+  ' "$config" > "$temporary_config"
+  mv "$temporary_config" "$config"
+fi
+
+for module in $(awk '$1 == "module" || $1 == "module_app" {print $2}' "$APP/Contents/Resources/baresip/config"); do
+  if [ "$module" = "phone_tap.so" ] || [ "$module" = "g722.so" ]; then
     source="$ROOT/runtime/modules/$module"
   else
     source="$BARESIP_PREFIX/lib/baresip/modules/$module"
@@ -72,7 +91,7 @@ resolve_dependency() {
       ;;
     @rpath/*)
       relative=${dependency#@rpath/}
-      for directory in "$(dirname "$object")" "$BARESIP_PREFIX/lib" "$LIBRE_PREFIX/lib"; do
+      for directory in "$(dirname "$object")" "$BARESIP_PREFIX/lib" "$LIBRE_PREFIX/lib" "$SPANDSP_PREFIX/lib"; do
         if [ -f "$directory/$relative" ]; then
           printf '%s\n' "$directory/$relative"
           return
