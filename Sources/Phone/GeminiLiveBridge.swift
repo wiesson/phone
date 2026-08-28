@@ -50,6 +50,14 @@ func resolveAssistantProfile(
     return ResolvedAssistantProfile(account: account, instructions: instructions, contextData: contextData)
 }
 
+let phoneEtiquettePreamble = """
+Telefon-Grundregeln: Du führst ein Telefongespräch mit genau einem Anrufer. \
+Sprich in kurzen Sätzen und stelle höchstens eine Frage pro Redebeitrag. \
+Wenn du mehrere Stimmen, Hintergrundgespräche oder Störgeräusche hörst, bleib ruhig bei deinem Gesprächspartner \
+und reagiere nur auf das, was klar an dich gerichtet ist; frag im Zweifel kurz nach. \
+Wenn du unterbrochen wirst, hör auf zu sprechen, höre zu und antworte dann knapp auf das Neue.
+"""
+
 func composeAssistantSystemInstruction(
     instructions: String,
     contextData: String?,
@@ -59,7 +67,7 @@ func composeAssistantSystemInstruction(
     let context = contextData?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     let dataSection = context.isEmpty ? "" : "Daten:\n\(context)"
     let greeting = includesGreetingTrigger ? assistantGreetingTrigger : ""
-    return [instructions, dataSection, greeting].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    return [phoneEtiquettePreamble, instructions, dataSection, greeting].filter { !$0.isEmpty }.joined(separator: "\n\n")
 }
 
 enum GeminiLiveState: Equatable, Sendable {
@@ -381,7 +389,14 @@ private final class AudioInjectionSender {
                 }
             }
         }
-        guard sent == packet.count else { throw GeminiLiveError.socket(errno) }
+        guard sent == packet.count else {
+            let code = errno
+            if code == ENOBUFS || code == ECONNREFUSED || code == ENOENT {
+                phoneDiagnosticLog("phone-app: injection packet dropped (\(code)) — receiver not draining\n")
+                return
+            }
+            throw GeminiLiveError.socket(code)
+        }
         if !samples.isEmpty { lastSampleRate = sampleRate }
     }
 
