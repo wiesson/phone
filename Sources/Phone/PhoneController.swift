@@ -241,6 +241,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     override init() {
+        migrateAssistantAnswerMode(defaults: UserDefaults.standard)
         store = (try? PhoneStore()) ?? (try! PhoneStore(path: ":memory:"))
         super.init()
         rotateDiagnosticLogIfNeeded()
@@ -1211,8 +1212,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         UserDefaults.standard.object(forKey: "archiveConversations") as? Bool ?? true
     }
 
-    private var assistantAnswersIncomingCalls: Bool {
-        UserDefaults.standard.object(forKey: "assistantAnswersIncomingCalls") as? Bool ?? false
+    private var assistantAnswerMode: AssistantAnswerMode {
+        storedAssistantAnswerMode(defaults: UserDefaults.standard)
     }
 
     private var assistantAnswerDelay: Int {
@@ -1222,7 +1223,17 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private func armAutoAnswerIfNeeded() {
         cancelAutoAnswer()
-        guard assistantAnswersIncomingCalls, isGeminiConfigured else { return }
+        guard isGeminiConfigured else { return }
+        switch assistantAnswerMode {
+        case .never:
+            return
+        case .always:
+            break
+        case .outsideBusinessHours:
+            let defaults = UserDefaults.standard
+            let schedule = storedBusinessHoursSchedule(defaults: defaults)
+            guard !isWithinBusinessHours(date: Date(), calendar: .current, schedule: schedule) else { return }
+        }
         isAutoAnswerArmed = true
         let delay = assistantAnswerDelay
         autoAnswerTask = Task { @MainActor [weak self] in
