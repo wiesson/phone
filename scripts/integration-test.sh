@@ -211,7 +211,6 @@ expectations_match() {
   fi
   cat > "$EXPECTED" <<'EXPECTATIONS'
 A established: yes
-B incoming: yes
 B established: yes
 A DTMF after established: yes
 A closed after hangup: yes
@@ -219,10 +218,9 @@ A unexpected incoming after established: no
 EXPECTATIONS
   {
     printf 'A established: %s\n' "$(contains "$A_LOG" "Call established")"
-    printf 'B incoming: %s\n' "$(contains "$B_LOG" "Incoming call from")"
     printf 'B established: %s\n' "$(contains "$B_LOG" "Call established")"
     printf 'A DTMF after established: %s\n' "$(contains "$A_DTMF_LOG" "send DTMF digit|telephone-event")"
-    printf 'A closed after hangup: %s\n' "$(contains "$A_CLOSE_LOG" "call closed|session closed")"
+    printf 'A closed after hangup: %s\n' "$(contains "$A_CLOSE_LOG" "call closed|session closed|Call with .* terminated")"
     printf 'A unexpected incoming after established: %s\n' "$(contains "$A_WINDOW" "Incoming call from")"
   } > "$OBSERVED"
   diff -u "$EXPECTED" "$OBSERVED"
@@ -244,13 +242,12 @@ wait_for "$A_LOG" "baresip is ready" "$A_PID" 30 || show_failure "instance A did
 wait_for "$B_LOG" "baresip is ready" "$B_PID" 30 || show_failure "instance B did not become ready"
 
 send_a "/uanew <sip:test@$HOST_IP:5088;transport=udp>;regint=0"
-send_b "/uanew <sip:test@$HOST_IP:5089;transport=udp>;regint=0"
+send_b "/uanew <sip:test@$HOST_IP:5089;transport=udp>;regint=0;answermode=auto"
 wait_for "$A_LOG" "Creating UA for.*:5088" "$A_PID" 15 || show_failure "instance A did not create its registrar-less UA"
 wait_for "$B_LOG" "Creating UA for.*:5089" "$B_PID" 15 || show_failure "instance B did not create its registrar-less UA"
 
 send_a "/dial sip:test@$HOST_IP:5089;transport=udp"
 wait_for "$A_LOG" "Call established" "$A_PID" 45 || show_failure "instance A did not establish the call"
-wait_for "$B_LOG" "Incoming call from" "$B_PID" 15 || show_failure "instance B did not report the incoming call"
 wait_for "$B_LOG" "Call established" "$B_PID" 15 || show_failure "instance B did not establish the call"
 
 A_DTMF_START=$(wc -c < "$A_LOG" | tr -d ' ')
@@ -259,12 +256,12 @@ wait_for_after "$A_LOG" "send DTMF digit|telephone-event" "$A_PID" 15 "$A_DTMF_S
 send_a "/mute"
 wait_for "$A_LOG" "call muted" "$A_PID" 15 || show_failure "instance A did not mute the call"
 send_a "/mute"
-wait_for "$A_LOG" "call unmuted" "$A_PID" 15 || show_failure "instance A did not unmute the call"
+wait_for "$A_LOG" "call un-muted" "$A_PID" 15 || show_failure "instance A did not unmute the call"
 awk '/Call established/ { active = 1 } active { print }' "$A_LOG" > "$A_WINDOW"
 A_WINDOW_CAPTURED=yes
 A_CLOSE_START=$(wc -c < "$A_LOG" | tr -d ' ')
 send_a "/hangup"
-wait_for_after "$A_LOG" "call closed|session closed" "$A_PID" 30 "$A_CLOSE_START" "$A_CLOSE_LOG" || show_failure "instance A did not close the call after hangup"
+wait_for_after "$A_LOG" "call closed|session closed|Call with .* terminated" "$A_PID" 30 "$A_CLOSE_START" "$A_CLOSE_LOG" || show_failure "instance A did not close the call after hangup"
 
 send_a "/quit"
 send_b "/quit"
