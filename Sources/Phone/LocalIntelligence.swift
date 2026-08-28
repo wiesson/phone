@@ -24,6 +24,8 @@ actor SpeechLane {
     private var targetFormat: AVAudioFormat?
     private var converter: AVAudioConverter?
     private var sourceFormat: AVAudioFormat?
+    private var appendedBuffers = 0
+    private var droppedBuffers = 0
     private var resultTask: Task<Void, Never>?
     private var analysisTask: Task<Void, Never>?
     private var onResult: (@Sendable (Speaker, String, Bool) -> Void)?
@@ -64,9 +66,13 @@ actor SpeechLane {
 
         resultTask = Task { [speaker] in
             do {
+                var results = 0
                 for try await result in transcriber.results {
+                    results += 1
+                    if results == 1 { phoneDiagnosticLog("phone-app: \(speaker.title) transcriber produced its first result\n") }
                     onResult(speaker, String(result.text.characters), result.isFinal)
                 }
+                phoneDiagnosticLog("phone-app: \(speaker.title) transcriber finished after \(results) results\n")
             } catch {
                 if !(error is CancellationError) {
                     onError(speaker, "Transcriber failed: \(error.localizedDescription)")
@@ -107,6 +113,7 @@ actor SpeechLane {
 
         if inputFormat == targetFormat {
             continuation?.yield(AnalyzerInput(buffer: input))
+            noteAppended()
             return
         }
 
@@ -131,10 +138,26 @@ actor SpeechLane {
         }
         if status == .haveData, output.frameLength > 0 {
             continuation?.yield(AnalyzerInput(buffer: output))
+            noteAppended()
+        } else {
+            droppedBuffers += 1
+            if droppedBuffers == 1 || droppedBuffers % 250 == 0 {
+                phoneDiagnosticLog("phone-app: \(speaker.title) lane dropped \(droppedBuffers) buffers (status \(status.rawValue), error: \(conversionError?.localizedDescription ?? "none"))\n")
+            }
+        }
+    }
+
+    private func noteAppended() {
+        appendedBuffers += 1
+        if appendedBuffers == 1 || appendedBuffers % 250 == 0 {
+            phoneDiagnosticLog("phone-app: \(speaker.title) lane fed \(appendedBuffers) buffers to the analyzer (target \(Int(targetFormat?.sampleRate ?? 0)) Hz)\n")
         }
     }
 
     func stop() async {
+        phoneDiagnosticLog("phone-app: \(speaker.title) lane stopping — appended \(appendedBuffers), dropped \(droppedBuffers)\n")
+        appendedBuffers = 0
+        droppedBuffers = 0
         continuation?.finish()
         try? await analyzer?.finalizeAndFinishThroughEndOfInput()
         resultTask?.cancel()

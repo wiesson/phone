@@ -489,6 +489,15 @@ struct PhoneSettingsView: View {
                 .tabItem { Label("Phone", systemImage: "phone") }
         }
         .frame(width: 520, height: 360)
+        .alert(
+            accountToRemove.map { "Remove \($0.displayName)?" } ?? "Remove account?",
+            isPresented: isConfirmingRemoval
+        ) {
+            Button("Remove Account", role: .destructive, action: removeSelectedAccount)
+            Button("Cancel", role: .cancel) { accountToRemove = nil }
+        } message: {
+            Text("Its password will also be removed from Keychain.")
+        }
     }
 
     private var intelligenceSettings: some View {
@@ -648,15 +657,6 @@ struct PhoneSettingsView: View {
                 selectedAccountAddress = phone.activeManagedSIPAddress
             }
         }
-        .alert(
-            accountToRemove.map { "Remove \($0.displayName)?" } ?? "Remove account?",
-            isPresented: isConfirmingRemoval
-        ) {
-            Button("Remove Account", role: .destructive, action: removeSelectedAccount)
-            Button("Cancel", role: .cancel) { accountToRemove = nil }
-        } message: {
-            Text("Its password will also be removed from Keychain.")
-        }
     }
 
     private var selectedAccount: ManagedSIPAccount? {
@@ -693,6 +693,14 @@ struct PhoneSettingsView: View {
             Text(account.provider.shortName)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Button {
+                accountToRemove = account
+            } label: {
+                Image(systemName: "trash")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Remove account")
         }
     }
 
