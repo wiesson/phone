@@ -372,8 +372,14 @@ actor GeminiLiveBridge {
                 case .data(let value): data = value
                 @unknown default: continue
                 }
-                guard let decoded = GeminiLiveProtocol.decodeServerMessage(data) else { continue }
-                if decoded.setupComplete { publish(.live) }
+                guard let decoded = GeminiLiveProtocol.decodeServerMessage(data) else {
+                    phoneDiagnosticLog("phone-app: Gemini message not decoded: \(String(data: data.prefix(300), encoding: .utf8) ?? "<binary>")\n")
+                    continue
+                }
+                if decoded.setupComplete {
+                    phoneDiagnosticLog("phone-app: Gemini setup complete, session live\n")
+                    publish(.live)
+                }
                 for chunk in decoded.audioChunks {
                     modelAudio.append(chunk)
                 }
@@ -382,6 +388,9 @@ actor GeminiLiveBridge {
             }
         } catch {
             if requestID == sessionID, state != .off && !(error is CancellationError) {
+                let code = socket?.closeCode.rawValue ?? -1
+                let reason = socket?.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? "none"
+                phoneDiagnosticLog("phone-app: Gemini socket closed — code \(code), reason: \(reason), error: \(error)\n")
                 fail(error.localizedDescription)
             }
         }
