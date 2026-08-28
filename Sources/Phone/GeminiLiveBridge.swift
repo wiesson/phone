@@ -157,6 +157,42 @@ struct GeminiServerMessage: Equatable, Sendable {
     let turnComplete: Bool
     let inputTranscription: String?
     let outputTranscription: String?
+    let toolCalls: [GeminiToolCall]
+}
+
+indirect enum GeminiToolArgument: Equatable, Sendable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case object([String: GeminiToolArgument])
+    case array([GeminiToolArgument])
+    case null
+
+    var stringValue: String? {
+        guard case .string(let value) = self else { return nil }
+        return value
+    }
+
+    init(jsonValue: Any) {
+        switch jsonValue {
+        case let value as String:
+            self = .string(value)
+        case let value as NSNumber:
+            self = CFGetTypeID(value) == CFBooleanGetTypeID() ? .bool(value.boolValue) : .number(value.doubleValue)
+        case let value as [String: Any]:
+            self = .object(value.mapValues(Self.init(jsonValue:)))
+        case let value as [Any]:
+            self = .array(value.map(Self.init(jsonValue:)))
+        default:
+            self = .null
+        }
+    }
+}
+
+struct GeminiToolCall: Equatable, Sendable {
+    let id: String
+    let name: String
+    let arguments: [String: GeminiToolArgument]
 }
 
 struct GeminiTranscriptUtterance: Equatable, Sendable {
@@ -273,7 +309,30 @@ enum GeminiLiveProtocol {
             "model": modelPath,
             "generationConfig": ["responseModalities": ["AUDIO"]],
             "inputAudioTranscription": [String: Any](),
-            "outputAudioTranscription": [String: Any]()
+            "outputAudioTranscription": [String: Any](),
+            "tools": [[
+                "functionDeclarations": [
+                    [
+                        "name": "send_dtmf",
+                        "description": "Send one DTMF key during the phone call to navigate an IVR menu.",
+                        "parameters": [
+                            "type": "OBJECT",
+                            "properties": [
+                                "digit": [
+                                    "type": "STRING",
+                                    "description": "The single DTMF key to send.",
+                                    "enum": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "#"]
+                                ]
+                            ],
+                            "required": ["digit"]
+                        ]
+                    ],
+                    [
+                        "name": "handover_to_user",
+                        "description": "Make the user audible after announcing that the call is being handed over."
+                    ]
+                ]
+            ]]
         ]
         let trimmedInstructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedInstructions.isEmpty {
@@ -307,16 +366,39 @@ enum GeminiLiveProtocol {
         return try jsonString(object)
     }
 
+    static func toolResponseMessage(for call: GeminiToolCall) throws -> String {
+        let object: [String: Any] = [
+            "toolResponse": [
+                "functionResponses": [[
+                    "id": call.id,
+                    "name": call.name,
+                    "response": ["result": "ok"]
+                ]]
+            ]
+        ]
+        return try jsonString(object)
+    }
+
     static func decodeServerMessage(_ data: Data) -> GeminiServerMessage? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let setupComplete = object["setupComplete"] != nil
+        let toolCall = object["toolCall"] as? [String: Any]
+        let functionCalls = toolCall?["functionCalls"] as? [[String: Any]] ?? []
+        let decodedToolCalls = functionCalls.compactMap { functionCall -> GeminiToolCall? in
+            guard let id = functionCall["id"] as? String,
+                  let name = functionCall["name"] as? String else { return nil }
+            let arguments = (functionCall["args"] as? [String: Any] ?? [:])
+                .mapValues(GeminiToolArgument.init(jsonValue:))
+            return GeminiToolCall(id: id, name: name, arguments: arguments)
+        }
         guard let serverContent = object["serverContent"] as? [String: Any] else {
             return GeminiServerMessage(
                 setupComplete: setupComplete,
                 audioChunks: [],
                 turnComplete: false,
                 inputTranscription: nil,
-                outputTranscription: nil
+                outputTranscription: nil,
+                toolCalls: decodedToolCalls
             )
         }
         let turnComplete = serverContent["turnComplete"] as? Bool ?? false
@@ -334,7 +416,8 @@ enum GeminiLiveProtocol {
             audioChunks: chunks,
             turnComplete: turnComplete,
             inputTranscription: inputTranscription,
-            outputTranscription: outputTranscription
+            outputTranscription: outputTranscription,
+            toolCalls: decodedToolCalls
         )
     }
 
@@ -540,6 +623,7 @@ private final class AudioInjectionSender {
 actor GeminiLiveBridge {
     typealias StateHandler = @Sendable (GeminiLiveState) -> Void
     typealias TranscriptHandler = @Sendable (Speaker, String) -> Void
+    typealias ToolCallHandler = @Sendable (GeminiToolCall) async -> Void
 
     private var state: GeminiLiveState = .off
     private var session: URLSession?
@@ -548,6 +632,7 @@ actor GeminiLiveBridge {
     private var pacingTask: Task<Void, Never>?
     private var stateHandler: StateHandler?
     private var transcriptHandler: TranscriptHandler?
+    private var toolCallHandler: ToolCallHandler?
     private var transcriptionBuffer = GeminiTranscriptionBuffer()
     private var callerConverter = GeminiCallerAudioConverter()
     private var modelResampler = PCM16MonoResampler()
@@ -568,7 +653,8 @@ actor GeminiLiveBridge {
         sendsInitialGreeting: Bool = false,
         injectionSocketPath: String,
         onState: @escaping StateHandler,
-        onTranscript: @escaping TranscriptHandler
+        onTranscript: @escaping TranscriptHandler,
+        onToolCall: @escaping ToolCallHandler
     ) async {
         if let brainURL {
             await startBrain(
@@ -591,6 +677,7 @@ actor GeminiLiveBridge {
         }
         stateHandler = onState
         transcriptHandler = onTranscript
+        toolCallHandler = onToolCall
         self.sendsInitialGreeting = sendsInitialGreeting
         publish(.connecting)
         do {
@@ -675,6 +762,7 @@ actor GeminiLiveBridge {
         if notify { stateHandler?(.off) }
         stateHandler = nil
         transcriptHandler = nil
+        toolCallHandler = nil
     }
 
     private func startBrain(
@@ -783,6 +871,10 @@ actor GeminiLiveBridge {
                 )
                 for utterance in utterances {
                     transcriptHandler?(utterance.speaker, utterance.text)
+                }
+                for call in decoded.toolCalls {
+                    await toolCallHandler?(call)
+                    try await socket.send(.string(GeminiLiveProtocol.toolResponseMessage(for: call)))
                 }
                 flushModelAudio()
                 if decoded.turnComplete { flushPartialOutput() }
@@ -907,6 +999,7 @@ actor GeminiLiveBridge {
         pendingInjectionEnd = false
         transcriptionBuffer = GeminiTranscriptionBuffer()
         transcriptHandler = nil
+        toolCallHandler = nil
         publish(.failed("Gemini Live: \(message)"))
     }
 }

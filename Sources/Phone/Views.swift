@@ -379,6 +379,7 @@ struct PhoneSettingsView: View {
     @AppStorage(businessHoursDefaultsKey) private var businessHoursData = (try? JSONEncoder().encode(BusinessHoursSchedule())) ?? Data()
     @AppStorage("assistantAnswerDelay") private var assistantAnswerDelay = 5
     @AppStorage("assistantInstructions") private var assistantInstructions = defaultAssistantInstructions
+    @AppStorage("assistantUserDisplayName") private var assistantUserDisplayName = ""
     @AppStorage("webhookURL") private var webhookURL = ""
     @AppStorage("webhookCallEvents") private var webhookCallEvents = true
     @AppStorage("webhookContentEvents") private var webhookContentEvents = false
@@ -614,6 +615,11 @@ struct PhoneSettingsView: View {
                     in: 0...30
                 )
                 .disabled(assistantAnswerMode == .never)
+                LabeledContent("Your name (for call handover)") {
+                    TextField("Optional", text: $assistantUserDisplayName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 300)
+                }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Assistant instructions")
                         .fontWeight(.medium)

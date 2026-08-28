@@ -16,11 +16,21 @@ func normalizedDialTarget(from url: URL) -> String? {
     return target.isEmpty ? nil : target
 }
 
-func assistantCallInstructions(general: String, task: String) -> String {
+func assistantCallInstructions(general: String, task: String, userDisplayName: String = "") -> String {
     let general = general.trimmingCharacters(in: .whitespacesAndNewlines)
     let task = task.trimmingCharacters(in: .whitespacesAndNewlines)
     let taskSection = task.isEmpty ? "" : "Auftrag für diesen Anruf:\n\(task)"
-    return [general, taskSection].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    guard !taskSection.isEmpty else { return general }
+    let displayName = userDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let handoverPhrase = displayName.isEmpty
+        ? "Ich verbinde Sie jetzt."
+        : "Ich verbinde Sie mit \(displayName)."
+    let callControl = """
+    Anrufsteuerung:
+    Du kannst auf automatische Telefonmenüs (IVR) und Warteschleifen treffen. Höre aufmerksam zu, wähle die passende Menüoption und rufe send_dtmf mit genau der benötigten Taste auf. Bleibe in Warteschleifen geduldig und warte weiter.
+    Sobald ein echter Mensch antwortet, trage das Anliegen kurz vor. Sage danach exakt „\(handoverPhrase)“ und rufe unmittelbar handover_to_user auf.
+    """
+    return [general, taskSection, callControl].filter { !$0.isEmpty }.joined(separator: "\n\n")
 }
 
 func filteringAudioStatistics(from text: String) -> String {
@@ -718,6 +728,11 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                     Task { @MainActor [weak self] in
                         self?.receiveGeminiTranscript(speaker: speaker, text: text)
                     }
+                },
+                onToolCall: { [weak self] call in
+                    await MainActor.run { [weak self] in
+                        self?.handleGeminiToolCall(call)
+                    }
                 }
             )
             if Task.isCancelled { await bridge.stop() }
@@ -1248,7 +1263,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                     globalInstructions: globalInstructions,
                     date: Date()
                 )
-                let instructions = assistantCallInstructions(general: general, task: assistantCallTask)
+                let displayName = UserDefaults.standard.string(forKey: "assistantUserDisplayName") ?? ""
+                let instructions = assistantCallInstructions(
+                    general: general,
+                    task: assistantCallTask,
+                    userDisplayName: displayName
+                )
                 startGeminiLive(sendsInitialGreeting: true, instructions: instructions)
             } else if startsAssistant {
                 startGeminiLive(sendsInitialGreeting: true)
@@ -1771,6 +1791,29 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         guard isMuted, state.isConnected else { return }
         send("/mute")
         isMuted = false
+    }
+
+    private func handleGeminiToolCall(_ call: GeminiToolCall) {
+        guard isAssistantCallActive, state.isConnected else { return }
+        switch call.name {
+        case "send_dtmf":
+            guard let value = call.arguments["digit"]?.stringValue,
+                  value.count == 1,
+                  let digit = value.first else { return }
+            sendDTMF(digit)
+        case "handover_to_user":
+            unmuteAfterBridgeIfNeeded()
+            let content = UNMutableNotificationContent()
+            content.title = "Assistant Call"
+            content.body = "Der Assistent verbindet dich jetzt"
+            content.sound = .default
+            UNUserNotificationCenter.current().add(
+                UNNotificationRequest(identifier: "assistant-handover-\(UUID())", content: content, trigger: nil)
+            )
+            NSSound.beep()
+        default:
+            return
+        }
     }
 
     private func stopGeminiLive(preservingTranscriptionRouting: Bool = false) {

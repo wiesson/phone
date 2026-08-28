@@ -29,15 +29,37 @@ import Testing
     #expect(setup["outputAudioTranscription"] as? [String: Any] != nil)
 }
 
+@Test func encodesGeminiToolDeclarations() throws {
+    let message = try GeminiLiveProtocol.setupMessage(model: "gemini-live-test", instructions: "Handle the call.")
+    let root = try #require(JSONSerialization.jsonObject(with: Data(message.utf8)) as? [String: Any])
+    let setup = try #require(root["setup"] as? [String: Any])
+    let tools = try #require(setup["tools"] as? [[String: Any]])
+    let declarations = try #require(tools.first?["functionDeclarations"] as? [[String: Any]])
+
+    #expect(declarations.map { $0["name"] as? String } == ["send_dtmf", "handover_to_user"])
+    let dtmf = try #require(declarations.first)
+    let parameters = try #require(dtmf["parameters"] as? [String: Any])
+    let properties = try #require(parameters["properties"] as? [String: Any])
+    let digit = try #require(properties["digit"] as? [String: Any])
+    #expect(digit["enum"] as? [String] == ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "#"])
+    #expect(parameters["required"] as? [String] == ["digit"])
+}
+
 @Test func composesAssistantCallInstructions() {
-    #expect(
-        assistantCallInstructions(general: "Allgemeine Anweisung", task: "Termin vereinbaren") ==
-        "Allgemeine Anweisung\n\nAuftrag für diesen Anruf:\nTermin vereinbaren"
+    let named = assistantCallInstructions(
+        general: "Allgemeine Anweisung",
+        task: "Termin vereinbaren",
+        userDisplayName: "  Arne  "
     )
-    #expect(
-        assistantCallInstructions(general: "", task: "Termin vereinbaren") ==
-        "Auftrag für diesen Anruf:\nTermin vereinbaren"
-    )
+    #expect(named.contains("Allgemeine Anweisung\n\nAuftrag für diesen Anruf:\nTermin vereinbaren"))
+    #expect(named.contains("send_dtmf"))
+    #expect(named.contains("Warteschleifen geduldig"))
+    #expect(named.contains("Ich verbinde Sie mit Arne."))
+    #expect(named.contains("handover_to_user"))
+
+    let unnamed = assistantCallInstructions(general: "", task: "Termin vereinbaren")
+    #expect(unnamed.contains("Auftrag für diesen Anruf:\nTermin vereinbaren"))
+    #expect(unnamed.contains("Ich verbinde Sie jetzt."))
     #expect(assistantCallInstructions(general: "Allgemeine Anweisung", task: "") == "Allgemeine Anweisung")
 }
 
@@ -112,6 +134,32 @@ import Testing
     #expect(message.turnComplete)
     #expect(message.inputTranscription == "Ich brauche einen Termin.")
     #expect(message.outputTranscription == "Gern, wann passt es?")
+    #expect(message.toolCalls.isEmpty)
+}
+
+@Test func decodesGeminiToolCalls() throws {
+    let data = Data(#"{"toolCall":{"functionCalls":[{"id":"call-123","name":"send_dtmf","args":{"digit":"7","nested":{"wait":true}}},{"id":"call-456","name":"handover_to_user","args":{}}]}}"#.utf8)
+    let message = try #require(GeminiLiveProtocol.decodeServerMessage(data))
+
+    #expect(message.toolCalls.count == 2)
+    #expect(message.toolCalls[0].id == "call-123")
+    #expect(message.toolCalls[0].name == "send_dtmf")
+    #expect(message.toolCalls[0].arguments["digit"] == .string("7"))
+    #expect(message.toolCalls[0].arguments["nested"] == .object(["wait": .bool(true)]))
+    #expect(message.toolCalls[1] == GeminiToolCall(id: "call-456", name: "handover_to_user", arguments: [:]))
+}
+
+@Test func encodesGeminiToolResponse() throws {
+    let call = GeminiToolCall(id: "call-123", name: "send_dtmf", arguments: ["digit": .string("5")])
+    let message = try GeminiLiveProtocol.toolResponseMessage(for: call)
+    let root = try #require(JSONSerialization.jsonObject(with: Data(message.utf8)) as? [String: Any])
+    let toolResponse = try #require(root["toolResponse"] as? [String: Any])
+    let responses = try #require(toolResponse["functionResponses"] as? [[String: Any]])
+    let response = try #require(responses.first)
+
+    #expect(response["id"] as? String == "call-123")
+    #expect(response["name"] as? String == "send_dtmf")
+    #expect((response["response"] as? [String: String])?["result"] == "ok")
 }
 
 @Test func buffersGeminiTranscriptionUntilSpeakerAndTurnBoundaries() {
