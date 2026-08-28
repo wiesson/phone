@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import Phone
 
@@ -22,5 +23,17 @@ struct CallEventParsingTests {
         #expect(PhoneController.parseCallEvent("All 1 useragent registered successfully! (309 ms)") == .registered)
         #expect(PhoneController.parseCallEvent("session closed: Connection reset by peer") == .closed)
         #expect(PhoneController.parseCallEvent("[0:00:07] audio=63978/62699 (bit/s)") == nil)
+    }
+
+    @Test func classifiesLoopbackTranscript() throws {
+        let fixtureURL = try #require(Bundle.module.url(forResource: "loopback-transcript", withExtension: "txt"))
+        let fixture = try String(contentsOf: fixtureURL, encoding: .utf8)
+        let events = fixture.split(separator: "\n").compactMap { PhoneController.parseCallEvent(String($0)) }
+
+        #expect(events == [.dialing, .dialing, .established, .closed])
+        #expect(events.filter { $0 == .registered }.isEmpty)
+        #expect(events.filter { $0 == .established }.count == 1)
+        #expect(events.filter { $0 == .closed }.count == 1)
+        #expect(events.filter { $0 == .incoming }.isEmpty)
     }
 }
