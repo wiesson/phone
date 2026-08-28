@@ -4,6 +4,8 @@ import Foundation
 import Security
 
 let defaultGeminiLiveModel = "gemini-3.1-flash-live-preview"
+let defaultAssistantInstructions = "Du bist der freundliche, professionelle Telefonassistent von Arne Wiese. Arne ist gerade nicht erreichbar. Begrüße Anrufer kurz, erkläre das, und biete an, eine Nachricht mit Name, Anliegen und Rückrufnummer aufzunehmen. Halte dich kurz und antworte auf Deutsch, außer der Anrufer spricht eine andere Sprache."
+let assistantGreetingTrigger = "Der Anruf wurde soeben angenommen. Begrüße den Anrufer jetzt."
 
 enum GeminiLiveState: Equatable, Sendable {
     case off
@@ -93,15 +95,27 @@ struct GeminiServerMessage: Equatable, Sendable {
 }
 
 enum GeminiLiveProtocol {
-    static func setupMessage(model: String) throws -> String {
+    static func setupMessage(model: String, instructions: String) throws -> String {
         let modelPath = model.hasPrefix("models/") ? model : "models/\(model)"
+        var setup: [String: Any] = [
+            "model": modelPath,
+            "generationConfig": ["responseModalities": ["AUDIO"]]
+        ]
+        let trimmedInstructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedInstructions.isEmpty {
+            setup["systemInstruction"] = ["parts": [["text": trimmedInstructions]]]
+        }
+        let object: [String: Any] = ["setup": setup]
+        return try jsonString(object)
+    }
+
+    static func greetingMessage() throws -> String {
         let object: [String: Any] = [
-            "setup": [
-                "model": modelPath,
-                "generationConfig": ["responseModalities": ["AUDIO"]],
-                "systemInstruction": [
-                    "parts": [["text": "You are a helpful voice assistant speaking naturally with a caller on a phone call."]]
-                ]
+            "clientContent": [
+                "turns": [
+                    ["role": "user", "parts": [["text": assistantGreetingTrigger]]]
+                ],
+                "turnComplete": true
             ]
         ]
         return try jsonString(object)
@@ -283,8 +297,15 @@ actor GeminiLiveBridge {
     private var modelAudio = Data()
     private var outputAudio = Data()
     private var sessionID = 0
+    private var sendsInitialGreeting = false
 
-    func start(apiKey: String, model: String, onState: @escaping StateHandler) async {
+    func start(
+        apiKey: String,
+        model: String,
+        instructions: String,
+        sendsInitialGreeting: Bool = false,
+        onState: @escaping StateHandler
+    ) async {
         stop(notify: false)
         sessionID &+= 1
         let requestID = sessionID
@@ -294,6 +315,7 @@ actor GeminiLiveBridge {
             return
         }
         stateHandler = onState
+        self.sendsInitialGreeting = sendsInitialGreeting
         publish(.connecting)
         do {
             injectionSender = try AudioInjectionSender()
@@ -305,7 +327,7 @@ actor GeminiLiveBridge {
             self.session = session
             self.socket = socket
             socket.resume()
-            let setup = try GeminiLiveProtocol.setupMessage(model: model)
+            let setup = try GeminiLiveProtocol.setupMessage(model: model, instructions: instructions)
             try await socket.send(.string(setup))
             guard requestID == sessionID, state != .off else { return }
             receiveTask = Task { [weak self] in await self?.receiveLoop(sessionID: requestID) }
@@ -358,6 +380,7 @@ actor GeminiLiveBridge {
         modelAudio.removeAll(keepingCapacity: false)
         outputAudio.removeAll(keepingCapacity: false)
         callerConverter = GeminiCallerAudioConverter()
+        sendsInitialGreeting = false
         if notify { stateHandler?(.off) }
         stateHandler = nil
     }
@@ -379,6 +402,10 @@ actor GeminiLiveBridge {
                 if decoded.setupComplete {
                     phoneDiagnosticLog("phone-app: Gemini setup complete, session live\n")
                     publish(.live)
+                    if sendsInitialGreeting {
+                        sendsInitialGreeting = false
+                        try await socket.send(.string(GeminiLiveProtocol.greetingMessage()))
+                    }
                 }
                 for chunk in decoded.audioChunks {
                     modelAudio.append(chunk)
@@ -460,6 +487,7 @@ actor GeminiLiveBridge {
         socket = nil
         session = nil
         injectionSender = nil
+        sendsInitialGreeting = false
         modelAudio.removeAll(keepingCapacity: false)
         outputAudio.removeAll(keepingCapacity: false)
         publish(.failed("Gemini Live: \(message)"))

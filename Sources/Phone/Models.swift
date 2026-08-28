@@ -90,12 +90,31 @@ enum Speaker: UInt8, Codable, Sendable {
     var title: String { self == .me ? "Me" : "Caller" }
 }
 
-struct TranscriptEntry: Identifiable, Equatable, Sendable {
-    let id = UUID()
+struct TranscriptEntry: Identifiable, Codable, Equatable, Sendable {
+    let id: UUID
     let speaker: Speaker
     var text: String
     var isFinal: Bool
+    var isAssistant: Bool
     let createdAt: Date
+
+    init(
+        id: UUID = UUID(),
+        speaker: Speaker,
+        text: String,
+        isFinal: Bool,
+        isAssistant: Bool = false,
+        createdAt: Date
+    ) {
+        self.id = id
+        self.speaker = speaker
+        self.text = text
+        self.isFinal = isFinal
+        self.isAssistant = isAssistant
+        self.createdAt = createdAt
+    }
+
+    var speakerTitle: String { isAssistant ? "Assistant" : speaker.title }
 }
 
 struct CallSummary: Equatable, Sendable {
