@@ -43,7 +43,32 @@ struct PhonePanel: View {
                 Text(phone.state.label)
                     .font(.system(size: 14, weight: .semibold))
                     .lineLimit(1)
-                if let accountDisplay = phone.accountDisplay {
+                if phone.managedAccounts.count > 1 && !phone.state.isInCall {
+                    Menu {
+                        ForEach(phone.managedAccounts) { account in
+                            Button {
+                                try? phone.selectManagedAccount(account)
+                            } label: {
+                                if phone.activeManagedSIPAddress == account.sipAddress {
+                                    Label(account.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(account.displayName)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(phone.accountDisplay ?? "Choose number")
+                                .font(.system(size: 11))
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 8, weight: .semibold))
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .fixedSize()
+                    .help("Outgoing calls use this number")
+                } else if let accountDisplay = phone.accountDisplay {
                     Text(accountDisplay)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
