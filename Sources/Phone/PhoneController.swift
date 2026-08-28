@@ -310,7 +310,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         geminiBridgeTask = Task {
             guard !Task.isCancelled else { return }
             await bridge.start(apiKey: apiKey, model: model) { [weak self] state in
-                Task { @MainActor [weak self] in self?.geminiLiveState = state }
+                Task { @MainActor [weak self] in
+                    self?.geminiLiveState = state
+                    if case .failed(let message) = state {
+                        self?.appendDiagnostic("phone-app: Gemini Live failed: \(message)\n")
+                    }
+                }
             }
             if Task.isCancelled { await bridge.stop() }
         }
@@ -715,7 +720,14 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             recordCall(missed: false)
             finishCall()
             state = .error("The call could not be established")
-        case .closed:
+        case .closed(let reason):
+            if state.isInCall, !state.isConnected, let reason, !reason.isEmpty {
+                recordCall(missed: false)
+                finishCall()
+                state = .error("Call rejected: \(reason)")
+                clearIncomingCallNotification()
+                return
+            }
             let missed = state.isRinging
             let caller = state.peer
             recordCall(missed: missed)
@@ -737,7 +749,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         case dialing
         case securityViolation
         case failed
-        case closed
+        case closed(String?)
         case noAccounts(String)
     }
 
@@ -757,7 +769,11 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         if lower.contains("call uri:") || lower.contains("connecting to") { return .dialing }
         if lower.contains("security violation") { return .securityViolation }
         if lower.contains("ua_connect failed") || lower.contains("call failed") { return .failed }
-        if lower.contains("call closed") || lower.contains("session closed") || lower.contains("disconnected") { return .closed }
+        if lower.contains("call closed") || lower.contains("session closed") || lower.contains("disconnected") {
+            let reason = line.range(of: "closed:").map { String(line[$0.upperBound...]).trimmingCharacters(in: .whitespaces) }
+            let isRejection = reason.map { $0.range(of: #"^[45][0-9][0-9] "#, options: .regularExpression) != nil } ?? false
+            return .closed(isRejection ? reason : nil)
+        }
         if lower.contains("no accounts") {
             return .noAccounts(redactSensitiveValues(in: line).trimmingCharacters(in: .whitespacesAndNewlines))
         }
@@ -853,11 +869,13 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                         self?.intelligenceStatus = message
                     }
                 }
+                await MainActor.run { self.appendDiagnostic("phone-app: transcription lanes started\n") }
                 await MainActor.run { self.intelligenceStatus = "Live · on this Mac only" }
             } catch {
                 await MainActor.run {
                     self.intelligenceRunning = false
                     self.intelligenceStatus = error.localizedDescription
+                    self.appendDiagnostic("phone-app: transcription start failed: \(error)\n")
                 }
             }
         }
@@ -866,6 +884,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private func receiveTranscript(speaker: Speaker, text: String, isFinal: Bool) {
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return }
+        if transcript.isEmpty { appendDiagnostic("phone-app: first transcript result received\n") }
         if let draftID = draftIDs[speaker], let index = transcript.firstIndex(where: { $0.id == draftID }) {
             guard transcript[index].text != cleaned || transcript[index].isFinal != isFinal else { return }
             transcript[index].text = cleaned
