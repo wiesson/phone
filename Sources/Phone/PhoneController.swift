@@ -220,6 +220,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private let intelligence = LocalIntelligence()
     private let geminiLiveBridge = GeminiLiveBridge()
     private var geminiBridgeTask: Task<Void, Never>?
+    private var geminiTranscriptionActive = false
     private var autoAnswerTask: Task<Void, Never>?
     private var startsAssistantWhenConnected = false
     private var assistantCallPlan = AssistantCallPlan()
@@ -684,6 +685,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             return
         }
         let bridge = geminiLiveBridge
+        let usesGeminiTranscription = brainURL == nil
         geminiLiveState = .connecting
         geminiBridgeTask?.cancel()
         geminiBridgeTask = Task {
@@ -694,17 +696,30 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 model: model,
                 instructions: instructions,
                 sendsInitialGreeting: sendsInitialGreeting,
-                injectionSocketPath: injectionSocketPath
-            ) { [weak self] state in
-                Task { @MainActor [weak self] in
-                    self?.geminiLiveState = state
-                    if case .live = state { self?.muteForBridgeIfNeeded() }
-                    if case .failed(let message) = state {
-                        self?.clearAssistantCall()
-                        self?.appendDiagnostic("phone-app: Gemini Live failed: \(message)\n")
+                injectionSocketPath: injectionSocketPath,
+                onState: { [weak self] state in
+                    Task { @MainActor [weak self] in
+                        self?.geminiLiveState = state
+                        if case .live = state {
+                            if usesGeminiTranscription {
+                                self?.finalizeLocalDrafts()
+                                self?.geminiTranscriptionActive = true
+                            }
+                            self?.muteForBridgeIfNeeded()
+                        }
+                        if case .failed(let message) = state {
+                            self?.geminiTranscriptionActive = false
+                            self?.clearAssistantCall()
+                            self?.appendDiagnostic("phone-app: Gemini Live failed: \(message)\n")
+                        }
+                    }
+                },
+                onTranscript: { [weak self] speaker, text in
+                    Task { @MainActor [weak self] in
+                        self?.receiveGeminiTranscript(speaker: speaker, text: text)
                     }
                 }
-            }
+            )
             if Task.isCancelled { await bridge.stop() }
         }
     }
@@ -1582,6 +1597,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private func beginCallIntelligence() {
         guard !intelligenceRunning, callStartedAt == nil else { return }
         clearConversation()
+        geminiTranscriptionActive = false
         callStartedAt = Date()
         guard transcriptionEnabled else {
             intelligenceStatus = "Transcription is off"
@@ -1592,7 +1608,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         Task {
             do {
                 try await intelligence.start { [weak self] speaker, text, isFinal in
-                    Task { @MainActor in self?.receiveTranscript(speaker: speaker, text: text, isFinal: isFinal) }
+                    Task { @MainActor in self?.receiveLocalTranscript(speaker: speaker, text: text, isFinal: isFinal) }
                 } onError: { [weak self] speaker, message in
                     Task { @MainActor in
                         self?.appendDiagnostic("phone-app: \(speaker.title) lane error: \(message)\n")
@@ -1611,10 +1627,39 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
-    private func receiveTranscript(speaker: Speaker, text: String, isFinal: Bool) {
+    private func receiveLocalTranscript(speaker: Speaker, text: String, isFinal: Bool) {
+        guard !geminiTranscriptionActive else { return }
+        receiveTranscript(speaker: speaker, text: text, isFinal: isFinal)
+    }
+
+    private func finalizeLocalDrafts() {
+        for (speaker, draftID) in draftIDs {
+            guard let index = transcript.firstIndex(where: { $0.id == draftID }) else { continue }
+            transcript[index].isFinal = true
+            eventBus.publish(.transcriptFinal(speaker: speaker.title, text: transcript[index].text))
+        }
+        draftIDs = [:]
+    }
+
+    private func receiveGeminiTranscript(speaker: Speaker, text: String) {
+        guard transcriptionEnabled else { return }
+        receiveTranscript(
+            speaker: speaker,
+            text: text,
+            isFinal: true,
+            isAssistantOverride: speaker == .me
+        )
+    }
+
+    private func receiveTranscript(
+        speaker: Speaker,
+        text: String,
+        isFinal: Bool,
+        isAssistantOverride: Bool? = nil
+    ) {
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return }
-        let isAssistant = speaker == .me && geminiLiveState == .live
+        let isAssistant = isAssistantOverride ?? (speaker == .me && geminiLiveState == .live)
         var didFinalize = false
         if transcript.isEmpty { appendDiagnostic("phone-app: first transcript result received\n") }
         if let draftID = draftIDs[speaker], let index = transcript.firstIndex(where: { $0.id == draftID }) {
@@ -1653,29 +1698,14 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         if !preservingDialRetry { currentCallAccountAOR = nil }
         if !preservingAssistantCall { clearAssistantCall() }
         cancelAutoAnswer()
-        stopGeminiLive()
+        stopGeminiLive(preservingTranscriptionRouting: true)
+        let bridgeStopTask = geminiBridgeTask
         isMuted = false
         let peer = state.peer
         let archiveRecord = pendingArchiveRecord
         pendingArchiveRecord = nil
-        let archivedEntries = transcript.filter(\.isFinal)
         let includesContent = archiveConversations
-        let archiveTask = archiveRecord.map { record in
-            Task { [store] in
-                do {
-                    try await store.archiveCall(
-                        record,
-                        displayName: self.displayName(for: record.peer),
-                        utterances: archivedEntries,
-                        summary: nil,
-                        includeConversationContent: includesContent
-                    )
-                    await MainActor.run {
-                        NotificationCenter.default.post(name: .phoneArchiveChanged, object: nil)
-                    }
-                } catch { }
-            }
-        }
+        let wasIntelligenceRunning = intelligenceRunning
         let duration = callStartedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
         if hasActiveEventCall {
             hasActiveEventCall = false
@@ -1683,36 +1713,46 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
         let counts = finishingInstanceID.flatMap { instances[$0]?.drainAudioFrameCounts() } ?? [:]
         appendDiagnostic("phone-app: audio frames this call — me: \(counts[.me] ?? 0), caller: \(counts[.caller] ?? 0)\n")
-        guard intelligenceRunning else {
-            callStartedAt = nil
-            return
-        }
         intelligenceRunning = false
         callStartedAt = nil
-        intelligenceStatus = "Summarizing the call …"
-        let entries = transcript
+        if wasIntelligenceRunning { intelligenceStatus = "Summarizing the call …" }
+
         Task {
-            await intelligence.stop()
+            await bridgeStopTask?.value
+            if wasIntelligenceRunning { await intelligence.stop() }
+            await Task.yield()
+            let entries = transcript.filter(\.isFinal)
+            geminiTranscriptionActive = false
+
+            if let archiveRecord {
+                do {
+                    try await store.archiveCall(
+                        archiveRecord,
+                        displayName: displayName(for: archiveRecord.peer),
+                        utterances: entries,
+                        summary: nil,
+                        includeConversationContent: includesContent
+                    )
+                    NotificationCenter.default.post(name: .phoneArchiveChanged, object: nil)
+                } catch { }
+            }
+
+            guard wasIntelligenceRunning else { return }
             do {
                 let text = try await intelligence.summarize(entries: entries)
                 if includesContent, let archiveRecord {
-                    await archiveTask?.value
                     try? await store.attachSummary(text, to: archiveRecord.id)
                 }
-                await MainActor.run {
-                    self.summary = CallSummary(text: text, createdAt: Date())
-                    self.eventBus.publish(.callSummary(text: text))
-                    self.intelligenceStatus = "Processed locally"
-                    if !self.retainTranscript { self.clearConversation() }
-                    if includesContent, archiveRecord != nil {
-                        NotificationCenter.default.post(name: .phoneArchiveChanged, object: nil)
-                    }
+                summary = CallSummary(text: text, createdAt: Date())
+                eventBus.publish(.callSummary(text: text))
+                intelligenceStatus = "Processed locally"
+                if !retainTranscript { clearConversation() }
+                if includesContent, archiveRecord != nil {
+                    NotificationCenter.default.post(name: .phoneArchiveChanged, object: nil)
                 }
             } catch {
-                await MainActor.run {
-                    self.intelligenceStatus = "Summary unavailable"
-                    if !self.retainTranscript { self.clearConversation() }
-                }
+                intelligenceStatus = "Summary unavailable"
+                if !retainTranscript { clearConversation() }
             }
         }
     }
@@ -1732,7 +1772,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         isMuted = false
     }
 
-    private func stopGeminiLive() {
+    private func stopGeminiLive(preservingTranscriptionRouting: Bool = false) {
+        if !preservingTranscriptionRouting { geminiTranscriptionActive = false }
         guard geminiLiveState != .off else { return }
         geminiLiveState = .off
         unmuteAfterBridgeIfNeeded()
