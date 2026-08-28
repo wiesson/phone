@@ -83,12 +83,16 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     @Published private(set) var activeManagedSIPAddress: String?
     @Published private(set) var unmanagedAccountAOR: String?
     @Published private(set) var registrationStatus: RegistrationStatus = .idle
+    @Published private(set) var geminiLiveState: GeminiLiveState = .off
+    @Published private(set) var isGeminiConfigured = false
 
     private var process: Process?
     private var input: Pipe?
     private var lineBuffer = ""
     private let audioTap = AudioTapServer()
     private let intelligence = LocalIntelligence()
+    private let geminiLiveBridge = GeminiLiveBridge()
+    private var geminiBridgeTask: Task<Void, Never>?
     private var draftIDs: [Speaker: UUID] = [:]
     private var intelligenceRunning = false
     private var currentDirection: CallDirection?
@@ -112,6 +116,19 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         activeManagedAccount?.registrationDisplay ?? unmanagedAccountAOR
     }
 
+    var isGeminiLiveActive: Bool {
+        geminiLiveState == .connecting || geminiLiveState == .live
+    }
+
+    var activityStatus: String {
+        switch geminiLiveState {
+        case .off: intelligenceStatus
+        case .connecting: "Connecting to Gemini …"
+        case .live: "Gemini live"
+        case .failed(let message): message
+        }
+    }
+
     override init() {
         super.init()
         let defaults = UserDefaults.standard
@@ -128,9 +145,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
            let stored = try? JSONDecoder().decode([CallRecord].self, from: data) {
             history = stored
         }
+        isGeminiConfigured = GeminiAPIKeyStore.apiKey() != nil
         let intelligence = self.intelligence
+        let geminiLiveBridge = self.geminiLiveBridge
         audioTap.onFrame = { frame in
             Task { await intelligence.append(frame) }
+            Task { await geminiLiveBridge.append(frame) }
         }
     }
 
@@ -263,6 +283,39 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         isMuted.toggle()
     }
 
+    func saveGeminiAPIKey(_ key: String) throws {
+        let value = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { throw GeminiLiveError.invalidAPIKey }
+        try GeminiAPIKeyStore.save(value)
+        isGeminiConfigured = true
+    }
+
+    func toggleGeminiLive() {
+        guard state.isConnected else { return }
+        if isGeminiLiveActive {
+            stopGeminiLive()
+            return
+        }
+        guard let apiKey = GeminiAPIKeyStore.apiKey() else {
+            geminiLiveState = .failed(GeminiLiveError.invalidAPIKey.localizedDescription)
+            isGeminiConfigured = false
+            return
+        }
+        let storedModel = UserDefaults.standard.string(forKey: "geminiLiveModel")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = storedModel.flatMap { $0.isEmpty ? nil : $0 } ?? defaultGeminiLiveModel
+        let bridge = geminiLiveBridge
+        geminiLiveState = .connecting
+        geminiBridgeTask?.cancel()
+        geminiBridgeTask = Task {
+            guard !Task.isCancelled else { return }
+            await bridge.start(apiKey: apiKey, model: model) { [weak self] state in
+                Task { @MainActor [weak self] in self?.geminiLiveState = state }
+            }
+            if Task.isCancelled { await bridge.stop() }
+        }
+    }
+
     /// Sends a DTMF digit during an active call. baresip relays bare digit
     /// keys as DTMF while a call is established.
     func sendDTMF(_ digit: Character) {
@@ -304,6 +357,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         guard !isShuttingDown else { return }
         isShuttingDown = true
         clearIncomingCallNotification()
+        stopGeminiLive()
         audioTap.stop()
         stopBaresipAndWait()
     }
@@ -595,7 +649,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         process = nil
         input = nil
         try? FileManager.default.removeItem(at: pidFileURL)
-        if intelligenceRunning { finishCall() }
+        if intelligenceRunning || geminiLiveState != .off { finishCall() }
         if registrationStatus == .registering {
             registrationStatus = .failed("baresip stopped before registration completed")
         }
@@ -792,6 +846,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func finishCall() {
+        stopGeminiLive()
         isMuted = false
         let counts = audioTap.drainFrameCounts()
         appendDiagnostic("phone-app: audio frames this call — me: \(counts[.me] ?? 0), caller: \(counts[.caller] ?? 0)\n")
@@ -819,6 +874,14 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 }
             }
         }
+    }
+
+    private func stopGeminiLive() {
+        guard geminiLiveState != .off else { return }
+        geminiLiveState = .off
+        geminiBridgeTask?.cancel()
+        let bridge = geminiLiveBridge
+        geminiBridgeTask = Task { await bridge.stop() }
     }
 
     private func installNotifications() {
