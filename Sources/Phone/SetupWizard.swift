@@ -49,6 +49,72 @@ enum SIPProviderPreset: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+enum AssistantProfile: String, CaseIterable, Codable, Identifiable, Sendable {
+    case personalAssistant
+    case hotelDemo
+    case travelIntake
+    case custom
+
+    var id: Self { self }
+
+    var displayName: String {
+        switch self {
+        case .personalAssistant: "Personal"
+        case .hotelDemo: "Hotel demo"
+        case .travelIntake: "Travel intake"
+        case .custom: "Custom"
+        }
+    }
+
+    func presetInstructions(globalFallback: String) -> String {
+        switch self {
+        case .personalAssistant:
+            globalFallback
+        case .hotelDemo:
+            "Du bist die freundliche Telefonrezeption des fiktiven Hotels 'Strandhof' (Demo). Beantworte Fragen zu Verfügbarkeit und Preisen NUR anhand der folgenden Daten, erfinde nichts darüber hinaus. Nimm Reservierungswünsche mit Name und Rückrufnummer entgegen und bestätige sie als vorgemerkt (Demo, keine echte Buchung)."
+        case .travelIntake:
+            "Du bist der Reise-Anfrage-Assistent eines Reisebüros. Nimm die Anfrage strukturiert auf und frage gezielt nach, bis du hast: Reiseziel/Region, Zeitraum oder Dauer, Anzahl und Alter der Reisenden, Budgetrahmen, Anlass und Vorlieben (z. B. Strand, Aktiv, Kultur), besondere Wünsche, Name und Rückrufnummer. Fasse am Ende alles kurz zusammen und bestätige, dass sich das Büro mit einem Angebot meldet."
+        case .custom:
+            ""
+        }
+    }
+
+    func presetContextData(startingAt date: Date, calendar: Calendar = .current) -> String? {
+        switch self {
+        case .hotelDemo: hotelAvailabilityTable(startingAt: date, calendar: calendar)
+        case .personalAssistant, .travelIntake, .custom: nil
+        }
+    }
+}
+
+func hotelAvailabilityTable(startingAt date: Date, calendar: Calendar = .current) -> String {
+    var calendar = calendar
+    calendar.locale = Locale(identifier: "de_DE_POSIX")
+    let start = calendar.startOfDay(for: date)
+    let formatter = DateFormatter()
+    formatter.calendar = calendar
+    formatter.locale = Locale(identifier: "de_DE_POSIX")
+    formatter.timeZone = calendar.timeZone
+    formatter.dateFormat = "yyyy-MM-dd"
+    let seaViewBooked = Set([2, 8])
+    let gardenBooked = Set([4, 11])
+    let suiteBooked = Set([6, 12])
+    var lines = [
+        "Verfügbarkeit Hotel Strandhof (Demo)",
+        "Datum | Doppelzimmer Meerblick (145 €/Nacht) | Doppelzimmer Garten (115 €/Nacht) | Suite (210 €/Nacht)"
+    ]
+    for offset in 0..<14 {
+        guard let day = calendar.date(byAdding: .day, value: offset, to: start) else { continue }
+        let values = [
+            seaViewBooked.contains(offset) ? "ausgebucht" : "frei",
+            gardenBooked.contains(offset) ? "ausgebucht" : "frei",
+            suiteBooked.contains(offset) ? "ausgebucht" : "frei"
+        ]
+        lines.append("\(formatter.string(from: day)) | \(values.joined(separator: " | "))")
+    }
+    return lines.joined(separator: "\n")
+}
+
 struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
     var provider: SIPProviderPreset
     var username: String
@@ -57,6 +123,33 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
     var stunServer: String
     var mediaEncryption: String
     var label: String? = nil
+    var assistantProfile: AssistantProfile = .personalAssistant
+    var assistantInstructionsOverride: String? = nil
+    var assistantContextData: String? = nil
+
+    init(
+        provider: SIPProviderPreset,
+        username: String,
+        domain: String,
+        outboundProxy: String,
+        stunServer: String,
+        mediaEncryption: String,
+        label: String? = nil,
+        assistantProfile: AssistantProfile = .personalAssistant,
+        assistantInstructionsOverride: String? = nil,
+        assistantContextData: String? = nil
+    ) {
+        self.provider = provider
+        self.username = username
+        self.domain = domain
+        self.outboundProxy = outboundProxy
+        self.stunServer = stunServer
+        self.mediaEncryption = mediaEncryption
+        self.label = label
+        self.assistantProfile = assistantProfile
+        self.assistantInstructionsOverride = assistantInstructionsOverride
+        self.assistantContextData = assistantContextData
+    }
 
     var id: String { sipAddress }
     var sipAddress: String { "\(username)@\(domain)" }
@@ -99,6 +192,55 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+extension ManagedSIPAccount {
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case username
+        case domain
+        case outboundProxy
+        case stunServer
+        case mediaEncryption
+        case label
+        case assistantProfile
+        case assistantInstructionsOverride
+        case assistantContextData
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try container.decode(SIPProviderPreset.self, forKey: .provider)
+        username = try container.decode(String.self, forKey: .username)
+        domain = try container.decode(String.self, forKey: .domain)
+        outboundProxy = try container.decode(String.self, forKey: .outboundProxy)
+        stunServer = try container.decode(String.self, forKey: .stunServer)
+        mediaEncryption = try container.decode(String.self, forKey: .mediaEncryption)
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+        assistantProfile = try container.decodeIfPresent(AssistantProfile.self, forKey: .assistantProfile) ?? .personalAssistant
+        assistantInstructionsOverride = try container.decodeIfPresent(String.self, forKey: .assistantInstructionsOverride)
+        assistantContextData = try container.decodeIfPresent(String.self, forKey: .assistantContextData)
+    }
+}
+
+func orderedManagedAccounts(_ accounts: [ManagedSIPAccount], activeSIPAddress: String?) -> [ManagedSIPAccount] {
+    guard let activeSIPAddress,
+          let activeIndex = accounts.firstIndex(where: { $0.sipAddress == activeSIPAddress }),
+          activeIndex != accounts.startIndex else { return accounts }
+    var ordered = accounts
+    let active = ordered.remove(at: activeIndex)
+    ordered.insert(active, at: ordered.startIndex)
+    return ordered
+}
+
+func managedAccountsFileContent(
+    accounts: [ManagedSIPAccount],
+    activeSIPAddress: String?,
+    passwordFor: (ManagedSIPAccount) throws -> String
+) throws -> String {
+    try orderedManagedAccounts(accounts, activeSIPAddress: activeSIPAddress)
+        .map { account in try account.accountLine(password: passwordFor(account)) }
+        .joined()
+}
+
 struct ManagedSIPAccountsState: Equatable, Sendable {
     private(set) var accounts: [ManagedSIPAccount]
     private(set) var activeSIPAddress: String?
@@ -132,6 +274,11 @@ struct ManagedSIPAccountsState: Equatable, Sendable {
     mutating func select(_ account: ManagedSIPAccount) {
         guard accounts.contains(where: { $0.sipAddress == account.sipAddress }) else { return }
         activeSIPAddress = account.sipAddress
+    }
+
+    mutating func update(_ account: ManagedSIPAccount) {
+        guard let index = accounts.firstIndex(where: { $0.sipAddress == account.sipAddress }) else { return }
+        accounts[index] = account
     }
 
     mutating func remove(_ account: ManagedSIPAccount) {

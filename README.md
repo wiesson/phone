@@ -82,11 +82,21 @@ When no existing account is present, Phone opens a three-step setup assistant.
 It includes presets for Deutsche Telekom, FRITZ!Box, sipgate, and Easybell, as
 well as custom SIP settings. Add and manage accounts from Settings > Phone.
 Accounts created by the assistant keep their passwords in the macOS Keychain
-and regenerate the protected baresip account file when Phone starts. Multiple
-accounts are supported, with one active account registered at a time. The
-outgoing caller ID is the registered number of the active account, subject to
-the provider's configuration. Existing hand-edited account files remain
-supported and are not changed until the setup assistant is used.
+and regenerate the protected baresip account file when Phone starts. All
+managed accounts register simultaneously. The active account is used only for
+outgoing calls, subject to the provider's caller-ID configuration. Existing
+hand-edited account files remain supported and are not changed until the setup
+assistant is used.
+
+### Per-number assistant profiles
+
+Each managed number can use its own locally configured assistant profile. In
+Settings > Phone, select an account and choose Personal, Hotel demo, Travel
+intake, or Custom, then optionally edit its instructions and multiline data.
+Incoming assistant calls use the profile belonging to the called number;
+outgoing assistant calls use the active account's profile. Resetting an editor
+returns it to the preset, and the Hotel demo generates a current 14-day sample
+availability table when the bridge starts.
 
 ### Deutsche Telekom (direct)
 
