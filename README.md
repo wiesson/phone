@@ -144,6 +144,21 @@ Useful scripts:
 | `scripts/build-audio-tap.sh` | link baresip modules and build the local audio module |
 | `scripts/build-app.sh` | build the Swift app and produce `dist/Phone.app` |
 | `scripts/run.sh` | build and open the app |
+| `scripts/integration-test.sh` | run a provider-free baresip loopback call |
+
+Run the loopback integration test with:
+
+```sh
+sh scripts/integration-test.sh
+```
+
+The test starts two isolated baresip instances on localhost UDP ports 5088 and
+5089, creates registrar-less user agents in memory, and exercises dialing,
+DTMF, mute, hangup, and shutdown through the same commands the app sends. It
+uses the hardware-free `aubridge` audio driver. The bundled helper is preferred
+when `dist/Phone.app` exists; otherwise the script uses the Homebrew baresip at
+`/opt/homebrew/bin/baresip`. Set `PHONE_KEEP_INTEGRATION_TMP=1` to retain both
+full transcripts and generated configurations after a run.
 
 ## How it works
 
