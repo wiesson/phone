@@ -7,6 +7,61 @@ let defaultGeminiLiveModel = "gemini-3.1-flash-live-preview"
 let defaultAssistantInstructions = "Du bist der freundliche, professionelle Telefonassistent von Arne Wiese. Arne ist gerade nicht erreichbar. Begrüße Anrufer kurz, erkläre das, und biete an, eine Nachricht mit Name, Anliegen und Rückrufnummer aufzunehmen. Halte dich kurz und antworte auf Deutsch, außer der Anrufer spricht eine andere Sprache."
 let assistantGreetingTrigger = "Der Anruf wurde soeben angenommen. Begrüße den Anrufer jetzt."
 
+struct ResolvedAssistantProfile: Equatable, Sendable {
+    let account: ManagedSIPAccount?
+    let instructions: String
+    let contextData: String?
+}
+
+func normalizedSIPAOR(_ value: String?) -> String? {
+    guard var value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+    if value.lowercased().hasPrefix("sip:") { value.removeFirst(4) }
+    if let separator = value.firstIndex(where: { $0 == ";" || $0 == ">" || $0.isWhitespace }) {
+        value = String(value[..<separator])
+    }
+    let decoded = value.removingPercentEncoding ?? value
+    let parts = decoded.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false)
+    guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+    return decoded.lowercased()
+}
+
+func resolveAssistantProfile(
+    accounts: [ManagedSIPAccount],
+    calledAOR: String?,
+    activeSIPAddress: String?,
+    globalInstructions: String,
+    date: Date = Date(),
+    calendar: Calendar = .current
+) -> ResolvedAssistantProfile {
+    let called = normalizedSIPAOR(calledAOR)
+    let active = normalizedSIPAOR(activeSIPAddress)
+    let account = called.flatMap { address in
+        accounts.first { normalizedSIPAOR($0.sipAddress) == address }
+    } ?? active.flatMap { address in
+        accounts.first { normalizedSIPAOR($0.sipAddress) == address }
+    }
+    guard let account else {
+        return ResolvedAssistantProfile(account: nil, instructions: globalInstructions, contextData: nil)
+    }
+    let instructions = account.assistantInstructionsOverride
+        ?? account.assistantProfile.presetInstructions(globalFallback: globalInstructions)
+    let contextData = account.assistantContextData
+        ?? account.assistantProfile.presetContextData(startingAt: date, calendar: calendar)
+    return ResolvedAssistantProfile(account: account, instructions: instructions, contextData: contextData)
+}
+
+func composeAssistantSystemInstruction(
+    instructions: String,
+    contextData: String?,
+    includesGreetingTrigger: Bool = false
+) -> String {
+    let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+    let context = contextData?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let dataSection = context.isEmpty ? "" : "Daten:\n\(context)"
+    let greeting = includesGreetingTrigger ? assistantGreetingTrigger : ""
+    return [instructions, dataSection, greeting].filter { !$0.isEmpty }.joined(separator: "\n\n")
+}
+
 enum GeminiLiveState: Equatable, Sendable {
     case off
     case connecting
