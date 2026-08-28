@@ -7,8 +7,6 @@ struct PhonePanel: View {
     @Environment(\.openWindow) private var openWindow
     @FocusState private var numberFieldFocused: Bool
     @State private var showKeypad = false
-    @State private var showAssistantCall = false
-    @AppStorage("assistantCallTask") private var assistantCallTask = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -45,42 +43,7 @@ struct PhonePanel: View {
                 Text(phone.state.label)
                     .font(.system(size: 14, weight: .semibold))
                     .lineLimit(1)
-                if (phone.state.isRinging || phone.state.isInCall), let account = phone.currentCallAccountDisplay {
-                    Text("for \(account)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else if phone.managedAccounts.count > 1 && !phone.state.isInCall {
-                    Menu {
-                        ForEach(phone.managedAccounts) { account in
-                            Button {
-                                try? phone.selectManagedAccount(account)
-                            } label: {
-                                if phone.activeManagedSIPAddress == account.sipAddress {
-                                    Label("\(account.displayName) — \(account.assistantProfile.displayName)", systemImage: "checkmark")
-                                } else {
-                                    Text("\(account.displayName) — \(account.assistantProfile.displayName)")
-                                }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 3) {
-                            Text(headerAccountText)
-                                .font(.system(size: 11))
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.system(size: 8, weight: .semibold))
-                        }
-                        .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .fixedSize()
-                    .help("Outgoing calls use this number")
-                } else if let accountDisplay = phone.accountDisplay {
-                    Text(accountDisplay)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                PhoneAccountPicker(phone: phone)
                 Text(phone.activityStatus)
                     .font(.system(size: 10))
                     .foregroundStyle(phone.geminiLiveState == .off && !phone.isAutoAnswerArmed && !phone.isAssistantCallActive ? Color.secondary.opacity(0.7) : Color.purple)
@@ -114,29 +77,7 @@ struct PhonePanel: View {
                     .tint(.green)
                     .help("Call")
 
-                    Button {
-                        showAssistantCall = true
-                    } label: {
-                        ZStack {
-                            Image(systemName: "phone.fill")
-                                .font(.system(size: 13, weight: .semibold))
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 8, weight: .bold))
-                                .offset(x: 8, y: -8)
-                        }
-                        .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.circle)
-                    .tint(.purple)
-                    .disabled(
-                        phone.number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                        !phone.isGeminiConfigured
-                    )
-                    .help(phone.isGeminiConfigured ? "Call with Assistant" : "Configure the Assistant in Settings")
-                    .popover(isPresented: $showAssistantCall, arrowEdge: .bottom) {
-                        assistantCallPopover
-                    }
+                    AssistantDialButton(phone: phone)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -202,7 +143,7 @@ struct PhonePanel: View {
                     .help("Keypad")
                 }
                 if showKeypad && phone.state.isConnected {
-                    keypad
+                    DTMFKeypad(phone: phone)
                 }
             } else if case .error = phone.state {
                 Button("Back to dialing", action: phone.recoverFromError)
@@ -218,54 +159,6 @@ struct PhonePanel: View {
             }
         }
         .padding(16)
-    }
-
-    private var assistantCallPopover: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Task for the assistant")
-                .font(.headline)
-            TextEditor(text: $assistantCallTask)
-                .font(.system(size: 12))
-                .frame(width: 290, height: 100)
-                .padding(5)
-                .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
-            HStack {
-                Button("Cancel") { showAssistantCall = false }
-                Spacer()
-                Button("Call with Assistant") {
-                    phone.dialWithAssistant(task: assistantCallTask)
-                    showAssistantCall = false
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.purple)
-                .disabled(assistantCallTask.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(16)
-    }
-
-    private var keypad: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 6) {
-            ForEach(Array("123456789*0#"), id: \.self) { digit in
-                Button {
-                    phone.sendDTMF(digit)
-                } label: {
-                    Text(String(digit))
-                        .font(.system(size: 16, weight: .medium, design: .rounded))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(.bordered)
-            }
-        }
-    }
-
-    private var headerAccountText: String {
-        guard let display = phone.accountDisplay else { return "Choose number" }
-        if let active = phone.managedAccounts.first(where: { $0.sipAddress == phone.activeManagedSIPAddress }) {
-            return "\(display) · \(active.assistantProfile.displayName)"
-        }
-        return display
     }
 
     private var historySection: some View {
@@ -425,35 +318,7 @@ struct ConversationView: View {
         VStack(spacing: 0) {
             conversationHeader
             Divider()
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
-                        if phone.transcript.isEmpty {
-                            ContentUnavailableView(
-                                "No transcript yet",
-                                systemImage: "waveform",
-                                description: Text("Once the call is connected, both sides of the conversation appear here live.")
-                            )
-                            .frame(maxWidth: .infinity, minHeight: 300)
-                        }
-                        ForEach(phone.transcript) { entry in
-                            TranscriptRow(entry: entry)
-                                .id(entry.id)
-                        }
-                        if let summary = phone.summary {
-                            SummaryCard(summary: summary)
-                                .id("summary")
-                        }
-                    }
-                    .padding(28)
-                }
-                .onChange(of: phone.transcript.count) { _, _ in
-                    if let id = phone.transcript.last?.id { withAnimation { proxy.scrollTo(id, anchor: .bottom) } }
-                }
-                .onChange(of: phone.summary) { _, summary in
-                    if summary != nil { withAnimation { proxy.scrollTo("summary", anchor: .bottom) } }
-                }
-            }
+            ConversationTimeline(phone: phone)
             Divider()
             HStack {
                 Label(phone.intelligenceStatus, systemImage: "lock.shield")
@@ -498,82 +363,6 @@ struct ConversationView: View {
             }
         }
         .padding(18)
-    }
-}
-
-struct TranscriptRow: View {
-    let entry: TranscriptEntry
-
-    private var tint: Color {
-        entry.isAssistant ? .orange : (entry.speaker == .me ? .blue : .purple)
-    }
-
-    private var symbol: String {
-        entry.isAssistant ? "sparkles" : (entry.speaker == .me ? "person.fill" : "phone.fill")
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Circle()
-                .fill(tint.opacity(0.14))
-                .frame(width: 34, height: 34)
-                .overlay {
-                    Image(systemName: symbol)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(tint)
-                }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(entry.speakerTitle)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(entry.isAssistant ? tint : .secondary)
-                Text(entry.text)
-                    .font(.system(size: 15))
-                    .textSelection(.enabled)
-                    .foregroundStyle(entry.isFinal ? .primary : .secondary)
-            }
-            Spacer(minLength: 20)
-        }
-    }
-}
-
-struct SummaryCard: View {
-    let summary: CallSummary
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Summary", systemImage: "sparkles")
-                .font(.headline)
-                .foregroundStyle(.blue)
-            Text(summary.text)
-                .font(.system(size: 14))
-                .lineSpacing(3)
-                .textSelection(.enabled)
-        }
-        .padding(18)
-        .background(.blue.opacity(0.075), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(.blue.opacity(0.12), lineWidth: 1)
-        }
-        .padding(.top, 8)
-    }
-}
-
-private struct CallDuration: View {
-    let startedAt: Date?
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            Text(duration(at: context.date))
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func duration(at date: Date) -> String {
-        guard let startedAt else { return "" }
-        let seconds = max(0, Int(date.timeIntervalSince(startedAt)))
-        return String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 }
 

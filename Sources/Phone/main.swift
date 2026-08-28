@@ -55,7 +55,7 @@ struct PhoneApp: App {
         Window("Phone", id: "library") {
             LibraryView(phone: phone, store: phone.store)
         }
-        .defaultSize(width: 980, height: 680)
+        .defaultSize(width: 1_100, height: 700)
         .windowResizability(.contentMinSize)
 
         Window("Conversation", id: "conversation") {
@@ -98,12 +98,19 @@ private struct MenuBarPhoneLabel: View {
             }
             .onChange(of: model.state.isConnected) { wasConnected, isConnected in
                 if !wasConnected && isConnected {
-                    openWindow(id: "conversation")
-                    NSApp.activate(ignoringOtherApps: true)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    if let libraryWindow = NSApp.windows.first(where: {
+                        $0.isVisible && $0.identifier?.rawValue.contains("library") == true
+                    }) {
                         NSApp.activate(ignoringOtherApps: true)
-                        NSApp.windows.first { $0.identifier?.rawValue.contains("conversation") == true }?
-                            .orderFrontRegardless()
+                        libraryWindow.orderFrontRegardless()
+                    } else {
+                        openWindow(id: "conversation")
+                        NSApp.activate(ignoringOtherApps: true)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                            NSApp.activate(ignoringOtherApps: true)
+                            NSApp.windows.first { $0.identifier?.rawValue.contains("conversation") == true }?
+                                .orderFrontRegardless()
+                        }
                     }
                 }
             }

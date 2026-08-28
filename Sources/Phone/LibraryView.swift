@@ -5,10 +5,11 @@ struct LibraryView: View {
     let store: PhoneStore
 
     @State private var calls: [ArchivedCall] = []
-    @State private var selection: UUID?
+    @State private var selection: LibrarySelection? = .phone
     @State private var utterances: [TranscriptEntry] = []
     @State private var query = ""
     @State private var loadError: String?
+    @FocusState private var numberFieldFocused: Bool
 
     var body: some View {
         NavigationSplitView {
@@ -18,30 +19,64 @@ struct LibraryView: View {
             detail
         }
         .searchable(text: $query, placement: .sidebar, prompt: "Search calls")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: showPhoneAndFocus) {
+                    Label("New call", systemImage: "phone.badge.plus")
+                }
+                .keyboardShortcut("n", modifiers: .command)
+                .help("New call (⌘N)")
+            }
+        }
         .task(id: query) {
             if !query.isEmpty { try? await Task.sleep(for: .milliseconds(150)) }
             guard !Task.isCancelled else { return }
             await refreshCalls()
         }
-        .onChange(of: selection) { _, id in
-            Task { await loadUtterances(for: id) }
+        .onChange(of: selection) { _, selection in
+            Task { await loadUtterances(for: selection?.callID) }
+        }
+        .onChange(of: phone.state) { _, state in
+            if state.isRinging || state.isInCall {
+                selection = .phone
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .phoneArchiveChanged)) { _ in
             Task {
                 await refreshCalls()
-                await loadUtterances(for: selection)
+                await loadUtterances(for: selection?.callID)
             }
         }
-        .frame(minWidth: 760, idealWidth: 980, minHeight: 520, idealHeight: 680)
+        .frame(minWidth: 980, idealWidth: 1_100, minHeight: 640, idealHeight: 700)
     }
 
     private var sidebar: some View {
         List(selection: $selection) {
+            Section {
+                Label("Phone", systemImage: phone.state.isReady ? "phone.fill" : phone.state.symbol)
+                    .tag(LibrarySelection.phone)
+            }
+
+            if calls.isEmpty {
+                Section("Library") {
+                    if let loadError {
+                        Label(loadError, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                    } else if query.isEmpty {
+                        Text("Completed calls will appear here.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Label("No results", systemImage: "magnifyingglass")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
             ForEach(dayGroups) { group in
                 Section(group.title) {
                     ForEach(group.calls) { call in
                         CallLibraryRow(call: call, displayName: displayName(for: call))
-                            .tag(call.id)
+                            .tag(LibrarySelection.call(call.id))
                             .contextMenu {
                                 Button("Delete Call", role: .destructive) {
                                     Task { await delete(call) }
@@ -51,83 +86,78 @@ struct LibraryView: View {
                 }
             }
         }
-        .overlay {
-            if calls.isEmpty, loadError == nil {
-                ContentUnavailableView(
-                    query.isEmpty ? "No archived calls" : "No results",
-                    systemImage: query.isEmpty ? "rectangle.stack" : "magnifyingglass",
-                    description: Text(query.isEmpty
-                        ? "Completed calls will appear here."
-                        : "Try a different name, number, summary, or phrase.")
-                )
-            } else if let loadError {
-                ContentUnavailableView(
-                    "Archive unavailable",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(loadError)
-                )
-            }
-        }
         .navigationTitle("Calls")
     }
 
     @ViewBuilder
     private var detail: some View {
-        if let call = selectedCall {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 22) {
-                    callHeader(call)
-                    if let summary = call.summary {
-                        SummaryCard(summary: CallSummary(text: summary, createdAt: call.startedAt))
-                    }
-                    if utterances.isEmpty {
-                        ContentUnavailableView(
-                            "No archived transcript",
-                            systemImage: "text.bubble",
-                            description: Text("This call has metadata only.")
-                        )
-                        .frame(maxWidth: .infinity, minHeight: 240)
-                    } else {
-                        VStack(alignment: .leading, spacing: 18) {
-                            Text("Conversation")
-                                .font(.headline)
-                            ForEach(utterances) { entry in
-                                TranscriptRow(entry: entry)
-                            }
-                        }
-                    }
-                }
-                .padding(28)
-                .frame(maxWidth: 760, alignment: .leading)
-                .frame(maxWidth: .infinity)
+        switch selection {
+        case .phone:
+            DesktopPhoneView(phone: phone, numberFieldFocused: $numberFieldFocused)
+                .navigationTitle("Phone")
+        case .call(let id):
+            if let call = calls.first(where: { $0.id == id }) {
+                archivedCallDetail(call)
+            } else {
+                noSelectionDetail
             }
-            .navigationTitle(displayName(for: call))
-            .toolbar {
-                if phone.state.isReady, let peer = call.peer {
-                    ToolbarItem {
-                        Button {
-                            phone.number = peer
-                            phone.dial()
-                        } label: {
-                            Label("Call again", systemImage: "phone.fill")
-                        }
-                    }
-                }
-            }
-        } else {
-            ContentUnavailableView(
-                calls.isEmpty ? "No archived calls" : "No call selected",
-                systemImage: calls.isEmpty ? "rectangle.stack" : "phone",
-                description: Text(calls.isEmpty
-                    ? "Completed calls will appear in the library."
-                    : "Select a call in the sidebar to see its details.")
-            )
+        case nil:
+            noSelectionDetail
         }
     }
 
-    private var selectedCall: ArchivedCall? {
-        guard let selection else { return nil }
-        return calls.first { $0.id == selection }
+    private func archivedCallDetail(_ call: ArchivedCall) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 22) {
+                callHeader(call)
+                if let summary = call.summary {
+                    SummaryCard(summary: CallSummary(text: summary, createdAt: call.startedAt))
+                }
+                if utterances.isEmpty {
+                    ContentUnavailableView(
+                        "No archived transcript",
+                        systemImage: "text.bubble",
+                        description: Text("This call has metadata only.")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 240)
+                } else {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text("Conversation")
+                            .font(.headline)
+                        ForEach(utterances) { entry in
+                            TranscriptRow(entry: entry)
+                        }
+                    }
+                }
+            }
+            .padding(28)
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity)
+        }
+        .navigationTitle(displayName(for: call))
+        .toolbar {
+            if phone.state.isReady, let peer = call.peer {
+                ToolbarItem(placement: .secondaryAction) {
+                    Button {
+                        phone.number = peer
+                        selection = .phone
+                        phone.dial()
+                    } label: {
+                        Label("Call again", systemImage: "phone.fill")
+                    }
+                }
+            }
+        }
+    }
+
+    private var noSelectionDetail: some View {
+        ContentUnavailableView(
+            calls.isEmpty ? "No archived calls" : "No call selected",
+            systemImage: calls.isEmpty ? "rectangle.stack" : "phone",
+            description: Text(calls.isEmpty
+                ? "Completed calls will appear in the library."
+                : "Select a call in the sidebar to see its details.")
+        )
     }
 
     private var dayGroups: [CallDayGroup] {
@@ -164,12 +194,21 @@ struct LibraryView: View {
             HStack(spacing: 14) {
                 Label(call.startedAt.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
                 Label(formatDuration(call.duration), systemImage: "clock")
-                Label(call.direction == .incoming ? "Incoming" : "Outgoing", systemImage: call.direction == .incoming ? "arrow.down.left" : "arrow.up.right")
+                Label(
+                    call.direction == .incoming ? "Incoming" : "Outgoing",
+                    systemImage: call.direction == .incoming ? "arrow.down.left" : "arrow.up.right"
+                )
                 if call.missed { Label("Missed", systemImage: "exclamationmark.circle.fill") }
             }
             .font(.subheadline)
             .foregroundStyle(call.missed ? Color.red : Color.secondary)
         }
+    }
+
+    private func showPhoneAndFocus() {
+        selection = .phone
+        guard phone.state.isReady else { return }
+        DispatchQueue.main.async { numberFieldFocused = true }
     }
 
     private func displayName(for call: ArchivedCall) -> String {
@@ -196,8 +235,8 @@ struct LibraryView: View {
             guard !Task.isCancelled else { return }
             calls = fetched
             loadError = nil
-            if let selection, !fetched.contains(where: { $0.id == selection }) {
-                self.selection = nil
+            if case .call(let id) = selection, !fetched.contains(where: { $0.id == id }) {
+                selection = .phone
                 utterances = []
             }
         } catch {
@@ -212,10 +251,10 @@ struct LibraryView: View {
         }
         do {
             let fetched = try await store.fetchUtterances(callId: id)
-            guard selection == id else { return }
+            guard selection?.callID == id else { return }
             utterances = fetched
         } catch {
-            guard selection == id else { return }
+            guard selection?.callID == id else { return }
             utterances = []
         }
     }
@@ -223,8 +262,8 @@ struct LibraryView: View {
     private func delete(_ call: ArchivedCall) async {
         do {
             try await store.deleteCall(call.id)
-            if selection == call.id {
-                selection = nil
+            if selection?.callID == call.id {
+                selection = .phone
                 utterances = []
             }
             await refreshCalls()
@@ -232,6 +271,269 @@ struct LibraryView: View {
         } catch {
             loadError = error.localizedDescription
         }
+    }
+}
+
+private enum LibrarySelection: Hashable {
+    case phone
+    case call(UUID)
+
+    var callID: UUID? {
+        if case .call(let id) = self { return id }
+        return nil
+    }
+}
+
+private struct DesktopPhoneView: View {
+    @ObservedObject var phone: PhoneController
+    @FocusState.Binding var numberFieldFocused: Bool
+
+    @State private var showKeypad = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 20) {
+                statusHeader
+                callControls
+            }
+            .padding(.horizontal, 32)
+            .padding(.vertical, 24)
+            .frame(maxWidth: 820)
+            .frame(maxWidth: .infinity)
+
+            Divider()
+
+            conversationHeader
+            Divider()
+            ConversationTimeline(phone: phone, minimumEmptyHeight: 220, contentPadding: 24)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .onChange(of: phone.state.isConnected) { _, connected in
+            if !connected { showKeypad = false }
+        }
+    }
+
+    private var statusHeader: some View {
+        HStack(spacing: 16) {
+            ZStack {
+                Circle()
+                    .fill(phoneStatusColor(for: phone.state).opacity(0.13))
+                    .frame(width: 54, height: 54)
+                Image(systemName: phone.state.symbol)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(phoneStatusColor(for: phone.state))
+                    .symbolEffect(.pulse, isActive: phone.state.isRinging)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(headerTitle)
+                    .font(.title2.weight(.semibold))
+                    .lineLimit(1)
+                Text(phone.state.label)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 7) {
+                if phone.callStartedAt != nil {
+                    CallDuration(startedAt: phone.callStartedAt)
+                        .font(.title3)
+                }
+                Text(phone.state.isInCall || phone.state.isRinging ? "Line" : "Call from")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                PhoneAccountPicker(phone: phone, presentation: .labeled)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var callControls: some View {
+        if phone.state.isReady {
+            dialer
+        } else if phone.state.isRinging {
+            HStack(spacing: 12) {
+                callActionButton(
+                    "Decline",
+                    symbol: "phone.down.fill",
+                    color: .red,
+                    action: phone.reject
+                )
+                callActionButton(
+                    "Answer",
+                    symbol: "phone.fill",
+                    color: .green,
+                    action: phone.answer
+                )
+            }
+            .frame(maxWidth: 520)
+        } else if phone.state.isInCall {
+            VStack(spacing: 14) {
+                HStack(spacing: 12) {
+                    roundControl(
+                        phone.isMuted ? "Unmute" : "Mute",
+                        symbol: phone.isMuted ? "mic.slash.fill" : "mic.fill",
+                        tint: phone.isMuted ? .orange : .secondary,
+                        disabled: !phone.state.isConnected,
+                        action: phone.toggleMute
+                    )
+                    roundControl(
+                        phone.isGeminiLiveActive ? "Stop Assistant" : "Assistant",
+                        symbol: "sparkles",
+                        tint: phone.isGeminiLiveActive ? .purple : .secondary,
+                        disabled: !phone.state.isConnected || !phone.isGeminiConfigured,
+                        action: phone.toggleGeminiLive
+                    )
+
+                    Button(action: phone.hangup) {
+                        Label("Hang up", systemImage: "phone.down.fill")
+                            .fontWeight(.semibold)
+                            .frame(minWidth: 150, minHeight: 38)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .controlSize(.large)
+
+                    roundControl(
+                        "Keypad",
+                        symbol: "circle.grid.3x3.fill",
+                        tint: showKeypad ? .accentColor : .secondary,
+                        disabled: !phone.state.isConnected
+                    ) {
+                        showKeypad.toggle()
+                    }
+                }
+
+                if showKeypad && phone.state.isConnected {
+                    DTMFKeypad(phone: phone)
+                        .frame(maxWidth: 300)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+        } else if case .error = phone.state {
+            Button("Back to dialing", action: phone.recoverFromError)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+        } else if phone.state == .stopped {
+            Button("Start phone", action: phone.toggleBaresip)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+        } else {
+            ProgressView("Registering with the provider …")
+                .controlSize(.large)
+        }
+    }
+
+    private var dialer: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("New call")
+                .font(.headline)
+            HStack(spacing: 10) {
+                TextField("Phone number or SIP address", text: $phone.number)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.large)
+                    .focused($numberFieldFocused)
+                    .font(.system(size: 17, design: .rounded))
+                    .onSubmit { phone.dial() }
+
+                Button(action: phone.dial) {
+                    Label("Call", systemImage: "phone.fill")
+                        .frame(minHeight: 24)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+                .controlSize(.large)
+                .disabled(phone.number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                AssistantDialButton(phone: phone, presentation: .labeled)
+                    .controlSize(.large)
+            }
+        }
+        .padding(18)
+        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(
+                    numberFieldFocused ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.1),
+                    lineWidth: 1
+                )
+        }
+    }
+
+    private var conversationHeader: some View {
+        HStack(spacing: 10) {
+            Label(
+                phone.state.isInCall ? "Live conversation" : "Conversation",
+                systemImage: phone.state.isInCall ? "waveform" : "text.bubble"
+            )
+            .font(.headline)
+            if phone.state.isInCall {
+                Text("Live")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+            }
+            Spacer()
+            Label(phone.intelligenceStatus, systemImage: "lock.shield")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Button("Clear", action: phone.clearConversation)
+                .disabled(phone.transcript.isEmpty && phone.summary == nil)
+            Button("Copy", action: phone.copyConversation)
+                .disabled(phone.transcript.isEmpty && phone.summary == nil)
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+    }
+
+    private var headerTitle: String {
+        if let peer = phone.state.peer {
+            return phone.displayName(for: peer) ?? peer
+        }
+        return phone.state.isReady ? "Ready to call" : phone.state.label
+    }
+
+    private func callActionButton(
+        _ title: String,
+        symbol: String,
+        color: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .fontWeight(.semibold)
+                .frame(maxWidth: .infinity, minHeight: 42)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(color)
+        .controlSize(.large)
+    }
+
+    private func roundControl(
+        _ title: String,
+        symbol: String,
+        tint: Color,
+        disabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 28, height: 24)
+                Text(title)
+                    .font(.caption)
+            }
+            .frame(minWidth: 82)
+        }
+        .buttonStyle(.bordered)
+        .tint(tint)
+        .disabled(disabled)
+        .help(title)
     }
 }
 
