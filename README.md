@@ -185,6 +185,16 @@ streamed to Google's Gemini Live API and generated audio is injected into the
 call. Review Google's data and privacy terms before enabling it. Local
 transcription remains independent and can continue alongside the bridge.
 
+## Assistant answering mode (experimental)
+
+In Settings > Assistant, enable **Assistant answers incoming calls**, choose the
+answer delay, and tailor the instructions for your callers. With a Gemini API
+key configured, Phone answers an incoming call after the delay, starts the
+Gemini Live bridge, and has the assistant greet the caller. You can still answer
+or decline before the delay expires. While the assistant is active, call audio
+is streamed to Google; review the Google data and privacy terms before enabling
+this mode.
+
 ## Privacy
 
 - SIP credentials stay in
