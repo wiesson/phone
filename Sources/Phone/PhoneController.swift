@@ -504,6 +504,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             return
         }
 
+        let accountsContent = (try? String(contentsOf: configDirectory.appendingPathComponent("accounts"), encoding: .utf8)) ?? ""
+        let aor = parseAccountAOR(from: accountsContent) ?? "unknown"
+        appendDiagnostic("phone-app: starting baresip — accounts file AOR: \(aor), UI active: \(activeManagedSIPAddress ?? "none")\n")
+
         let task = Process()
         let stdin = Pipe()
         let stdout = Pipe()
