@@ -48,9 +48,9 @@ struct PhonePanel: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                Text(phone.intelligenceStatus)
+                Text(phone.activityStatus)
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(phone.geminiLiveState == .off ? Color.secondary.opacity(0.7) : Color.purple)
                     .lineLimit(1)
             }
             Spacer()
@@ -108,6 +108,19 @@ struct PhonePanel: View {
                     .tint(phone.isMuted ? .orange : nil)
                     .disabled(!phone.state.isConnected)
                     .help(phone.isMuted ? "Unmute" : "Mute")
+
+                    if phone.isGeminiConfigured {
+                        Button(action: phone.toggleGeminiLive) {
+                            Image(systemName: "sparkles")
+                                .fontWeight(.semibold)
+                                .frame(width: 34, height: 34)
+                        }
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.circle)
+                        .tint(phone.isGeminiLiveActive ? .purple : nil)
+                        .disabled(!phone.state.isConnected)
+                        .help(phone.isGeminiLiveActive ? "Stop Gemini Live" : "Start Gemini Live")
+                    }
 
                     Button(action: phone.hangup) {
                         Label("Hang up", systemImage: "phone.down.fill")
@@ -450,6 +463,9 @@ struct PhoneSettingsView: View {
     @ObservedObject var phone: PhoneController
     @AppStorage("transcriptionEnabled") private var transcriptionEnabled = true
     @AppStorage("retainTranscript") private var retainTranscript = true
+    @AppStorage("geminiLiveModel") private var geminiLiveModel = defaultGeminiLiveModel
+    @State private var geminiAPIKey = ""
+    @State private var geminiSettingsMessage: String?
     @State private var selectedAccountAddress: String?
     @State private var accountToRemove: ManagedSIPAccount?
     @State private var accountError: String?
@@ -458,6 +474,9 @@ struct PhoneSettingsView: View {
         TabView {
             intelligenceSettings
                 .tabItem { Label("Transcript", systemImage: "text.bubble") }
+
+            assistantSettings
+                .tabItem { Label("Assistant", systemImage: "sparkles") }
 
             phoneSettings
                 .tabItem { Label("Phone", systemImage: "phone") }
@@ -479,12 +498,73 @@ struct PhoneSettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Processing on this Mac")
                         .fontWeight(.medium)
-                    Text("Call audio is neither persistently recorded nor sent to any cloud service.")
+                    Text("Transcription and summaries stay on this Mac. The optional Gemini Live bridge has separate controls.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+        }
+        .padding(24)
+    }
+
+    private var assistantSettings: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text("Gemini Live call bridge")
+                        .font(.headline)
+                    Text("BETA")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.purple)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.purple.opacity(0.12), in: Capsule())
+                }
+                Text("When you turn it on during a call, caller audio is streamed to Google and Gemini's audio is sent back into the call.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            LabeledContent("API key") {
+                SecureField(phone.isGeminiConfigured ? "Configured" : "Required", text: $geminiAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 300)
+            }
+
+            LabeledContent("Model") {
+                TextField(defaultGeminiLiveModel, text: $geminiLiveModel)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 300)
+            }
+
+            HStack {
+                Button("Save API Key", action: saveGeminiAPIKey)
+                    .disabled(geminiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if let geminiSettingsMessage {
+                    Text(geminiSettingsMessage)
+                        .font(.caption)
+                        .foregroundStyle(geminiSettingsMessage == "API key saved." ? .green : .orange)
+                } else if phone.isGeminiConfigured {
+                    Text("An API key is configured.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
+
+            Label {
+                Text("The bridge is off by default and never starts automatically. Local transcription remains independent.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "hand.raised.fill")
+                    .foregroundStyle(.purple)
+            }
+            Spacer()
         }
         .padding(24)
     }
@@ -619,6 +699,17 @@ struct PhoneSettingsView: View {
             Text(account.provider.shortName)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private func saveGeminiAPIKey() {
+        geminiSettingsMessage = nil
+        do {
+            try phone.saveGeminiAPIKey(geminiAPIKey)
+            geminiAPIKey = ""
+            geminiSettingsMessage = "API key saved."
+        } catch {
+            geminiSettingsMessage = error.localizedDescription
         }
     }
 
