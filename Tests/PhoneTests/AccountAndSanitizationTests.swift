@@ -102,6 +102,53 @@ private func redactsAuthenticationPasswords(testCase: RedactionCase) {
     #expect(result.state.accounts.count == 1)
     #expect(result.state.activeAccount?.sipAddress == "+49123@tel.t-online.de")
     #expect(result.state.activeAccount?.label == nil)
+    #expect(result.state.activeAccount?.assistantProfile == .personalAssistant)
+    #expect(result.state.activeAccount?.assistantInstructionsOverride == nil)
+    #expect(result.state.activeAccount?.assistantContextData == nil)
+}
+
+@Test func ordersActiveAccountFirstAndWritesEveryAccount() throws {
+    let first = ManagedSIPAccount(
+        provider: .custom,
+        username: "first",
+        domain: "example.com",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: ""
+    )
+    let active = ManagedSIPAccount(
+        provider: .custom,
+        username: "active",
+        domain: "example.net",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: ""
+    )
+    let third = ManagedSIPAccount(
+        provider: .custom,
+        username: "third",
+        domain: "example.org",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: ""
+    )
+    let accounts = [first, active, third]
+    let ordered = orderedManagedAccounts(accounts, activeSIPAddress: active.sipAddress)
+    let content = try managedAccountsFileContent(
+        accounts: accounts,
+        activeSIPAddress: active.sipAddress,
+        passwordFor: { "password-for-\($0.username)" }
+    )
+    let lines = content.split(separator: "\n").map(String.init)
+
+    #expect(ordered.map(\.sipAddress) == [active.sipAddress, first.sipAddress, third.sipAddress])
+    #expect(lines.count == 3)
+    #expect(lines[0].hasPrefix("<sip:\(active.sipAddress)>") )
+    #expect(lines[1].hasPrefix("<sip:\(first.sipAddress)>") )
+    #expect(lines[2].hasPrefix("<sip:\(third.sipAddress)>") )
+    #expect(content.contains("password-for-active"))
+    #expect(content.contains("password-for-first"))
+    #expect(content.contains("password-for-third"))
 }
 
 @Test func maintainsOneActiveManagedAccount() {
