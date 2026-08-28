@@ -562,8 +562,14 @@ struct PhoneSettingsView: View {
     @AppStorage("assistantAnswersIncomingCalls") private var assistantAnswersIncomingCalls = false
     @AppStorage("assistantAnswerDelay") private var assistantAnswerDelay = 5
     @AppStorage("assistantInstructions") private var assistantInstructions = defaultAssistantInstructions
+    @AppStorage("webhookURL") private var webhookURL = ""
+    @AppStorage("webhookCallEvents") private var webhookCallEvents = true
+    @AppStorage("webhookContentEvents") private var webhookContentEvents = false
     @State private var geminiAPIKey = ""
     @State private var geminiSettingsMessage: String?
+    @State private var webhookSecret = ""
+    @State private var webhookSecretConfigured = false
+    @State private var webhookSettingsMessage: String?
     @State private var selectedAccountAddress: String?
     @State private var accountToRemove: ManagedSIPAccount?
     @State private var accountError: String?
@@ -575,6 +581,9 @@ struct PhoneSettingsView: View {
 
             assistantSettings
                 .tabItem { Label("Assistant", systemImage: "sparkles") }
+
+            automationSettings
+                .tabItem { Label("Automation", systemImage: "bolt.horizontal") }
 
             phoneSettings
                 .tabItem { Label("Phone", systemImage: "phone") }
@@ -826,6 +835,72 @@ struct PhoneSettingsView: View {
         }
     }
 
+    private var automationSettings: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Webhook delivery")
+                    .font(.headline)
+                Text("Send selected Phone events to one HTTPS or HTTP endpoint as signed JSON.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            LabeledContent("Webhook URL") {
+                TextField("https://example.com/phone", text: $webhookURL)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 330)
+            }
+
+            LabeledContent("Shared secret") {
+                SecureField(webhookSecretConfigured ? "Configured" : "Required", text: $webhookSecret)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 330)
+            }
+
+            HStack {
+                Button("Save Shared Secret", action: saveWebhookSecret)
+                    .disabled(webhookSecret.isEmpty)
+                if let webhookSettingsMessage {
+                    Text(webhookSettingsMessage)
+                        .font(.caption)
+                        .foregroundStyle(webhookSettingsMessage == "Shared secret saved." ? .green : .orange)
+                } else if webhookSecretConfigured {
+                    Text("A shared secret is configured in Keychain.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
+
+            Toggle("Call events", isOn: $webhookCallEvents)
+            Text("Incoming, outgoing, answered, hangup, and DTMF events include call metadata.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 20)
+
+            Toggle("Transcript & summary events", isOn: $webhookContentEvents)
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "hand.raised.fill")
+                    .foregroundStyle(.orange)
+                Text("Privacy: enabling this sends finalized transcript text and call summaries off this Mac to the webhook endpoint.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+
+            Label("Requests are signed with HMAC-SHA256 in the X-Phone-Signature header.", systemImage: "signature")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(24)
+        .onAppear {
+            webhookSecretConfigured = PhoneWebhookSecretStore.secret() != nil
+        }
+    }
+
     private var selectedAccount: ManagedSIPAccount? {
         phone.managedAccounts.first { $0.sipAddress == selectedAccountAddress }
     }
@@ -879,6 +954,18 @@ struct PhoneSettingsView: View {
             geminiSettingsMessage = "API key saved."
         } catch {
             geminiSettingsMessage = error.localizedDescription
+        }
+    }
+
+    private func saveWebhookSecret() {
+        webhookSettingsMessage = nil
+        do {
+            try PhoneWebhookSecretStore.save(webhookSecret)
+            webhookSecret = ""
+            webhookSecretConfigured = true
+            webhookSettingsMessage = "Shared secret saved."
+        } catch {
+            webhookSettingsMessage = error.localizedDescription
         }
     }
 

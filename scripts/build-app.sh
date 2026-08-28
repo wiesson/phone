@@ -28,6 +28,7 @@ fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp "$BIN_DIR/Phone" "$APP/Contents/MacOS/Phone"
+cp "$BIN_DIR/phone-mcp" "$APP/Contents/Helpers/phone-mcp"
 cp "$BARESIP_EXECUTABLE" "$APP/Contents/Helpers/baresip"
 cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 mkdir -p "$APP/Contents/Resources/baresip/modules"
@@ -53,6 +54,7 @@ cp -L "$BARESIP_PREFIX/lib/baresip/modules/in_band_dtmf.so" "$APP/Contents/Resou
 
 FRAMEWORKS="$APP/Contents/Frameworks"
 HELPER="$APP/Contents/Helpers/baresip"
+MCP_HELPER="$APP/Contents/Helpers/phone-mcp"
 MODULES="$APP/Contents/Resources/baresip/modules"
 DEPENDENCIES=$(mktemp)
 trap 'rm -f "$DEPENDENCIES"' EXIT
@@ -178,6 +180,7 @@ verify_macho() {
 }
 
 verify_macho "$HELPER"
+verify_macho "$MCP_HELPER"
 for module in "$MODULES"/*.so; do
   verify_macho "$module"
 done
@@ -192,6 +195,7 @@ for library in "$FRAMEWORKS"/*.dylib; do
   codesign --force --sign "$SIGN_IDENTITY" "$library"
 done
 codesign --force --sign "$SIGN_IDENTITY" "$HELPER"
+codesign --force --sign "$SIGN_IDENTITY" "$MCP_HELPER"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -225,4 +229,5 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
+codesign --verify --deep --strict "$APP"
 echo "Built: $APP"

@@ -111,6 +111,60 @@ and register Phone against it. You will need:
 The exact account line depends on the router. Real credentials never belong in
 a commit or an issue.
 
+## Automation: webhooks and MCP
+
+Settings > Automation configures one webhook endpoint and a shared secret. The
+secret is stored in the macOS Keychain under the `Phone Webhook` service. Call
+events are enabled by default once a URL is present. Final transcript and call
+summary events remain off until explicitly enabled because their text leaves
+the Mac.
+
+Each delivery is an HTTP POST with this JSON shape:
+
+```json
+{
+  "id": 42,
+  "type": "call.hungup",
+  "timestamp": "2026-08-28T09:44:58Z",
+  "data": {
+    "peer": "+4930123456",
+    "duration": 83.4,
+    "missed": false
+  }
+}
+```
+
+The `X-Phone-Signature` header is the lowercase hexadecimal HMAC-SHA256 of the
+exact request body, keyed with the shared secret. Available event types are
+`call.incoming`, `call.outgoing`, `call.answered`, `call.hungup`, `call.dtmf`,
+`transcript.final`, and `call.summary`. A network failure is retried once after
+five seconds; a final failure is written to the diagnostic log and appears
+briefly in the menu panel status line.
+
+The bundled `phone-mcp` helper is an MCP stdio server using JSON-RPC 2.0 and MCP
+protocol version `2025-06-18`. Add an installed development build to Claude
+Code with:
+
+```sh
+claude mcp add phone -- /Applications/Phone.app/Contents/Helpers/phone-mcp
+```
+
+For a build kept in this repository, replace the command with the absolute path
+to `dist/Phone.app/Contents/Helpers/phone-mcp`. The server exposes `dial`,
+`answer`, `hangup`, `send_dtmf`, `get_state`, `get_history`, and
+`get_last_summary`. `dial` requires a `number` string, `send_dtmf` requires one
+`digit` from `0`–`9`, `*`, or `#`, and `get_history` accepts an optional `limit`
+from 1 through 50.
+
+The helper connects only to
+`~/Library/Application Support/Phone/control.sock`. The app creates that Unix
+socket with mode `0600`. Its newline-delimited request protocol is
+`{"cmd":"dial","args":{"number":"+4930123456"}}`; responses are
+`{"ok":true,"result":...}` or
+`{"ok":false,"error":{"code":"...","message":"..."}}`. Commands and
+argument names are validated exactly, and requests are refused while Phone is
+not registered with a SIP provider.
+
 ## Local development
 
 The normal build is intentionally a debug build:
@@ -144,6 +198,7 @@ Useful scripts:
 | `scripts/build-audio-tap.sh` | link baresip modules and build the local audio module |
 | `scripts/build-app.sh` | build the Swift app and produce `dist/Phone.app` |
 | `scripts/run.sh` | build and open the app |
+| `scripts/e2e-live-test.sh` | live call between two of your own numbers over the real provider |
 | `scripts/integration-test.sh` | run a provider-free baresip loopback call |
 
 Run the loopback integration test with:
