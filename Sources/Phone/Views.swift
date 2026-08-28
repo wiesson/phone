@@ -470,6 +470,7 @@ struct PhoneSettingsView: View {
     @ObservedObject var phone: PhoneController
     @AppStorage("transcriptionEnabled") private var transcriptionEnabled = true
     @AppStorage("retainTranscript") private var retainTranscript = true
+    @AppStorage("transcriptionLocale") private var transcriptionLocale = ""
     @AppStorage("geminiLiveModel") private var geminiLiveModel = defaultGeminiLiveModel
     @State private var geminiAPIKey = ""
     @State private var geminiSettingsMessage: String?
@@ -505,6 +506,17 @@ struct PhoneSettingsView: View {
             Toggle("Transcribe calls live", isOn: $transcriptionEnabled)
             Toggle("Keep the last transcript after hanging up", isOn: $retainTranscript)
                 .disabled(!transcriptionEnabled)
+
+            Picker("Language", selection: $transcriptionLocale) {
+                Text("System (\(Locale.current.identifier))").tag("")
+                Text("Deutsch").tag("de-DE")
+                Text("English (US)").tag("en-US")
+                Text("English (UK)").tag("en-GB")
+                Text("Français").tag("fr-FR")
+                Text("Español").tag("es-ES")
+                Text("Italiano").tag("it-IT")
+            }
+            .disabled(!transcriptionEnabled)
 
             Divider()
 
