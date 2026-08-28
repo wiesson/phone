@@ -5,6 +5,14 @@ import SwiftUI
 final class PhoneAppDelegate: NSObject, NSApplicationDelegate {
     weak var controller: PhoneController?
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Applied once at launch only: toggling the activation policy at
+        // runtime can permanently break the menu bar item.
+        if UserDefaults.standard.bool(forKey: "showDockIcon") {
+            NSApp.setActivationPolicy(.regular)
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         controller?.shutdown()
     }
