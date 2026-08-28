@@ -372,6 +372,8 @@ struct PhoneSettingsView: View {
     @AppStorage("retainTranscript") private var retainTranscript = true
     @AppStorage("archiveConversations") private var archiveConversations = true
     @AppStorage("transcriptionLocale") private var transcriptionLocale = ""
+    @AppStorage("transcriptionEngine") private var transcriptionEngine = TranscriptionEngine.apple.rawValue
+    @AppStorage("transcriptionSmartMode") private var transcriptionSmartMode = false
     @AppStorage("showDockIcon") private var showDockIcon = false
     @AppStorage("geminiLiveModel") private var geminiLiveModel = defaultGeminiLiveModel
     @AppStorage("assistantBrainURL") private var assistantBrainURL = ""
@@ -458,6 +460,15 @@ struct PhoneSettingsView: View {
 
             Divider()
 
+            Picker("Transcription engine", selection: $transcriptionEngine) {
+                Text("Apple (on-device)").tag(TranscriptionEngine.apple.rawValue)
+                Text("Gemini (cloud)").tag(TranscriptionEngine.gemini.rawValue)
+            }
+            .disabled(!transcriptionEnabled)
+
+            Toggle("Smart formatting (remove filler words)", isOn: $transcriptionSmartMode)
+                .disabled(!transcriptionEnabled || transcriptionEngine != TranscriptionEngine.gemini.rawValue)
+
             Picker("Language", selection: $transcriptionLocale) {
                 Text("System (\(Locale.current.identifier))").tag("")
                 Text("Deutsch").tag("de-DE")
@@ -467,7 +478,7 @@ struct PhoneSettingsView: View {
                 Text("Español").tag("es-ES")
                 Text("Italiano").tag("it-IT")
             }
-            .disabled(!transcriptionEnabled)
+            .disabled(!transcriptionEnabled || transcriptionEngine != TranscriptionEngine.apple.rawValue)
 
             Divider()
 
@@ -475,9 +486,13 @@ struct PhoneSettingsView: View {
                 Image(systemName: "lock.shield.fill")
                     .foregroundStyle(.green)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Processing on this Mac")
+                    Text(transcriptionEngine == TranscriptionEngine.gemini.rawValue ? "Gemini cloud transcription" : "Processing on this Mac")
                         .fontWeight(.medium)
-                    Text("Transcription and summaries stay on this Mac. The optional Gemini Live bridge has separate controls.")
+                    Text(
+                        transcriptionEngine == TranscriptionEngine.gemini.rawValue
+                            ? "Live call audio is sent to Gemini for transcription. Summaries still use the configured local or Gemini fallback path."
+                            : "Transcription and summaries stay on this Mac. The optional Gemini Live bridge has separate controls."
+                    )
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

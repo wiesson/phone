@@ -512,7 +512,7 @@ final class PCM16MonoResampler {
     }
 }
 
-private final class GeminiCallerAudioConverter {
+final class GeminiCallerAudioConverter {
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16,
         sampleRate: 16_000,

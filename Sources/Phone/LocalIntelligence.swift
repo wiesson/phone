@@ -3,6 +3,44 @@ import Foundation
 import FoundationModels
 import Speech
 
+enum TranscriptionEngine: String, CaseIterable, Sendable {
+    case apple
+    case gemini
+}
+
+struct TranscriptionEngineResolution: Equatable, Sendable {
+    let requested: TranscriptionEngine
+    let active: TranscriptionEngine
+
+    var fellBackToApple: Bool { requested == .gemini && active == .apple }
+}
+
+func configuredTranscriptionEngine(defaults: UserDefaults = .standard) -> TranscriptionEngine {
+    guard let value = defaults.string(forKey: "transcriptionEngine"),
+          let engine = TranscriptionEngine(rawValue: value) else { return .apple }
+    return engine
+}
+
+func resolveTranscriptionEngine(
+    requested: TranscriptionEngine,
+    geminiAPIKey: String?
+) -> TranscriptionEngineResolution {
+    let hasGeminiAPIKey = geminiAPIKey?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .isEmpty == false
+    let active: TranscriptionEngine = requested == .gemini && hasGeminiAPIKey ? .gemini : .apple
+    return TranscriptionEngineResolution(requested: requested, active: active)
+}
+
+protocol TranscriptionLane: Actor {
+    func start(
+        onResult: @escaping @Sendable (Speaker, String, Bool) -> Void,
+        onError: @escaping @Sendable (Speaker, String) -> Void
+    ) async throws
+    func append(_ frame: AudioFrame) async
+    func stop() async
+}
+
 actor SpeechLane {
     enum LaneError: LocalizedError {
         case unavailable
@@ -96,7 +134,7 @@ actor SpeechLane {
         }
     }
 
-    func append(_ frame: AudioFrame) {
+    func append(_ frame: AudioFrame) async {
         guard frame.speaker == speaker,
               let targetFormat,
               let inputFormat = AVAudioFormat(
@@ -187,6 +225,10 @@ actor SpeechLane {
     }
 }
 
+
+extension SpeechLane: TranscriptionLane {}
+extension GeminiTranscribeLane: TranscriptionLane {}
+
 func configuredTranscriptionLocale() -> Locale {
     if let identifier = UserDefaults.standard.string(forKey: "transcriptionLocale"), !identifier.isEmpty {
         return Locale(identifier: identifier)
@@ -195,13 +237,23 @@ func configuredTranscriptionLocale() -> Locale {
 }
 
 actor LocalIntelligence {
-    private var me = SpeechLane(speaker: .me)
-    private var caller = SpeechLane(speaker: .caller)
+    private var me: (any TranscriptionLane)?
+    private var caller: (any TranscriptionLane)?
 
     func prepare() async throws {
+        let requested = configuredTranscriptionEngine()
+        let resolution = resolveTranscriptionEngine(
+            requested: requested,
+            geminiAPIKey: requested == .gemini ? GeminiAPIKeyStore.apiKey() : nil
+        )
+        if resolution.active == .gemini { return }
+        if resolution.fellBackToApple {
+            phoneDiagnosticLog("phone-app: Gemini transcription selected without an API key; falling back to Apple transcription\n")
+        }
+
         guard SpeechTranscriber.isAvailable else { throw SpeechLane.LaneError.unavailable }
-        let requested = configuredTranscriptionLocale()
-        let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requested) ?? requested
+        let requestedLocale = configuredTranscriptionLocale()
+        let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale) ?? requestedLocale
         let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
         let modules: [any SpeechModule] = [transcriber]
         if let request = try await AssetInventory.assetInstallationRequest(supporting: modules) {
@@ -214,28 +266,56 @@ actor LocalIntelligence {
         onResult: @escaping @Sendable (Speaker, String, Bool) -> Void,
         onError: @escaping @Sendable (Speaker, String) -> Void
     ) async throws {
-        let locale = configuredTranscriptionLocale()
-        me = SpeechLane(speaker: .me, locale: locale)
-        caller = SpeechLane(speaker: .caller, locale: locale)
-        phoneDiagnosticLog("phone-app: transcription locale: \(locale.identifier)\n")
-        try await me.start(onResult: onResult, onError: onError)
+        await stop()
+        let requested = configuredTranscriptionEngine()
+        let apiKey = requested == .gemini ? GeminiAPIKeyStore.apiKey() : nil
+        let resolution = resolveTranscriptionEngine(requested: requested, geminiAPIKey: apiKey)
+        let me: any TranscriptionLane
+        let caller: any TranscriptionLane
+
+        switch resolution.active {
+        case .apple:
+            if resolution.fellBackToApple {
+                phoneDiagnosticLog("phone-app: Gemini transcription selected without an API key; falling back to Apple transcription\n")
+            }
+            let locale = configuredTranscriptionLocale()
+            phoneDiagnosticLog("phone-app: Apple transcription locale: \(locale.identifier)\n")
+            me = SpeechLane(speaker: .me, locale: locale)
+            caller = SpeechLane(speaker: .caller, locale: locale)
+        case .gemini:
+            let key = apiKey ?? ""
+            let smartMode = UserDefaults.standard.bool(forKey: "transcriptionSmartMode")
+            phoneDiagnosticLog("phone-app: Gemini cloud transcription selected (\(smartMode ? "SMART" : "VERBATIM"))\n")
+            me = GeminiTranscribeLane(speaker: .me, apiKey: key, smartMode: smartMode)
+            caller = GeminiTranscribeLane(speaker: .caller, apiKey: key, smartMode: smartMode)
+        }
+
+        self.me = me
+        self.caller = caller
         do {
+            try await me.start(onResult: onResult, onError: onError)
             try await caller.start(onResult: onResult, onError: onError)
         } catch {
             await me.stop()
+            await caller.stop()
+            self.me = nil
+            self.caller = nil
             throw error
         }
     }
 
     func append(_ frame: AudioFrame) async {
-        if frame.speaker == .me { await me.append(frame) }
-        else { await caller.append(frame) }
+        if frame.speaker == .me { await me?.append(frame) }
+        else { await caller?.append(frame) }
     }
 
     func stop() async {
-        await me.stop()
-        await caller.stop()
+        await me?.stop()
+        await caller?.stop()
+        me = nil
+        caller = nil
     }
+
 
     func summarize(entries: [TranscriptEntry], assistantTask: String? = nil) async throws -> String {
         let transcript = entries
