@@ -45,6 +45,8 @@ static char inject_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 static uint8_t inject_buffer[PHONE_INJECT_BUFFER_SIZE];
 static size_t inject_head;
 static size_t inject_count;
+static bool inject_active;
+static uint64_t inject_underruns;
 
 static uint32_t little_endian_u32(uint32_t value)
 {
@@ -110,6 +112,18 @@ static size_t inject_read(uint8_t *samples, size_t size)
     return size;
 }
 
+static void inject_end_session(void)
+{
+    if (!inject_active)
+        return;
+    info("phone_tap: injection session ended: %llu ring-buffer underrun events\n",
+         (unsigned long long)inject_underruns);
+    inject_active = false;
+    inject_underruns = 0;
+    inject_head = 0;
+    inject_count = 0;
+}
+
 static void drain_injected_audio(const struct auframe *frame)
 {
     uint8_t packet[sizeof(struct phone_header) + PHONE_TAP_MAX_PAYLOAD];
@@ -135,10 +149,17 @@ static void drain_injected_audio(const struct auframe *frame)
             header->format != wire_format(frame->fmt) ||
             header->channels != frame->ch ||
             sample_rate != frame->srate ||
-            !payload_size ||
             payload_size > PHONE_TAP_MAX_PAYLOAD ||
             (size_t)received != sizeof(*header) + payload_size)
             continue;
+        if (!payload_size) {
+            inject_end_session();
+            continue;
+        }
+        if (!inject_active) {
+            inject_active = true;
+            inject_underruns = 0;
+        }
         inject_append(packet + sizeof(*header), payload_size);
     }
 }
@@ -150,11 +171,13 @@ static void inject_frame(struct auframe *frame)
     if (!frame || !frame->sampv)
         return;
     drain_injected_audio(frame);
-    if (!inject_count)
+    if (!inject_active)
         return;
     payload_size = auframe_size(frame);
     if (!payload_size)
         return;
+    if (inject_count < payload_size)
+        ++inject_underruns;
     memset(frame->sampv, 0, payload_size);
     (void)inject_read(frame->sampv, payload_size);
 }
@@ -313,6 +336,7 @@ static int module_init(void)
 
 static int module_close(void)
 {
+    inject_end_session();
     aufilt_unregister(&phone_tap);
     if (tap_socket >= 0) {
         close(tap_socket);

@@ -58,6 +58,24 @@ func filteringAudioStatistics(from text: String) -> String {
     return result
 }
 
+func configEnsuringPreferredG722Module(_ content: String) -> String {
+    var lines = content.components(separatedBy: "\n")
+    let g722Indexes = lines.indices.filter { index in
+        let fields = lines[index].split(whereSeparator: { $0.isWhitespace })
+        return fields.count >= 2 && fields[0] == "module" && fields[1] == "g722.so"
+    }
+    let g722Line = g722Indexes.first.map { lines[$0] } ?? "module\t\t\tg722.so"
+    for index in g722Indexes.reversed() {
+        lines.remove(at: index)
+    }
+    let g711Index = lines.firstIndex { line in
+        let fields = line.split(whereSeparator: { $0.isWhitespace })
+        return fields.count >= 2 && fields[0] == "module" && fields[1] == "g711.so"
+    } ?? lines.endIndex
+    lines.insert(g722Line, at: g711Index)
+    return lines.joined(separator: "\n")
+}
+
 struct AssistantCallPlan {
     private(set) var task: String?
     private(set) var isActive = false
@@ -661,6 +679,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             try copyIfMissing(to: configDirectory.appendingPathComponent("accounts"), from: [developmentAccount])
         }
         try updateModulePath(bundledModulesDirectory)
+        try ensurePreferredG722Module(bundledModulesDirectory)
     }
 
     private func copyIfMissing(to destination: URL, from candidates: [URL?]) throws {
@@ -688,6 +707,17 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             lines.append("module_path\t\t\(modulesDirectory.path)")
         }
         let updated = lines.joined(separator: "\n")
+        if updated != content {
+            try updated.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func ensurePreferredG722Module(_ modulesDirectory: URL) throws {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: modulesDirectory.appendingPathComponent("g722.so").path) else { return }
+        let url = configDirectory.appendingPathComponent("config")
+        let content = try String(contentsOf: url, encoding: .utf8)
+        let updated = configEnsuringPreferredG722Module(content)
         if updated != content {
             try updated.write(to: url, atomically: true, encoding: .utf8)
         }

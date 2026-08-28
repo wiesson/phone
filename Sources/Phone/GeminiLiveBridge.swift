@@ -212,37 +212,87 @@ enum GeminiLiveProtocol {
     }
 }
 
-func resamplePCM16Mono(_ data: Data, from sourceRate: Int, to targetRate: Int) -> Data {
-    guard sourceRate > 0, targetRate > 0, data.count >= 2 else { return Data() }
-    if sourceRate == targetRate { return Data(data.prefix(data.count - data.count % 2)) }
-    let sampleCount = data.count / 2
-    var samples = [Int16]()
-    samples.reserveCapacity(sampleCount)
-    for index in 0..<sampleCount {
-        let offset = index * 2
-        let value = UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
-        samples.append(Int16(bitPattern: value))
-    }
-    let outputCount = max(1, Int((Double(sampleCount) * Double(targetRate) / Double(sourceRate)).rounded()))
-    var output = Data(capacity: outputCount * 2)
-    for index in 0..<outputCount {
-        let position = Double(index) * Double(sourceRate) / Double(targetRate)
-        let lower = min(Int(position), sampleCount - 1)
-        let upper = min(lower + 1, sampleCount - 1)
-        let fraction = position - Double(lower)
-        let interpolated = Double(samples[lower]) + (Double(samples[upper]) - Double(samples[lower])) * fraction
-        var value = UInt16(bitPattern: Int16(clamping: Int(interpolated.rounded()))).littleEndian
-        withUnsafeBytes(of: &value) { output.append(contentsOf: $0) }
-    }
-    return output
-}
-
 private final class GeminiConverterInput: @unchecked Sendable {
     let buffer: AVAudioPCMBuffer
     var supplied = false
 
     init(buffer: AVAudioPCMBuffer) {
         self.buffer = buffer
+    }
+}
+
+final class PCM16MonoResampler {
+    private struct RatePair: Hashable {
+        let source: Int
+        let target: Int
+    }
+
+    private struct ConversionState {
+        let inputFormat: AVAudioFormat
+        let outputFormat: AVAudioFormat
+        let converter: AVAudioConverter
+    }
+
+    private var states: [RatePair: ConversionState] = [:]
+
+    func resample(_ data: Data, from sourceRate: Int, to targetRate: Int) -> Data {
+        guard sourceRate > 0, targetRate > 0, data.count >= 2 else { return Data() }
+        let byteCount = data.count - data.count % MemoryLayout<Int16>.size
+        if sourceRate == targetRate { return Data(data.prefix(byteCount)) }
+        let pair = RatePair(source: sourceRate, target: targetRate)
+        guard let state = state(for: pair) else { return Data() }
+        let inputFrameCount = AVAudioFrameCount(byteCount / MemoryLayout<Int16>.size)
+        guard let input = AVAudioPCMBuffer(pcmFormat: state.inputFormat, frameCapacity: inputFrameCount) else {
+            return Data()
+        }
+        input.frameLength = inputFrameCount
+        data.withUnsafeBytes { bytes in
+            guard let source = bytes.baseAddress,
+                  let destination = input.mutableAudioBufferList.pointee.mBuffers.mData else { return }
+            memcpy(destination, source, byteCount)
+            input.mutableAudioBufferList.pointee.mBuffers.mDataByteSize = UInt32(byteCount)
+        }
+        let ratio = state.outputFormat.sampleRate / state.inputFormat.sampleRate
+        let outputCapacity = AVAudioFrameCount(ceil(Double(inputFrameCount) * ratio)) + 64
+        guard let output = AVAudioPCMBuffer(pcmFormat: state.outputFormat, frameCapacity: outputCapacity) else {
+            return Data()
+        }
+        let converterInput = GeminiConverterInput(buffer: input)
+        var conversionError: NSError?
+        let status = state.converter.convert(to: output, error: &conversionError) { _, status in
+            if converterInput.supplied {
+                status.pointee = .noDataNow
+                return nil
+            }
+            converterInput.supplied = true
+            status.pointee = .haveData
+            return converterInput.buffer
+        }
+        guard status == .haveData || status == .inputRanDry,
+              output.frameLength > 0,
+              let bytes = output.audioBufferList.pointee.mBuffers.mData else { return Data() }
+        return Data(bytes: bytes, count: Int(output.audioBufferList.pointee.mBuffers.mDataByteSize))
+    }
+
+    private func state(for pair: RatePair) -> ConversionState? {
+        if let state = states[pair] { return state }
+        guard let inputFormat = Self.format(sampleRate: pair.source),
+              let outputFormat = Self.format(sampleRate: pair.target),
+              let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else { return nil }
+        converter.primeMethod = .none
+        converter.sampleRateConverterQuality = AVAudioQuality.high.rawValue
+        let state = ConversionState(inputFormat: inputFormat, outputFormat: outputFormat, converter: converter)
+        states[pair] = state
+        return state
+    }
+
+    private static func format(sampleRate: Int) -> AVAudioFormat? {
+        AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: Double(sampleRate),
+            channels: 1,
+            interleaved: true
+        )
     }
 }
 
@@ -305,6 +355,7 @@ private final class GeminiCallerAudioConverter {
 private final class AudioInjectionSender {
     static let socketPath = "/tmp/phone-audio-inject-\(getuid()).sock"
     private var descriptor: Int32 = -1
+    private var lastSampleRate: UInt32?
 
     init() throws {
         descriptor = socket(AF_UNIX, SOCK_DGRAM, 0)
@@ -330,9 +381,17 @@ private final class AudioInjectionSender {
             }
         }
         guard sent == packet.count else { throw GeminiLiveError.socket(errno) }
+        if !samples.isEmpty { lastSampleRate = sampleRate }
+    }
+
+    func finish() throws {
+        guard let lastSampleRate else { return }
+        self.lastSampleRate = nil
+        try write(samples: Data(), sampleRate: lastSampleRate)
     }
 
     deinit {
+        try? finish()
         if descriptor >= 0 { close(descriptor) }
     }
 }
@@ -347,10 +406,12 @@ actor GeminiLiveBridge {
     private var pacingTask: Task<Void, Never>?
     private var stateHandler: StateHandler?
     private var callerConverter = GeminiCallerAudioConverter()
+    private var modelResampler = PCM16MonoResampler()
     private var injectionSender: AudioInjectionSender?
     private var targetSampleRate: UInt32?
     private var modelAudio = Data()
     private var outputAudio = Data()
+    private var pendingInjectionEnd = false
     private var sessionID = 0
     private var sendsInitialGreeting = false
 
@@ -400,8 +461,10 @@ actor GeminiLiveBridge {
             }
             let rate = UInt32(frame.sampleRate.rounded())
             if targetSampleRate != rate {
+                try? injectionSender?.finish()
                 targetSampleRate = rate
                 outputAudio.removeAll(keepingCapacity: true)
+                pendingInjectionEnd = false
                 flushModelAudio()
             }
             return
@@ -435,6 +498,8 @@ actor GeminiLiveBridge {
         modelAudio.removeAll(keepingCapacity: false)
         outputAudio.removeAll(keepingCapacity: false)
         callerConverter = GeminiCallerAudioConverter()
+        modelResampler = PCM16MonoResampler()
+        pendingInjectionEnd = false
         sendsInitialGreeting = false
         if notify { stateHandler?(.off) }
         stateHandler = nil
@@ -481,13 +546,18 @@ actor GeminiLiveBridge {
 
     private func flushModelAudio() {
         guard let targetSampleRate, !modelAudio.isEmpty else { return }
-        outputAudio.append(resamplePCM16Mono(modelAudio, from: 24_000, to: Int(targetSampleRate)))
+        outputAudio.append(modelResampler.resample(modelAudio, from: 24_000, to: Int(targetSampleRate)))
         modelAudio.removeAll(keepingCapacity: true)
         startPacingIfNeeded()
     }
 
     private func flushPartialOutput() {
-        guard let targetSampleRate, !outputAudio.isEmpty else { return }
+        pendingInjectionEnd = true
+        guard let targetSampleRate, !outputAudio.isEmpty else {
+            try? injectionSender?.finish()
+            pendingInjectionEnd = false
+            return
+        }
         let packetSize = Int(targetSampleRate / 50) * MemoryLayout<Int16>.size
         guard packetSize > 0 else { return }
         let remainder = outputAudio.count % packetSize
@@ -506,6 +576,8 @@ actor GeminiLiveBridge {
     }
 
     private func paceOutput(sessionID requestID: Int) async {
+        let clock = ContinuousClock()
+        var deadline = clock.now
         while !Task.isCancelled, requestID == sessionID, state == .live, let targetSampleRate, let injectionSender {
             let packetSize = Int(targetSampleRate / 50) * MemoryLayout<Int16>.size
             guard packetSize > 0, outputAudio.count >= packetSize else { break }
@@ -513,7 +585,8 @@ actor GeminiLiveBridge {
             outputAudio.removeFirst(packetSize)
             do {
                 try injectionSender.write(samples: samples, sampleRate: targetSampleRate)
-                try await Task.sleep(for: .milliseconds(20))
+                deadline += .milliseconds(20)
+                try await clock.sleep(until: deadline)
             } catch is CancellationError {
                 break
             } catch {
@@ -522,6 +595,10 @@ actor GeminiLiveBridge {
             }
         }
         guard requestID == sessionID else { return }
+        if pendingInjectionEnd {
+            try? injectionSender?.finish()
+            pendingInjectionEnd = false
+        }
         pacingTask = nil
         if !outputAudio.isEmpty { startPacingIfNeeded() }
     }
@@ -545,6 +622,8 @@ actor GeminiLiveBridge {
         sendsInitialGreeting = false
         modelAudio.removeAll(keepingCapacity: false)
         outputAudio.removeAll(keepingCapacity: false)
+        modelResampler = PCM16MonoResampler()
+        pendingInjectionEnd = false
         publish(.failed("Gemini Live: \(message)"))
     }
 }
