@@ -82,6 +82,9 @@ foundation for it, and the App Store packaging moves behind it.
   models (e.g. Gemini live transcription), with API key in Keychain.
 - Multiple accounts / identities.
 - macOS Contacts integration for caller names.
+- Detached engines: control baresip via its ctrl_tcp module instead of stdio
+  pipes so engine processes survive app restarts and re-register far less —
+  development restarts currently trigger provider-side rate limiting.
 - Line board and call handling: per-number live status (free/ringing/in call),
   call queueing with announcements within the line's concurrent-channel limit,
   and transfer — SIP REFER where the provider honors it, local audio bridging
