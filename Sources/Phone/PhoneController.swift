@@ -107,6 +107,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     @Published private(set) var registrationStatus: RegistrationStatus = .idle
     @Published private(set) var geminiLiveState: GeminiLiveState = .off
     @Published private(set) var isGeminiConfigured = false
+    @Published private(set) var isAutoAnswerArmed = false
 
     private var process: Process?
     private var input: Pipe?
@@ -115,6 +116,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private let intelligence = LocalIntelligence()
     private let geminiLiveBridge = GeminiLiveBridge()
     private var geminiBridgeTask: Task<Void, Never>?
+    private var autoAnswerTask: Task<Void, Never>?
+    private var startsAssistantWhenConnected = false
     private var draftIDs: [Speaker: UUID] = [:]
     private var intelligenceRunning = false
     private var currentDirection: CallDirection?
@@ -144,7 +147,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     var activityStatus: String {
-        switch geminiLiveState {
+        if isAutoAnswerArmed { return "Assistant will answer" }
+        return switch geminiLiveState {
         case .off: intelligenceStatus
         case .connecting: "Connecting to Gemini …"
         case .live: "Gemini live"
@@ -277,6 +281,11 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     func answer() {
+        cancelAutoAnswer()
+        performAnswer()
+    }
+
+    private func performAnswer() {
         guard case .ringing(let caller) = state else { return }
         state = .answering(caller)
         clearIncomingCallNotification()
@@ -285,6 +294,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     func reject() {
         guard state.isRinging else { return }
+        cancelAutoAnswer()
         clearIncomingCallNotification()
         recordCall(missed: false)
         send("/hangup")
@@ -319,20 +329,33 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             stopGeminiLive()
             return
         }
+        startGeminiLive(sendsInitialGreeting: false)
+    }
+
+    private func startGeminiLive(sendsInitialGreeting: Bool) {
+        guard state.isConnected else { return }
         guard let apiKey = GeminiAPIKeyStore.apiKey() else {
             geminiLiveState = .failed(GeminiLiveError.invalidAPIKey.localizedDescription)
             isGeminiConfigured = false
             return
         }
-        let storedModel = UserDefaults.standard.string(forKey: "geminiLiveModel")?
+        let defaults = UserDefaults.standard
+        let storedModel = defaults.string(forKey: "geminiLiveModel")?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let model = storedModel.flatMap { $0.isEmpty ? nil : $0 } ?? defaultGeminiLiveModel
+        let instructions = (defaults.string(forKey: "assistantInstructions") ?? defaultAssistantInstructions)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let bridge = geminiLiveBridge
         geminiLiveState = .connecting
         geminiBridgeTask?.cancel()
         geminiBridgeTask = Task {
             guard !Task.isCancelled else { return }
-            await bridge.start(apiKey: apiKey, model: model) { [weak self] state in
+            await bridge.start(
+                apiKey: apiKey,
+                model: model,
+                instructions: instructions,
+                sendsInitialGreeting: sendsInitialGreeting
+            ) { [weak self] state in
                 Task { @MainActor [weak self] in
                     self?.geminiLiveState = state
                     if case .failed(let message) = state {
@@ -364,7 +387,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     func copyConversation() {
-        let body = transcript.map { "\($0.speaker.title): \($0.text)" }.joined(separator: "\n")
+        let body = transcript.map { "\($0.speakerTitle): \($0.text)" }.joined(separator: "\n")
         let result = [summary?.text, body].compactMap { $0 }.joined(separator: "\n\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(result, forType: .string)
@@ -383,6 +406,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     func shutdown() {
         guard !isShuttingDown else { return }
         isShuttingDown = true
+        cancelAutoAnswer()
         clearIncomingCallNotification()
         stopGeminiLive()
         audioTap.stop()
@@ -734,11 +758,16 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             currentDirection = .incoming
             state = .ringing(caller)
             showIncomingCallNotification(caller: caller)
+            armAutoAnswerIfNeeded()
         case .established:
             pendingDialRetry = nil
+            let startsAssistant = startsAssistantWhenConnected
+            cancelAutoAnswer(resetAssistant: false)
+            startsAssistantWhenConnected = false
             state = .connected(state.peer)
             clearIncomingCallNotification()
             beginCallIntelligence()
+            if startsAssistant { startGeminiLive(sendsInitialGreeting: true) }
         case .dialing:
             state = .dialing(number)
             clearIncomingCallNotification()
@@ -893,6 +922,45 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         UserDefaults.standard.object(forKey: "retainTranscript") as? Bool ?? true
     }
 
+    private var assistantAnswersIncomingCalls: Bool {
+        UserDefaults.standard.object(forKey: "assistantAnswersIncomingCalls") as? Bool ?? false
+    }
+
+    private var assistantAnswerDelay: Int {
+        let stored = UserDefaults.standard.object(forKey: "assistantAnswerDelay") as? Int ?? 5
+        return min(max(stored, 0), 30)
+    }
+
+    private func armAutoAnswerIfNeeded() {
+        cancelAutoAnswer()
+        guard assistantAnswersIncomingCalls, isGeminiConfigured else { return }
+        isAutoAnswerArmed = true
+        let delay = assistantAnswerDelay
+        autoAnswerTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard let self else { return }
+            self.autoAnswerTask = nil
+            guard self.state.isRinging else {
+                self.isAutoAnswerArmed = false
+                return
+            }
+            self.isAutoAnswerArmed = false
+            self.startsAssistantWhenConnected = true
+            self.performAnswer()
+        }
+    }
+
+    private func cancelAutoAnswer(resetAssistant: Bool = true) {
+        autoAnswerTask?.cancel()
+        autoAnswerTask = nil
+        isAutoAnswerArmed = false
+        if resetAssistant { startsAssistantWhenConnected = false }
+    }
+
     private func beginCallIntelligence() {
         guard !intelligenceRunning, callStartedAt == nil else { return }
         clearConversation()
@@ -928,20 +996,31 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private func receiveTranscript(speaker: Speaker, text: String, isFinal: Bool) {
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return }
+        let isAssistant = speaker == .me && geminiLiveState == .live
         if transcript.isEmpty { appendDiagnostic("phone-app: first transcript result received\n") }
         if let draftID = draftIDs[speaker], let index = transcript.firstIndex(where: { $0.id == draftID }) {
-            guard transcript[index].text != cleaned || transcript[index].isFinal != isFinal else { return }
+            guard transcript[index].text != cleaned ||
+                    transcript[index].isFinal != isFinal ||
+                    (isAssistant && !transcript[index].isAssistant) else { return }
             transcript[index].text = cleaned
             transcript[index].isFinal = isFinal
+            if isAssistant { transcript[index].isAssistant = true }
             if isFinal { draftIDs[speaker] = nil }
         } else {
-            let entry = TranscriptEntry(speaker: speaker, text: cleaned, isFinal: isFinal, createdAt: Date())
+            let entry = TranscriptEntry(
+                speaker: speaker,
+                text: cleaned,
+                isFinal: isFinal,
+                isAssistant: isAssistant,
+                createdAt: Date()
+            )
             transcript.append(entry)
             if !isFinal { draftIDs[speaker] = entry.id }
         }
     }
 
     private func finishCall() {
+        cancelAutoAnswer()
         stopGeminiLive()
         isMuted = false
         let counts = audioTap.drainFrameCounts()

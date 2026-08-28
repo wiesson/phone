@@ -228,7 +228,7 @@ actor LocalIntelligence {
         }
         let transcript = entries
             .filter { $0.isFinal && !$0.text.isEmpty }
-            .map { "\($0.speaker.title): \($0.text)" }
+            .map { "\($0.speakerTitle): \($0.text)" }
             .joined(separator: "\n")
         guard !transcript.isEmpty else { return "There is no transcript for this call yet." }
 
@@ -244,6 +244,6 @@ actor LocalIntelligence {
     private func fallbackSummary(_ entries: [TranscriptEntry]) -> String {
         let final = entries.filter { $0.isFinal && !$0.text.isEmpty }
         guard !final.isEmpty else { return "There is no transcript for this call yet." }
-        return final.suffix(6).map { "\($0.speaker.title): \($0.text)" }.joined(separator: "\n")
+        return final.suffix(6).map { "\($0.speakerTitle): \($0.text)" }.joined(separator: "\n")
     }
 }

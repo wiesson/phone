@@ -13,6 +13,42 @@ import Testing
     #expect(packet.dropFirst(16) == samples)
 }
 
+@Test func encodesGeminiSetupWithSystemInstruction() throws {
+    let message = try GeminiLiveProtocol.setupMessage(
+        model: "gemini-live-test",
+        instructions: "  Sei kurz und freundlich.  "
+    )
+    let root = try #require(JSONSerialization.jsonObject(with: Data(message.utf8)) as? [String: Any])
+    let setup = try #require(root["setup"] as? [String: Any])
+    let systemInstruction = try #require(setup["systemInstruction"] as? [String: Any])
+    let parts = try #require(systemInstruction["parts"] as? [[String: Any]])
+
+    #expect(setup["model"] as? String == "models/gemini-live-test")
+    #expect(parts.first?["text"] as? String == "Sei kurz und freundlich.")
+}
+
+@Test func omitsEmptyGeminiSystemInstruction() throws {
+    let message = try GeminiLiveProtocol.setupMessage(model: "models/gemini-live-test", instructions: "  \n ")
+    let root = try #require(JSONSerialization.jsonObject(with: Data(message.utf8)) as? [String: Any])
+    let setup = try #require(root["setup"] as? [String: Any])
+
+    #expect(setup["model"] as? String == "models/gemini-live-test")
+    #expect(setup["systemInstruction"] == nil)
+}
+
+@Test func encodesGeminiGreetingClientContent() throws {
+    let message = try GeminiLiveProtocol.greetingMessage()
+    let root = try #require(JSONSerialization.jsonObject(with: Data(message.utf8)) as? [String: Any])
+    let clientContent = try #require(root["clientContent"] as? [String: Any])
+    let turns = try #require(clientContent["turns"] as? [[String: Any]])
+    let turn = try #require(turns.first)
+    let parts = try #require(turn["parts"] as? [[String: Any]])
+
+    #expect(turn["role"] as? String == "user")
+    #expect(parts.first?["text"] as? String == assistantGreetingTrigger)
+    #expect(clientContent["turnComplete"] as? Bool == true)
+}
+
 @Test func encodesGeminiRealtimeAudioChunk() throws {
     let pcm = Data([0x00, 0x01, 0x02, 0x03])
     let message = try GeminiLiveProtocol.realtimeInputMessage(pcm: pcm)
