@@ -18,12 +18,19 @@ struct CallEventParsingTests {
     }
 
     @Test func classifiesRealCallEvents() {
-        #expect(PhoneController.parseCallEvent("menu: sip:+491234@tel.t-online.de: Incoming call from:  sip:+441164649449@versatel.de;user=phone - (press 'a' to accept)") == .incoming)
+        #expect(PhoneController.parseCallEvent("menu: sip:+491234@tel.t-online.de: Incoming call from:  sip:+441164649449@versatel.de;user=phone - (press 'a' to accept)") == .incoming("+491234@tel.t-online.de"))
         #expect(PhoneController.parseCallEvent("+491234@tel.t-online.de: Call established: sip:+441164649449@versatel.de;user=phone") == .established)
         #expect(PhoneController.parseCallEvent("All 1 useragent registered successfully! (309 ms)") == .registered)
         #expect(PhoneController.parseCallEvent("session closed: Connection reset by peer") == .closed(nil))
         #expect(PhoneController.parseCallEvent("sip:+491234@tel.t-online.de: session closed: 403 Forbidden") == .closed("403 Forbidden"))
         #expect(PhoneController.parseCallEvent("[0:00:07] audio=63978/62699 (bit/s)") == nil)
+    }
+
+    @Test func parsesCalledAORFromRealIncomingLines() {
+        let line = "menu: sip:+491234@tel.t-online.de: Incoming call from:  sip:+441164649449@versatel.de;user=phone - (press 'a' to accept)"
+        #expect(parseIncomingCalledAOR(from: line) == "+491234@tel.t-online.de")
+        #expect(PhoneController.parseCallEvent(line) == .incoming("+491234@tel.t-online.de"))
+        #expect(parseIncomingCalledAOR(from: "incoming call from: sip:caller@example.com") == nil)
     }
 
     @Test func classifiesLoopbackTranscript() throws {
@@ -35,7 +42,7 @@ struct CallEventParsingTests {
         #expect(events.filter { $0 == .registered }.isEmpty)
         #expect(events.filter { $0 == .established }.count == 1)
         #expect(events.filter { if case .closed = $0 { true } else { false } }.count == 1)
-        #expect(events.filter { $0 == .incoming }.isEmpty)
+        #expect(events.filter { if case .incoming = $0 { true } else { false } }.isEmpty)
     }
 
     @Test func filtersOnlyAudioStatisticsFromDiagnostics() {

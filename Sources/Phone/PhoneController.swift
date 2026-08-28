@@ -136,6 +136,20 @@ func parseCallerName(from line: String) -> String? {
     return String(caller).removingPercentEncoding ?? String(caller)
 }
 
+func parseIncomingCalledAOR(from line: String) -> String? {
+    guard let incoming = line.range(of: "incoming call from:", options: .caseInsensitive),
+          let sip = line[..<incoming.lowerBound].range(of: "sip:", options: .caseInsensitive) else { return nil }
+    let remainder = line[sip.upperBound..<incoming.lowerBound]
+    let end = remainder.firstIndex {
+        $0 == ":" || $0 == ";" || $0 == ">" || $0.isWhitespace
+    } ?? remainder.endIndex
+    let address = String(remainder[..<end])
+    let decoded = address.removingPercentEncoding ?? address
+    let parts = decoded.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false)
+    guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+    return decoded
+}
+
 func parseAccountAOR(from content: String) -> String? {
     guard let line = content.split(separator: "\n").lazy
         .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
@@ -171,6 +185,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     @Published private(set) var managedAccounts: [ManagedSIPAccount] = []
     @Published private(set) var activeManagedSIPAddress: String?
     @Published private(set) var unmanagedAccountAOR: String?
+    @Published private(set) var currentCallAccountAOR: String?
     @Published private(set) var registrationStatus: RegistrationStatus = .idle
     @Published private(set) var geminiLiveState: GeminiLiveState = .off
     @Published private(set) var isGeminiConfigured = false
@@ -222,6 +237,16 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     var accountDisplay: String? {
         activeManagedAccount?.registrationDisplay ?? unmanagedAccountAOR
+    }
+
+    var currentCallAccountDisplay: String? {
+        guard let currentCallAccountAOR else { return nil }
+        let account = managedAccounts.first {
+            normalizedSIPAOR($0.sipAddress) == normalizedSIPAOR(currentCallAccountAOR)
+        }
+        let number = account?.username ?? currentCallAccountAOR.split(separator: "@").first.map(String.init) ?? currentCallAccountAOR
+        let label = account?.label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return label.isEmpty ? number : "\(number) · \(label)"
     }
 
     var isGeminiLiveActive: Bool {
@@ -356,6 +381,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         restartBaresipForRegistrationTest()
     }
 
+    func updateManagedAccount(_ account: ManagedSIPAccount) throws {
+        var accountsState = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
+        accountsState.update(account)
+        try saveManagedAccountsState(accountsState)
+    }
+
     func removeManagedAccount(_ account: ManagedSIPAccount) throws {
         guard !state.isInCall else { throw SIPAccountError.activeCall }
         guard managedAccounts.contains(where: { $0.sipAddress == account.sipAddress }) else { return }
@@ -391,10 +422,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         number = value
         UserDefaults.standard.set(value, forKey: "lastDialedNumber")
         currentDirection = .outgoing
+        currentCallAccountAOR = activeManagedAccount?.sipAddress ?? unmanagedAccountAOR
         currentCallStartedAt = Date()
         hasActiveEventCall = true
         state = .dialing(value)
         eventBus.publish(.callOutgoing(target: value))
+        selectActiveOutgoingUA()
         send("/dial \(value)")
     }
 
@@ -417,8 +450,15 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         number = value
         UserDefaults.standard.set(value, forKey: "lastDialedNumber")
         currentDirection = .outgoing
+        currentCallAccountAOR = activeManagedAccount?.sipAddress ?? unmanagedAccountAOR
         state = .dialing(value)
+        selectActiveOutgoingUA()
         send("/dial \(value)")
+    }
+
+    private func selectActiveOutgoingUA() {
+        guard let account = activeManagedAccount else { return }
+        send("/uafind sip:\(account.sipAddress)")
     }
 
     func answer() {
@@ -489,8 +529,17 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         let storedModel = defaults.string(forKey: "geminiLiveModel")?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let model = storedModel.flatMap { $0.isEmpty ? nil : $0 } ?? defaultGeminiLiveModel
-        let instructions = instructionOverride ?? (defaults.string(forKey: "assistantInstructions") ?? defaultAssistantInstructions)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let globalInstructions = defaults.string(forKey: "assistantInstructions") ?? defaultAssistantInstructions
+        let profileInstructions = instructionOverride ?? assistantSystemInstruction(
+            calledAOR: currentDirection == .incoming ? currentCallAccountAOR : nil,
+            globalInstructions: globalInstructions,
+            date: Date()
+        )
+        let instructions = composeAssistantSystemInstruction(
+            instructions: profileInstructions,
+            contextData: nil,
+            includesGreetingTrigger: sendsInitialGreeting
+        )
         let bridge = geminiLiveBridge
         geminiLiveState = .connecting
         geminiBridgeTask?.cancel()
@@ -726,9 +775,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private func regenerateManagedAccountsFile() throws {
         guard !managedAccounts.isEmpty else { return }
-        guard let account = activeManagedAccount else { throw SIPAccountError.missingManagedAccount }
-        let password = try SIPPasswordStore.password(account: account.sipAddress)
-        let line = try account.accountLine(password: password)
+        guard activeManagedAccount != nil else { throw SIPAccountError.missingManagedAccount }
+        let content = try managedAccountsFileContent(
+            accounts: managedAccounts,
+            activeSIPAddress: activeManagedSIPAddress,
+            passwordFor: { try SIPPasswordStore.password(account: $0.sipAddress) }
+        )
         let url = configDirectory.appendingPathComponent("accounts")
         let descriptor = Darwin.open(url.path, O_WRONLY | O_CREAT | O_TRUNC, mode_t(0o600))
         guard descriptor >= 0 else {
@@ -739,7 +791,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-        try handle.write(contentsOf: Data(line.utf8))
+        try handle.write(contentsOf: Data(content.utf8))
         try handle.synchronize()
         try handle.close()
     }
@@ -918,12 +970,13 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             hasRegisteredAccount = false
             registrationStatus = .failed(failure)
             state = .error(failure)
-        case .incoming:
+        case .incoming(let calledAOR):
             guard !state.isRinging else { return }
             pendingDialRetry = nil
             clearAssistantCall()
             let caller = callerName(from: line)
             currentDirection = .incoming
+            currentCallAccountAOR = calledAOR
             currentCallStartedAt = Date()
             hasActiveEventCall = true
             state = .ringing(caller)
@@ -942,8 +995,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             clearIncomingCallNotification()
             beginCallIntelligence()
             if let assistantCallTask {
-                let defaults = UserDefaults.standard
-                let general = defaults.string(forKey: "assistantInstructions") ?? defaultAssistantInstructions
+                let globalInstructions = UserDefaults.standard.string(forKey: "assistantInstructions") ?? defaultAssistantInstructions
+                let general = assistantSystemInstruction(
+                    calledAOR: nil,
+                    globalInstructions: globalInstructions,
+                    date: Date()
+                )
                 let instructions = assistantCallInstructions(general: general, task: assistantCallTask)
                 startGeminiLive(sendsInitialGreeting: true, instructions: instructions)
             } else if startsAssistant {
@@ -1007,7 +1064,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     enum CallEvent: Equatable {
         case registered
         case registrationFailed(String)
-        case incoming
+        case incoming(String?)
         case established
         case dialing
         case securityViolation
@@ -1027,7 +1084,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         if lower.contains("registration failed") || lower.contains("register failed") {
             return .registrationFailed(redactSensitiveValues(in: line).trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        if lower.contains("incoming call from") { return .incoming }
+        if lower.contains("incoming call from") { return .incoming(parseIncomingCalledAOR(from: line)) }
         if lower.contains("call established") || lower.contains("answered") { return .established }
         if lower.contains("call uri:") || lower.contains("connecting to") { return .dialing }
         if lower.contains("security violation") { return .securityViolation }
@@ -1212,6 +1269,20 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         UserDefaults.standard.object(forKey: "archiveConversations") as? Bool ?? true
     }
 
+    private func assistantSystemInstruction(calledAOR: String?, globalInstructions: String, date: Date) -> String {
+        let resolved = resolveAssistantProfile(
+            accounts: managedAccounts,
+            calledAOR: calledAOR,
+            activeSIPAddress: activeManagedSIPAddress,
+            globalInstructions: globalInstructions,
+            date: date
+        )
+        return composeAssistantSystemInstruction(
+            instructions: resolved.instructions,
+            contextData: resolved.contextData
+        )
+    }
+
     private var assistantAnswerMode: AssistantAnswerMode {
         storedAssistantAnswerMode(defaults: UserDefaults.standard)
     }
@@ -1330,6 +1401,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private func finishCall(missed: Bool = false, preservingDialRetry: Bool = false, preservingAssistantCall: Bool = false) {
         if !preservingDialRetry { pendingDialRetry = nil }
+        if !preservingDialRetry { currentCallAccountAOR = nil }
         if !preservingAssistantCall { clearAssistantCall() }
         cancelAutoAnswer()
         stopGeminiLive()

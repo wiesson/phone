@@ -45,7 +45,12 @@ struct PhonePanel: View {
                 Text(phone.state.label)
                     .font(.system(size: 14, weight: .semibold))
                     .lineLimit(1)
-                if phone.managedAccounts.count > 1 && !phone.state.isInCall {
+                if (phone.state.isRinging || phone.state.isInCall), let account = phone.currentCallAccountDisplay {
+                    Text("for \(account)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if phone.managedAccounts.count > 1 && !phone.state.isInCall {
                     Menu {
                         ForEach(phone.managedAccounts) { account in
                             Button {
@@ -587,6 +592,8 @@ struct PhoneSettingsView: View {
     @State private var selectedAccountAddress: String?
     @State private var accountToRemove: ManagedSIPAccount?
     @State private var accountError: String?
+    @State private var showsAccountInstructions = false
+    @State private var showsAccountData = false
     @State private var isConfirmingArchiveDeletion = false
 
     var body: some View {
@@ -806,75 +813,81 @@ struct PhoneSettingsView: View {
     }
 
     private var phoneSettings: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Toggle("Show the app in the Dock and app switcher", isOn: $showDockIcon)
-            if showDockIcon != (NSApp.activationPolicy() == .regular) {
-                Text("Takes effect after restarting Phone.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-
-            Divider()
-
-            Text("SIP accounts")
-                .font(.headline)
-
-            if phone.managedAccounts.isEmpty {
-                VStack(alignment: .leading, spacing: 5) {
-                    Label("Manual account file", systemImage: "doc.text")
-                        .fontWeight(.medium)
-                    if let address = phone.unmanagedAccountAOR {
-                        Text(address)
-                            .font(.system(.callout, design: .monospaced))
-                            .textSelection(.enabled)
-                    }
-                    Text("This account is managed through the technical configuration.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 150, alignment: .center)
-                .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            } else {
-                List(selection: $selectedAccountAddress) {
-                    ForEach(phone.managedAccounts) { account in
-                        accountRow(account)
-                            .tag(account.sipAddress)
-                    }
-                }
-                .listStyle(.bordered)
-                .frame(minHeight: 150)
-            }
-
-            HStack(spacing: 8) {
-                Button {
-                    phone.requestAccountSetup()
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .help("Add account")
-
-                Button {
-                    accountToRemove = selectedAccount
-                } label: {
-                    Image(systemName: "minus")
-                }
-                .disabled(selectedAccount == nil)
-                .help("Remove selected account")
-
-                Spacer()
-                if let accountError {
-                    Text(accountError)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle("Show the app in the Dock and app switcher", isOn: $showDockIcon)
+                if showDockIcon != (NSApp.activationPolicy() == .regular) {
+                    Text("Takes effect after restarting Phone.")
                         .font(.caption)
                         .foregroundStyle(.orange)
-                        .lineLimit(2)
+                }
+
+                Divider()
+
+                Text("SIP accounts")
+                    .font(.headline)
+
+                if phone.managedAccounts.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label("Manual account file", systemImage: "doc.text")
+                            .fontWeight(.medium)
+                        if let address = phone.unmanagedAccountAOR {
+                            Text(address)
+                                .font(.system(.callout, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
+                        Text("This account is managed through the technical configuration.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 150, alignment: .center)
+                    .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 } else {
-                    Text(phone.managedAccounts.isEmpty ? "Add an account with the setup assistant." : "Passwords are stored in Keychain.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    List(selection: $selectedAccountAddress) {
+                        ForEach(phone.managedAccounts) { account in
+                            accountRow(account)
+                                .tag(account.sipAddress)
+                        }
+                    }
+                    .listStyle(.bordered)
+                    .frame(height: 155)
+                }
+
+                HStack(spacing: 8) {
+                    Button {
+                        phone.requestAccountSetup()
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .help("Add account")
+
+                    Button {
+                        accountToRemove = selectedAccount
+                    } label: {
+                        Image(systemName: "minus")
+                    }
+                    .disabled(selectedAccount == nil)
+                    .help("Remove selected account")
+
+                    Spacer()
+                    if let accountError {
+                        Text(accountError)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .lineLimit(2)
+                    } else {
+                        Text(phone.managedAccounts.isEmpty ? "Add an account with the setup assistant." : "Passwords are stored in Keychain.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let account = selectedAccount {
+                    accountProfileEditor(account)
                 }
             }
+            .padding(20)
         }
-        .padding(20)
         .onAppear {
             selectedAccountAddress = phone.activeManagedSIPAddress
         }
@@ -985,6 +998,12 @@ struct PhoneSettingsView: View {
                     .textSelection(.enabled)
             }
             Spacer()
+            Text(account.assistantProfile.displayName)
+                .font(.caption2.weight(.medium))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(.purple.opacity(0.12), in: Capsule())
+                .foregroundStyle(.purple)
             Text(account.provider.shortName)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -996,6 +1015,97 @@ struct PhoneSettingsView: View {
             }
             .buttonStyle(.plain)
             .help("Remove account")
+        }
+    }
+
+    private func accountProfileEditor(_ account: ManagedSIPAccount) -> some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("Assistant profile", selection: profileBinding(for: account)) {
+                    ForEach(AssistantProfile.allCases) { profile in
+                        Text(profile.displayName).tag(profile)
+                    }
+                }
+
+                DisclosureGroup("Edit instructions…", isExpanded: $showsAccountInstructions) {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        TextEditor(text: instructionsBinding(for: account))
+                            .font(.system(size: 12))
+                            .frame(minHeight: 95)
+                            .padding(5)
+                            .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+                        Button("Reset to preset") {
+                            updateAccount(account) { $0.assistantInstructionsOverride = nil }
+                        }
+                        .controlSize(.small)
+                    }
+                    .padding(.top, 6)
+                }
+
+                DisclosureGroup("Edit data…", isExpanded: $showsAccountData) {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        TextEditor(text: contextDataBinding(for: account))
+                            .font(.system(size: 12, design: .monospaced))
+                            .frame(minHeight: 110)
+                            .padding(5)
+                            .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+                        Button("Reset to preset") {
+                            updateAccount(account) { $0.assistantContextData = nil }
+                        }
+                        .controlSize(.small)
+                    }
+                    .padding(.top, 6)
+                }
+            }
+        } label: {
+            Text("Assistant for \(account.displayName)")
+        }
+    }
+
+    private func profileBinding(for account: ManagedSIPAccount) -> Binding<AssistantProfile> {
+        Binding(
+            get: { selectedAccount?.assistantProfile ?? account.assistantProfile },
+            set: { profile in
+                updateAccount(account) {
+                    $0.assistantProfile = profile
+                    $0.assistantInstructionsOverride = nil
+                    $0.assistantContextData = nil
+                }
+            }
+        )
+    }
+
+    private func instructionsBinding(for account: ManagedSIPAccount) -> Binding<String> {
+        Binding(
+            get: {
+                let current = selectedAccount ?? account
+                return current.assistantInstructionsOverride
+                    ?? current.assistantProfile.presetInstructions(globalFallback: assistantInstructions)
+            },
+            set: { value in updateAccount(account) { $0.assistantInstructionsOverride = value } }
+        )
+    }
+
+    private func contextDataBinding(for account: ManagedSIPAccount) -> Binding<String> {
+        Binding(
+            get: {
+                let current = selectedAccount ?? account
+                return current.assistantContextData
+                    ?? current.assistantProfile.presetContextData(startingAt: Date())
+                    ?? ""
+            },
+            set: { value in updateAccount(account) { $0.assistantContextData = value } }
+        )
+    }
+
+    private func updateAccount(_ account: ManagedSIPAccount, change: (inout ManagedSIPAccount) -> Void) {
+        var updated = selectedAccount ?? account
+        change(&updated)
+        accountError = nil
+        do {
+            try phone.updateManagedAccount(updated)
+        } catch {
+            accountError = error.localizedDescription
         }
     }
 
