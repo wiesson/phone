@@ -18,3 +18,12 @@ jobs:
           fi
       - name: Run tests
         run: swift test
+  loopback-integration:
+    runs-on: macos-26
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install baresip
+        run: brew install baresip
+      - name: Run loopback integration test
+        run: sh scripts/integration-test.sh

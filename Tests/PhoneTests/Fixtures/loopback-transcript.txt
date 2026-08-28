@@ -1,0 +1,21 @@
+baresip v4.11.0 Copyright (C) 2010 - 2025 Alfred E. Heggestad et al.
+Local network addresses:
+    IPv4=lo0|127.0.0.1
+aucodec: PCMU/8000/1
+aucodec: PCMA/8000/1
+ausrc: aubridge
+auplay: aubridge
+baresip is ready.
+Creating UA for <sip:test@127.0.0.1:5088>;regint=0 ...
+call uri: sip:test@127.0.0.1:5089
+call: connecting to 'sip:test@127.0.0.1:5089'..
+audio: Set audio decoder: PCMU 8000Hz 1ch
+audio: Set audio encoder: PCMU 8000Hz 1ch
+audio tx pipeline: aubridge ---> auconv ---> auresamp ---> PCMU
+audio rx pipeline: aubridge <--- auconv <--- auresamp <--- PCMU
+test@127.0.0.1:5088: Call established: sip:test@127.0.0.1:5089
+audio: send DTMF digit: '2'
+audio: send DTMF digit end: '2'
+call muted
+call unmuted
+test@127.0.0.1:5088: session closed
