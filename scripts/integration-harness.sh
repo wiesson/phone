@@ -133,6 +133,9 @@ integration_select_scenario() {
   SCENARIO=${PHONE_INTEGRATION_SCENARIO:-smoke}
   TRANSPORT=udp
   CODEC=PCMU
+  CODEC_RATE=8000
+  CODEC_MODULE=
+  SIP_TRACE=no
   DTMF_MODE=none
   MEDIAENC=none
   CALL_FLOW=establish
@@ -147,6 +150,12 @@ integration_select_scenario() {
     transport-tcp) TRANSPORT=tcp ;;
     codec-pcma) CODEC=PCMA ;;
     codec-pcmu) CODEC=PCMU ;;
+    codec-g722)
+      CODEC=G722
+      CODEC_RATE=16000
+      CODEC_MODULE="module g722.so"
+      SIP_TRACE=yes
+      ;;
     dtmf-inband) DTMF_MODE=in-band ;;
     dtmf-rfc2833) DTMF_MODE=rfc2833 ;;
     media-none) ;;
@@ -176,10 +185,13 @@ integration_write_config() {
     -e "s|@MODULES@|$MODULES|g" \
     -e "s|@TRANSPORT@|$TRANSPORT|g" \
     -e "s|@TELEV_PT@|$telev_pt|g" \
+    -e "s|@CODEC_MODULE@|$CODEC_MODULE|g" \
+    -e "s|@SIP_TRACE@|$SIP_TRACE|g" \
     -e "s|@EXTRA_MODULE@|$extra_module|g" \
     > "$directory/config" <<'CONFIG'
 sip_listen @HOST_IP@:@PORT@
 sip_transports @TRANSPORT@
+sip_trace @SIP_TRACE@
 call_local_timeout 60
 call_max_calls 1
 call_hold_other_calls yes
@@ -197,6 +209,7 @@ audio_telev_pt @TELEV_PT@
 rtp_ports @RTP_PORTS@
 module_path @MODULES@
 module stdio.so
+@CODEC_MODULE@
 module g711.so
 module auconv.so
 module auresamp.so
@@ -218,7 +231,7 @@ CONFIG
 integration_account() {
   port=$1
   answer_mode=$2
-  params="regint=0;answermode=$answer_mode;audio_codecs=$CODEC/8000/1"
+  params="regint=0;answermode=$answer_mode;audio_codecs=$CODEC/$CODEC_RATE/1"
   if [ "$DTMF_MODE" = in-band ]; then
     params="$params;autelev_pt=0"
   elif [ "$DTMF_MODE" = rfc2833 ]; then
@@ -261,14 +274,20 @@ integration_assert_no_phantom_call() {
 }
 
 integration_assert_codec() {
-  integration_wait_for "$A_LOG" "Set audio encoder: $CODEC 8000Hz" "$A_PID" 15 ||
+  integration_wait_for "$A_LOG" "Set audio encoder: $CODEC ${CODEC_RATE}Hz" "$A_PID" 15 ||
     integration_fail "instance A did not negotiate the $CODEC encoder"
-  integration_wait_for "$A_LOG" "Set audio decoder: $CODEC 8000Hz" "$A_PID" 15 ||
+  integration_wait_for "$A_LOG" "Set audio decoder: $CODEC ${CODEC_RATE}Hz" "$A_PID" 15 ||
     integration_fail "instance A did not negotiate the $CODEC decoder"
-  integration_wait_for "$B_LOG" "Set audio encoder: $CODEC 8000Hz" "$B_PID" 15 ||
+  integration_wait_for "$B_LOG" "Set audio encoder: $CODEC ${CODEC_RATE}Hz" "$B_PID" 15 ||
     integration_fail "instance B did not negotiate the $CODEC encoder"
-  integration_wait_for "$B_LOG" "Set audio decoder: $CODEC 8000Hz" "$B_PID" 15 ||
+  integration_wait_for "$B_LOG" "Set audio decoder: $CODEC ${CODEC_RATE}Hz" "$B_PID" 15 ||
     integration_fail "instance B did not negotiate the $CODEC decoder"
+  if [ "$CODEC" = G722 ]; then
+    integration_wait_for "$A_LOG" "Set audio encoder: G722" "$A_PID" 15 ||
+      integration_fail "instance A call did not negotiate the G722 encoder"
+    integration_wait_for "$B_LOG" "Set audio encoder: G722" "$B_PID" 15 ||
+      integration_fail "instance B call did not negotiate the G722 encoder"
+  fi
 }
 
 integration_run_established_call() {
@@ -389,6 +408,10 @@ run_integration_scenario() {
   for module in stdio.so menu.so g711.so auconv.so auresamp.so aubridge.so; do
     integration_require_module "$module"
   done
+
+  if [ "$CODEC" = G722 ]; then
+    integration_require_optional_module g722.so "G.722"
+  fi
 
   EXTRA_MODULE=
   if [ "$DTMF_MODE" = in-band ]; then
