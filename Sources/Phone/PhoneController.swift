@@ -410,14 +410,36 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         state.add(account)
         try saveManagedAccountsState(state)
         unmanagedAccountAOR = nil
-        restartBaresipForRegistrationTest()
+        restartBaresip()
     }
 
-    func editManagedAccountAndTest(
+    func restartManagedAccountRegistrationTest() throws {
+        guard currentCallInstanceID == nil else { throw SIPAccountError.activeCall }
+        restartBaresip()
+    }
+
+    @discardableResult
+    func editManagedAccount(
         _ account: ManagedSIPAccount,
         replacing originalSIPAddress: String,
         password replacementPassword: String
-    ) throws {
+    ) throws -> ManagedSIPAccountEditPlan {
+        guard let original = managedAccounts.first(where: { $0.sipAddress == originalSIPAddress }) else {
+            throw SIPAccountError.missingManagedAccount
+        }
+        let plan = managedSIPAccountEditPlan(
+            original: original,
+            updated: account,
+            replacementPassword: replacementPassword
+        )
+        var state = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
+        try state.replace(accountAt: originalSIPAddress, with: account)
+
+        guard plan.requiresEngineRestart else {
+            try saveManagedAccountsState(state)
+            return plan
+        }
+
         guard currentCallInstanceID == nil else { throw SIPAccountError.activeCall }
         let storedPassword = replacementPassword.isEmpty
             ? try SIPPasswordStore.password(account: originalSIPAddress)
@@ -431,8 +453,6 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         let effectivePassword = replacementPassword.isEmpty ? storedPassword ?? "" : replacementPassword
         try account.validate(password: effectivePassword)
 
-        var state = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
-        try state.replace(accountAt: originalSIPAddress, with: account)
         switch passwordEdit {
         case .keep:
             break
@@ -446,9 +466,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             try SIPPasswordStore.remove(account: oldAddress)
         }
         unmanagedAccountAOR = nil
-        restartBaresipForRegistrationTest(
+        restartBaresip(
             removingInstanceFor: originalSIPAddress == account.sipAddress ? nil : originalSIPAddress
         )
+        return plan
     }
 
     func selectManagedAccount(_ account: ManagedSIPAccount) throws {
@@ -461,9 +482,16 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         refreshIdleState()
     }
 
-    func updateManagedAccount(_ account: ManagedSIPAccount) throws {
+    func updateManagedAccountMetadata(_ account: ManagedSIPAccount) throws {
+        guard var updated = managedAccounts.first(where: { $0.sipAddress == account.sipAddress }) else {
+            throw SIPAccountError.missingManagedAccount
+        }
+        updated.label = account.label
+        updated.assistantProfile = account.assistantProfile
+        updated.assistantInstructionsOverride = account.assistantInstructionsOverride
+        updated.assistantContextData = account.assistantContextData
         var accountsState = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
-        accountsState.update(account)
+        accountsState.update(updated)
         try saveManagedAccountsState(accountsState)
     }
 
@@ -926,7 +954,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         Task { await geminiLiveBridge.append(frame) }
     }
 
-    private func restartBaresipForRegistrationTest(removingInstanceFor sipAddress: String? = nil) {
+    private func restartBaresip(removingInstanceFor sipAddress: String? = nil) {
         stopBaresipAndWait()
         if let sipAddress {
             try? FileManager.default.removeItem(
