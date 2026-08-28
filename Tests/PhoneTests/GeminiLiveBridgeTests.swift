@@ -109,10 +109,41 @@ import Testing
 }
 
 @Test func resamplesGeminiAudioFrom24kTo8k() {
-    let input = pcmData([0, 1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000, 11_000])
-    let output = resamplePCM16Mono(input, from: 24_000, to: 8_000)
+    let sourceRate = 24_000
+    let targetRate = 8_000
+    let sampleCount = sourceRate / 10
+    let samples = (0..<sampleCount).map { index in
+        Int16((sin(2 * Double.pi * 1_000 * Double(index) / Double(sourceRate)) * 12_000).rounded())
+    }
+    let input = pcmData(samples)
+    let resampler = PCM16MonoResampler()
+    var output = Data()
+    let chunkSize = sourceRate / 50 * MemoryLayout<Int16>.size
+    for offset in stride(from: 0, to: input.count, by: chunkSize) {
+        output.append(resampler.resample(input.subdata(in: offset..<min(offset + chunkSize, input.count)), from: sourceRate, to: targetRate))
+    }
+    let outputSamples = pcmSamples(output)
+    let rms = sqrt(outputSamples.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(outputSamples.count))
 
-    #expect(pcmSamples(output) == [0, 3_000, 6_000, 9_000])
+    #expect(outputSamples.count == targetRate / 10)
+    #expect(rms > 7_000 && rms < 10_000)
+    #expect(outputSamples.map { abs(Int($0)) }.max() ?? 0 < 16_000)
+}
+
+@Test func preserves16kPCMWithoutResampling() {
+    let input = pcmData([Int16.min, -1_000, 0, 1_000, Int16.max])
+    let output = PCM16MonoResampler().resample(input, from: 16_000, to: 16_000)
+
+    #expect(output == input)
+}
+
+@Test func builds20ms16kAudioInjectionPacket() {
+    let samples = Data(repeating: 0, count: 16_000 / 50 * MemoryLayout<Int16>.size)
+    let packet = AudioInjectionProtocol.packet(samples: samples, sampleRate: 16_000)
+
+    #expect(samples.count == 640)
+    #expect(Array(packet[8..<12]) == [0x80, 0x3e, 0x00, 0x00])
+    #expect(Array(packet[12..<16]) == [0x80, 0x02, 0x00, 0x00])
 }
 
 private func pcmData(_ samples: [Int16]) -> Data {
