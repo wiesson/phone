@@ -590,6 +590,7 @@ struct PhoneSettingsView: View {
     @State private var webhookSecretConfigured = false
     @State private var webhookSettingsMessage: String?
     @State private var selectedAccountAddress: String?
+    @State private var accountToEdit: ManagedSIPAccount?
     @State private var accountToRemove: ManagedSIPAccount?
     @State private var accountError: String?
     @State private var showsAccountInstructions = false
@@ -627,6 +628,9 @@ struct PhoneSettingsView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This removes all locally archived transcripts, summaries, and call metadata. Recent calls in the menu bar are unaffected.")
+        }
+        .sheet(item: $accountToEdit) { account in
+            SetupWizard(phone: phone, editing: account)
         }
     }
 
@@ -864,14 +868,31 @@ struct PhoneSettingsView: View {
                         phone.requestAccountSetup()
                     } label: {
                         Image(systemName: "plus")
+                            .frame(width: 16, height: 16)
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                     .help("Add account")
+
+                    Button {
+                        accountToEdit = selectedAccount
+                    } label: {
+                        Image(systemName: "pencil")
+                            .frame(width: 16, height: 16)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(selectedAccount == nil)
+                    .help("Edit selected account")
 
                     Button {
                         accountToRemove = selectedAccount
                     } label: {
                         Image(systemName: "minus")
+                            .frame(width: 16, height: 16)
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                     .disabled(selectedAccount == nil)
                     .help("Remove selected account")
 
@@ -1015,6 +1036,14 @@ struct PhoneSettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Button {
+                accountToEdit = account
+            } label: {
+                Image(systemName: "pencil")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Edit account")
+            Button {
                 accountToRemove = account
             } label: {
                 Image(systemName: "trash")
@@ -1022,6 +1051,20 @@ struct PhoneSettingsView: View {
             }
             .buttonStyle(.plain)
             .help("Remove account")
+        }
+        .onTapGesture(count: 2) {
+            selectedAccountAddress = account.sipAddress
+            accountToEdit = account
+        }
+        .contextMenu {
+            Button("Edit…") {
+                selectedAccountAddress = account.sipAddress
+                accountToEdit = account
+            }
+            Button("Remove…", role: .destructive) {
+                selectedAccountAddress = account.sipAddress
+                accountToRemove = account
+            }
         }
     }
 
