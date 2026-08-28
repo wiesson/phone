@@ -9,6 +9,7 @@ struct LibraryView: View {
     @State private var utterances: [TranscriptEntry] = []
     @State private var query = ""
     @State private var loadError: String?
+    @State private var isAssistantInspectorPresented = false
     @FocusState private var numberFieldFocused: Bool
 
     var body: some View {
@@ -18,8 +19,21 @@ struct LibraryView: View {
         } detail: {
             detail
         }
+        .inspector(isPresented: $isAssistantInspectorPresented) {
+            AssistantCallInspector(phone: phone)
+                .inspectorColumnWidth(min: 320, ideal: 350, max: 380)
+        }
         .searchable(text: $query, placement: .sidebar, prompt: "Search calls")
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: toggleAssistantInspector) {
+                    Label(
+                        isAssistantInspectorPresented ? "Hide Assistant Call" : "Show Assistant Call",
+                        systemImage: "sparkles.rectangle.stack"
+                    )
+                }
+                .help(isAssistantInspectorPresented ? "Hide Assistant Call" : "Show Assistant Call")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button(action: showPhoneAndFocus) {
                     Label("New call", systemImage: "phone.badge.plus")
@@ -203,6 +217,11 @@ struct LibraryView: View {
             .font(.subheadline)
             .foregroundStyle(call.missed ? Color.red : Color.secondary)
         }
+    }
+
+    private func toggleAssistantInspector() {
+        isAssistantInspectorPresented.toggle()
+        if isAssistantInspectorPresented { selection = .phone }
     }
 
     private func showPhoneAndFocus() {
@@ -448,8 +467,6 @@ private struct DesktopPhoneView: View {
                 .controlSize(.large)
                 .disabled(phone.number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-                AssistantDialButton(phone: phone, presentation: .labeled)
-                    .controlSize(.large)
             }
         }
         .padding(18)
@@ -534,6 +551,162 @@ private struct DesktopPhoneView: View {
         .tint(tint)
         .disabled(disabled)
         .help(title)
+    }
+}
+
+private struct AssistantCallInspector: View {
+    @ObservedObject var phone: PhoneController
+
+    @State private var rawIntent = ""
+    @State private var taskBrief = ""
+    @State private var isGenerating = false
+    @State private var generationError: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Label("Assistant Call", systemImage: "sparkles")
+                        .font(.title2.weight(.semibold))
+                    Text("Describe the outcome, then review the brief before calling.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("What should the assistant do?")
+                        .font(.headline)
+                    TextEditor(text: $rawIntent)
+                        .font(.body)
+                        .frame(minHeight: 100)
+                        .padding(6)
+                        .scrollContentBackground(.hidden)
+                        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(.primary.opacity(0.12))
+                        }
+                }
+
+                Button(action: generateCallPlan) {
+                    HStack(spacing: 8) {
+                        if isGenerating {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "wand.and.sparkles")
+                        }
+                        Text(isGenerating ? "Generating call plan …" : "Generate call plan")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(isGenerating || trimmedIntent.isEmpty || !phone.isGeminiConfigured)
+
+                if let generationError {
+                    Label(generationError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !phone.isGeminiConfigured {
+                    Label("Configure Gemini in Settings to generate a plan or place an assistant call.", systemImage: "key")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Generated task brief")
+                        .font(.headline)
+                    ZStack(alignment: .topLeading) {
+                        TextEditor(text: $taskBrief)
+                            .font(.body)
+                            .frame(minHeight: 150)
+                            .padding(6)
+                            .scrollContentBackground(.hidden)
+                        if taskBrief.isEmpty {
+                            Text("The generated brief appears here and remains editable.")
+                                .font(.body)
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 14)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(.primary.opacity(0.12))
+                    }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Call from")
+                        .font(.headline)
+                    PhoneAccountPicker(phone: phone, presentation: .labeled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    TextField("Phone number or SIP address", text: $phone.number)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.large)
+                        .font(.system(size: 15, design: .rounded))
+                }
+
+                Button {
+                    phone.dialWithAssistant(task: effectiveTask)
+                } label: {
+                    Label("Call with assistant", systemImage: "phone.fill")
+                        .fontWeight(.semibold)
+                        .frame(maxWidth: .infinity, minHeight: 28)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.purple)
+                .controlSize(.large)
+                .disabled(
+                    !phone.state.isReady ||
+                    !phone.isGeminiConfigured ||
+                    phone.number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    effectiveTask.isEmpty
+                )
+            }
+            .padding(20)
+        }
+    }
+
+    private var trimmedIntent: String {
+        rawIntent.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var effectiveTask: String {
+        let generated = taskBrief.trimmingCharacters(in: .whitespacesAndNewlines)
+        return generated.isEmpty ? trimmedIntent : generated
+    }
+
+    private func generateCallPlan() {
+        guard !trimmedIntent.isEmpty, !isGenerating else { return }
+        guard let apiKey = GeminiAPIKeyStore.apiKey() else {
+            generationError = "Configure a Gemini API key in Settings."
+            return
+        }
+        isGenerating = true
+        generationError = nil
+        let prompt = assistantCallPlanPrompt(intent: trimmedIntent)
+        let model = UserDefaults.standard.string(forKey: "geminiSummaryModel") ?? GeminiTextClient.defaultModel
+        Task {
+            defer { isGenerating = false }
+            do {
+                taskBrief = try await GeminiTextClient.generate(
+                    prompt: prompt,
+                    systemInstruction: assistantCallPlanSystemInstruction,
+                    model: model,
+                    apiKey: apiKey
+                )
+            } catch {
+                generationError = redactSensitiveValues(in: error.localizedDescription)
+            }
+        }
     }
 }
 

@@ -350,31 +350,14 @@ actor LocalIntelligence {
     }
 
     private func geminiSummary(prompt: String, apiKey: String) async throws -> String {
-        let model = UserDefaults.standard.string(forKey: "geminiSummaryModel") ?? "gemini-3.6-flash"
-        var request = URLRequest(url: URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent")!)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
-        request.timeoutInterval = 20
-        let body: [String: Any] = [
-            "systemInstruction": ["parts": [["text": callSummaryInstructions]]],
-            "contents": [["role": "user", "parts": [["text": prompt]]]]
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw NSError(domain: "GeminiSummary", code: status, userInfo: [NSLocalizedDescriptionKey: "HTTP \(status)"])
-        }
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let candidates = object["candidates"] as? [[String: Any]],
-              let content = candidates.first?["content"] as? [String: Any],
-              let parts = content["parts"] as? [[String: Any]],
-              let text = parts.compactMap({ $0["text"] as? String }).first,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw NSError(domain: "GeminiSummary", code: 0, userInfo: [NSLocalizedDescriptionKey: "Empty response"])
-        }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = UserDefaults.standard.string(forKey: "geminiSummaryModel") ?? GeminiTextClient.defaultModel
+        return try await GeminiTextClient.generate(
+            prompt: prompt,
+            systemInstruction: callSummaryInstructions,
+            model: model,
+            apiKey: apiKey,
+            errorDomain: "GeminiSummary"
+        )
     }
 }
 
