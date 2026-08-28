@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify macOS 26 SDK
+        run: |
+          sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+          if [[ "$sdk_version" != 26.* ]]; then
+            echo "Expected macOS 26 SDK, found $sdk_version" >&2
+            exit 1
+          fi
+      - name: Run tests
+        run: swift test

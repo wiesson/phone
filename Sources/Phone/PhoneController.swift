@@ -4,6 +4,50 @@ import Darwin
 import Foundation
 import UserNotifications
 
+func normalizedDialTarget(from url: URL) -> String? {
+    var target = url.absoluteString
+    for scheme in ["tel:", "callto:", "sip:"] where target.lowercased().hasPrefix(scheme) {
+        target.removeFirst(scheme.count)
+    }
+    target = target.removingPercentEncoding ?? target
+    target = target.replacingOccurrences(of: "//", with: "")
+    target.removeAll { $0.isWhitespace || $0 == "(" || $0 == ")" || $0 == "-" }
+    return target.isEmpty ? nil : target
+}
+
+func redactSensitiveValues(in text: String) -> String {
+    text.replacingOccurrences(
+        of: #"auth_pass=(?:\"(?:[^\"\\]|\\.)*\"|[^;\s]*)"#,
+        with: "auth_pass=••••",
+        options: .regularExpression
+    )
+}
+
+func parseContacts(_ content: String) -> [String: String] {
+    var contacts: [String: String] = [:]
+    for line in content.split(separator: "\n") {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.hasPrefix("#"),
+              let nameStart = trimmed.firstIndex(of: "\""),
+              let nameEnd = trimmed[trimmed.index(after: nameStart)...].firstIndex(of: "\""),
+              let uriStart = trimmed.range(of: "<sip:"),
+              let uriEnd = trimmed[uriStart.upperBound...].firstIndex(of: ">") else { continue }
+        let name = String(trimmed[trimmed.index(after: nameStart)..<nameEnd])
+        let uri = trimmed[uriStart.upperBound..<uriEnd]
+        guard let user = uri.split(separator: "@").first, !user.contains("*"), !name.isEmpty else { continue }
+        contacts[String(user)] = name
+    }
+    return contacts
+}
+
+func parseCallerName(from line: String) -> String? {
+    guard let marker = line.range(of: "incoming call from:", options: .caseInsensitive) else { return nil }
+    var value = line[marker.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+    if value.lowercased().hasPrefix("sip:") { value.removeFirst(4) }
+    guard let caller = value.split(separator: "@").first, !caller.isEmpty else { return nil }
+    return String(caller).removingPercentEncoding ?? String(caller)
+}
+
 @MainActor
 final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserNotificationCenterDelegate {
     let menuBar = MenuBarModel()
@@ -177,14 +221,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     /// Handles tel:, callto:, and sip: URLs from other applications.
     func handleDialURL(_ url: URL) {
-        var target = url.absoluteString
-        for scheme in ["tel:", "callto:", "sip:"] where target.lowercased().hasPrefix(scheme) {
-            target.removeFirst(scheme.count)
-        }
-        target = target.removingPercentEncoding ?? target
-        target = target.replacingOccurrences(of: "//", with: "")
-        target.removeAll { $0.isWhitespace || $0 == "(" || $0 == ")" || $0 == "-" }
-        guard !target.isEmpty else { return }
+        guard let target = normalizedDialTarget(from: url) else { return }
         number = target
         if state.isReady { dial() }
     }
@@ -568,32 +605,15 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
-    private func redactSensitiveValues(in text: String) -> String {
-        text.replacingOccurrences(
-            of: #"auth_pass=(?:\"(?:[^\"\\]|\\.)*\"|[^;\s]*)"#,
-            with: "auth_pass=••••",
-            options: .regularExpression
-        )
-    }
-
     /// Parses baresip contacts lines of the form `"Name" <sip:user@domain>`
     /// into a user-part → display-name map.
     private func loadContacts() {
-        contacts = [:]
         let url = configDirectory.appendingPathComponent("contacts")
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return }
-        for line in content.split(separator: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.hasPrefix("#"),
-                  let nameStart = trimmed.firstIndex(of: "\""),
-                  let nameEnd = trimmed[trimmed.index(after: nameStart)...].firstIndex(of: "\""),
-                  let uriStart = trimmed.range(of: "<sip:"),
-                  let uriEnd = trimmed[uriStart.upperBound...].firstIndex(of: ">") else { continue }
-            let name = String(trimmed[trimmed.index(after: nameStart)..<nameEnd])
-            let uri = trimmed[uriStart.upperBound..<uriEnd]
-            guard let user = uri.split(separator: "@").first, !user.contains("*"), !name.isEmpty else { continue }
-            contacts[String(user)] = name
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            contacts = [:]
+            return
         }
+        contacts = parseContacts(content)
     }
 
     /// Returns a display name for a dial target or caller id, if known.
@@ -606,11 +626,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func callerName(from line: String) -> String? {
-        guard let marker = line.range(of: "incoming call from:", options: .caseInsensitive) else { return nil }
-        var value = line[marker.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-        if value.lowercased().hasPrefix("sip:") { value.removeFirst(4) }
-        guard let caller = value.split(separator: "@").first, !caller.isEmpty else { return nil }
-        let id = String(caller).removingPercentEncoding ?? String(caller)
+        guard let id = parseCallerName(from: line) else { return nil }
         return contacts[id] ?? id
     }
 

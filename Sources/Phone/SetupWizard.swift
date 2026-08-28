@@ -2,7 +2,7 @@ import Foundation
 import Security
 import SwiftUI
 
-enum SIPProviderPreset: String, CaseIterable, Codable, Identifiable {
+enum SIPProviderPreset: String, CaseIterable, Codable, Identifiable, Sendable {
     case telekom = "Deutsche Telekom"
     case fritzBox = "FRITZ!Box"
     case sipgate = "sipgate"
@@ -42,7 +42,7 @@ enum SIPProviderPreset: String, CaseIterable, Codable, Identifiable {
     }
 }
 
-struct ManagedSIPAccount: Codable, Equatable {
+struct ManagedSIPAccount: Codable, Equatable, Sendable {
     var provider: SIPProviderPreset
     var username: String
     var domain: String

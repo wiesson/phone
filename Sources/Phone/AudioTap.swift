@@ -10,6 +10,38 @@ struct AudioFrame: @unchecked Sendable {
     let samples: Data
 }
 
+enum AudioFrameParser {
+    static func parse(_ bytes: ArraySlice<UInt8>) -> AudioFrame? {
+        // PTAP | version | direction | format | channels | sampleRate | payloadBytes
+        guard bytes.count >= 16, Array(bytes.prefix(4)) == [0x50, 0x54, 0x41, 0x50] else { return nil }
+        let values = Array(bytes)
+        guard values[4] == 1,
+              let speaker = Speaker(rawValue: values[5]),
+              let format = commonFormat(values[6]) else { return nil }
+        let channels = AVAudioChannelCount(values[7])
+        let sampleRate = UInt32(values[8]) | UInt32(values[9]) << 8 | UInt32(values[10]) << 16 | UInt32(values[11]) << 24
+        let payloadCount = Int(UInt32(values[12]) | UInt32(values[13]) << 8 | UInt32(values[14]) << 16 | UInt32(values[15]) << 24)
+        guard payloadCount > 0, values.count == 16 + payloadCount else { return nil }
+        return AudioFrame(
+            speaker: speaker,
+            sampleRate: Double(sampleRate),
+            channels: channels,
+            format: format,
+            samples: Data(values[16...])
+        )
+    }
+
+    static func commonFormat(_ value: UInt8) -> AVAudioCommonFormat? {
+        switch value {
+        case 1: .pcmFormatInt16
+        case 2: .pcmFormatInt32
+        case 3: .pcmFormatFloat32
+        case 4: .pcmFormatFloat64
+        default: nil
+        }
+    }
+}
+
 final class AudioTapServer: @unchecked Sendable {
     static let socketPath = "/tmp/phone-audio-\(getuid()).sock"
 
@@ -81,41 +113,11 @@ final class AudioTapServer: @unchecked Sendable {
                 if running { usleep(10_000) }
                 continue
             }
-            guard let frame = parse(packet[0..<count]) else { continue }
+            guard let frame = AudioFrameParser.parse(packet[0..<count]) else { continue }
             countLock.lock()
             frameCounts[frame.speaker, default: 0] += 1
             countLock.unlock()
             onFrame?(frame)
-        }
-    }
-
-    private func parse(_ bytes: ArraySlice<UInt8>) -> AudioFrame? {
-        // PTAP | version | direction | format | channels | sampleRate | payloadBytes
-        guard bytes.count >= 16, Array(bytes.prefix(4)) == [0x50, 0x54, 0x41, 0x50] else { return nil }
-        let values = Array(bytes)
-        guard values[4] == 1,
-              let speaker = Speaker(rawValue: values[5]),
-              let format = commonFormat(values[6]) else { return nil }
-        let channels = AVAudioChannelCount(values[7])
-        let sampleRate = UInt32(values[8]) | UInt32(values[9]) << 8 | UInt32(values[10]) << 16 | UInt32(values[11]) << 24
-        let payloadCount = Int(UInt32(values[12]) | UInt32(values[13]) << 8 | UInt32(values[14]) << 16 | UInt32(values[15]) << 24)
-        guard payloadCount > 0, values.count == 16 + payloadCount else { return nil }
-        return AudioFrame(
-            speaker: speaker,
-            sampleRate: Double(sampleRate),
-            channels: channels,
-            format: format,
-            samples: Data(values[16...])
-        )
-    }
-
-    private func commonFormat(_ value: UInt8) -> AVAudioCommonFormat? {
-        switch value {
-        case 1: .pcmFormatInt16
-        case 2: .pcmFormatInt32
-        case 3: .pcmFormatFloat32
-        case 4: .pcmFormatFloat64
-        default: nil
         }
     }
 

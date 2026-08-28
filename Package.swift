@@ -11,6 +11,10 @@ let package = Package(
         .executableTarget(
             name: "Phone",
             swiftSettings: [.unsafeFlags(["-parse-as-library"])]
+        ),
+        .testTarget(
+            name: "PhoneTests",
+            dependencies: ["Phone"]
         )
     ]
 )
