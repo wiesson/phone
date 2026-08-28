@@ -17,11 +17,18 @@ struct LibraryView: View {
             sidebar
                 .navigationSplitViewColumnWidth(min: 250, ideal: 300, max: 380)
         } detail: {
-            detail
-                .inspector(isPresented: $isAssistantInspectorPresented) {
+            HStack(spacing: 0) {
+                detail
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if isAssistantInspectorPresented {
+                    Divider()
                     AssistantCallInspector(phone: phone)
-                        .inspectorColumnWidth(min: 300, ideal: 330, max: 360)
+                        .frame(width: 320)
+                        .background(.background.secondary)
+                        .transition(.move(edge: .trailing))
                 }
+            }
+            .animation(.easeInOut(duration: 0.2), value: isAssistantInspectorPresented)
         }
         .searchable(text: $query, placement: .sidebar, prompt: "Search calls")
         .toolbar {
