@@ -10,9 +10,9 @@ struct PhoneAccountPicker: View {
     var presentation: Presentation = .compact
 
     var body: some View {
-        if phone.managedAccounts.count > 1 && !phone.state.isInCall && !phone.state.isRinging {
+        if phone.enabledManagedAccounts.count > 1 && !phone.state.isInCall && !phone.state.isRinging {
             Menu {
-                ForEach(phone.managedAccounts) { account in
+                ForEach(phone.enabledManagedAccounts) { account in
                     Menu {
                         Section("Assistant profile") {
                             ForEach(AssistantProfile.allCases) { profile in
@@ -282,10 +282,27 @@ struct SummaryCard: View {
             Label("Summary", systemImage: "sparkles")
                 .font(.headline)
                 .foregroundStyle(.blue)
-            Text(summary.text)
-                .font(.system(size: 14))
-                .lineSpacing(3)
-                .textSelection(.enabled)
+            let sections = parseCallSummary(summary.text)
+            if sections.isEmpty {
+                Text(strippingMarkdownEmphasis(summary.text))
+                    .font(.system(size: 14))
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(section.label)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(section.value)
+                            .font(.system(size: 14))
+                            .lineSpacing(3)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
         }
         .padding(18)
         .background(.blue.opacity(0.075), in: RoundedRectangle(cornerRadius: 16, style: .continuous))

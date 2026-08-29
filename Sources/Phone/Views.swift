@@ -203,6 +203,14 @@ struct PhonePanel: View {
         .padding(.vertical, 12)
     }
 
+    /// The panel has room for a few lines only, so the labelled summary is
+    /// flattened into one readable run of text instead of a field list.
+    private func summaryPreviewText(_ summary: CallSummary) -> String {
+        let sections = parseCallSummary(summary.text)
+        guard !sections.isEmpty else { return strippingMarkdownEmphasis(summary.text) }
+        return sections.map { "\($0.label): \($0.value)" }.joined(separator: "\n")
+    }
+
     private var conversationPreview: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -214,7 +222,7 @@ struct PhonePanel: View {
                     .font(.system(size: 11))
             }
             if let summary = phone.summary {
-                Text(summary.text)
+                Text(summaryPreviewText(summary))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(4)
@@ -378,9 +386,6 @@ struct PhoneSettingsView: View {
     @AppStorage("showDockIcon") private var showDockIcon = false
     @AppStorage("geminiLiveModel") private var geminiLiveModel = defaultGeminiLiveModel
     @AppStorage("assistantBrainURL") private var assistantBrainURL = ""
-    @AppStorage(assistantAnswerModeDefaultsKey) private var assistantAnswerMode: AssistantAnswerMode = .never
-    @AppStorage(businessHoursDefaultsKey) private var businessHoursData = (try? JSONEncoder().encode(BusinessHoursSchedule())) ?? Data()
-    @AppStorage("assistantAnswerDelay") private var assistantAnswerDelay = 5
     @AppStorage("assistantInstructions") private var assistantInstructions = defaultAssistantInstructions
     @AppStorage("assistantUserDisplayName") private var assistantUserDisplayName = ""
     @AppStorage("webhookURL") private var webhookURL = ""
@@ -633,48 +638,30 @@ struct PhoneSettingsView: View {
 
                 Divider()
 
-                Picker("Answer incoming calls", selection: $assistantAnswerMode) {
-                    Text("Never").tag(AssistantAnswerMode.never)
-                    Text("Always").tag(AssistantAnswerMode.always)
-                    Text("Outside business hours").tag(AssistantAnswerMode.outsideBusinessHours)
+                Label {
+                    Text("When the assistant answers, and after how long, is set per line in the Phone tab — each number can behave differently.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "simcard")
+                        .foregroundStyle(.secondary)
                 }
 
-                if assistantAnswerMode == .outsideBusinessHours {
-                    VStack(alignment: .leading, spacing: 10) {
-                        BusinessHoursRow(
-                            title: "Weekdays",
-                            group: businessHoursGroupBinding(\.weekdays)
-                        )
-                        BusinessHoursRow(
-                            title: "Weekend",
-                            group: businessHoursGroupBinding(\.weekend)
-                        )
-                        Text("The assistant answers when you are not attending.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Stepper(
-                    "Answer after \(assistantAnswerDelay) seconds",
-                    value: $assistantAnswerDelay,
-                    in: 0...30
-                )
-                .disabled(assistantAnswerMode == .never)
                 LabeledContent("Your name (for call handover)") {
                     TextField("Optional", text: $assistantUserDisplayName)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 300)
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Assistant instructions")
+                    Text("Default assistant instructions")
                         .fontWeight(.medium)
                     TextEditor(text: $assistantInstructions)
                         .font(.system(size: 12))
                         .frame(minHeight: 100)
                         .padding(5)
                         .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
-                    Text("Add useful business context such as opening hours, services, or preferred callback details.")
+                    Text("Used by lines set to the Personal assistant profile. A line with its own profile ignores this text.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -900,26 +887,32 @@ struct PhoneSettingsView: View {
     }
 
     private func accountRow(_ account: ManagedSIPAccount) -> some View {
-        HStack(spacing: 10) {
-            Button {
-                selectAccount(account)
-            } label: {
-                Image(systemName: phone.activeManagedSIPAddress == account.sipAddress ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(phone.activeManagedSIPAddress == account.sipAddress ? Color.accentColor : .secondary)
-            }
-            .buttonStyle(.plain)
-            .help(phone.activeManagedSIPAddress == account.sipAddress ? "Active account" : "Make active")
+        let isActive = phone.activeManagedSIPAddress == account.sipAddress
+        let isOnCall = phone.isOnCurrentCall(account)
+        return HStack(spacing: 10) {
+            Toggle("", isOn: enabledBinding(for: account))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+                .disabled(isOnCall)
+                .help(
+                    isOnCall
+                        ? "This line is on a call"
+                        : account.isEnabled ? "Online — registered with the provider" : "Offline — not registered"
+                )
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(account.displayName)
                     .fontWeight(.medium)
-                Text(account.sipAddress)
+                Text(account.isEnabled ? account.sipAddress : "\(account.sipAddress) · Offline")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
             Spacer()
-            registrationIndicator(for: account)
+            if account.isEnabled {
+                registrationIndicator(for: account)
+            }
             Text(phone.assistantProfileDisplay(for: account))
                 .font(.caption2.weight(.medium))
                 .padding(.horizontal, 7)
@@ -929,6 +922,15 @@ struct PhoneSettingsView: View {
             Text(account.provider.shortName)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Button {
+                selectAccount(account)
+            } label: {
+                Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isActive ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(!account.isEnabled)
+            .help(isActive ? "Outgoing calls use this line" : "Use this line for outgoing calls")
             Button {
                 accountToEdit = account
             } label: {
@@ -946,11 +948,18 @@ struct PhoneSettingsView: View {
             .buttonStyle(.plain)
             .help("Remove account")
         }
+        .opacity(account.isEnabled ? 1 : 0.55)
         .onTapGesture(count: 2) {
             selectedAccountAddress = account.sipAddress
             accountToEdit = account
         }
         .contextMenu {
+            Button(account.isEnabled ? "Take Offline" : "Take Online") {
+                selectedAccountAddress = account.sipAddress
+                setAccountEnabled(account, isEnabled: !account.isEnabled)
+            }
+            .disabled(phone.isOnCurrentCall(account))
+            Divider()
             Button("Rename…") {
                 selectedAccountAddress = account.sipAddress
                 renameLabel = account.label ?? ""
@@ -967,6 +976,22 @@ struct PhoneSettingsView: View {
         }
     }
 
+
+    private func enabledBinding(for account: ManagedSIPAccount) -> Binding<Bool> {
+        Binding(
+            get: { account.isEnabled },
+            set: { setAccountEnabled(account, isEnabled: $0) }
+        )
+    }
+
+    private func setAccountEnabled(_ account: ManagedSIPAccount, isEnabled: Bool) {
+        do {
+            accountError = nil
+            try phone.setManagedAccountEnabled(account, isEnabled: isEnabled)
+        } catch {
+            accountError = error.localizedDescription
+        }
+    }
 
     @ViewBuilder
     private func registrationIndicator(for account: ManagedSIPAccount) -> some View {
@@ -1005,6 +1030,28 @@ struct PhoneSettingsView: View {
                         }
                     }
                 }
+
+                Divider()
+
+                Picker("Answer incoming calls", selection: answerModeBinding(for: account)) {
+                    Text("Never").tag(AssistantAnswerMode.never)
+                    Text("Always").tag(AssistantAnswerMode.always)
+                    Text("Outside business hours").tag(AssistantAnswerMode.outsideBusinessHours)
+                }
+
+                if (selectedAccount ?? account).assistantAnswerMode == .outsideBusinessHours {
+                    BusinessHoursRow(title: "Weekdays", group: accountBusinessHoursBinding(for: account, \.weekdays))
+                    BusinessHoursRow(title: "Weekend", group: accountBusinessHoursBinding(for: account, \.weekend))
+                }
+
+                Stepper(
+                    "Answer after \((selectedAccount ?? account).assistantAnswerDelay) seconds",
+                    value: answerDelayBinding(for: account),
+                    in: 0...30
+                )
+                .disabled((selectedAccount ?? account).assistantAnswerMode == .never)
+
+                Divider()
 
                 DisclosureGroup("Edit instructions…", isExpanded: $showsAccountInstructions) {
                     VStack(alignment: .trailing, spacing: 6) {
@@ -1082,6 +1129,34 @@ struct PhoneSettingsView: View {
                         $0.savedProfileID = id
                     }
                 }
+            }
+        )
+    }
+
+    private func answerModeBinding(for account: ManagedSIPAccount) -> Binding<AssistantAnswerMode> {
+        Binding(
+            get: { (selectedAccount ?? account).assistantAnswerMode },
+            set: { value in updateAccount(account) { $0.assistantAnswerMode = value } }
+        )
+    }
+
+    private func answerDelayBinding(for account: ManagedSIPAccount) -> Binding<Int> {
+        Binding(
+            get: { (selectedAccount ?? account).assistantAnswerDelay },
+            set: { value in
+                updateAccount(account) { $0.assistantAnswerDelay = ManagedSIPAccount.clampedAnswerDelay(value) }
+            }
+        )
+    }
+
+    private func accountBusinessHoursBinding(
+        for account: ManagedSIPAccount,
+        _ keyPath: WritableKeyPath<BusinessHoursSchedule, BusinessHoursSchedule.DayGroup>
+    ) -> Binding<BusinessHoursSchedule.DayGroup> {
+        Binding(
+            get: { (selectedAccount ?? account).businessHours[keyPath: keyPath] },
+            set: { value in
+                updateAccount(account) { $0.businessHours[keyPath: keyPath] = value }
             }
         )
     }
@@ -1193,25 +1268,6 @@ struct PhoneSettingsView: View {
         } catch {
             accountError = error.localizedDescription
         }
-    }
-
-    private func businessHoursGroupBinding(
-        _ keyPath: WritableKeyPath<BusinessHoursSchedule, BusinessHoursSchedule.DayGroup>
-    ) -> Binding<BusinessHoursSchedule.DayGroup> {
-        Binding(
-            get: {
-                (try? JSONDecoder().decode(BusinessHoursSchedule.self, from: businessHoursData))?[keyPath: keyPath]
-                    ?? BusinessHoursSchedule()[keyPath: keyPath]
-            },
-            set: { group in
-                var schedule = (try? JSONDecoder().decode(BusinessHoursSchedule.self, from: businessHoursData))
-                    ?? BusinessHoursSchedule()
-                schedule[keyPath: keyPath] = group
-                if let data = try? JSONEncoder().encode(schedule) {
-                    businessHoursData = data
-                }
-            }
-        )
     }
 
     private func saveGeminiAPIKey() {

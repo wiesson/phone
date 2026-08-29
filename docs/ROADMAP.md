@@ -1,91 +1,93 @@
 # Roadmap
 
-Working plan toward a Mac App Store release and an automation-friendly phone.
+Two tracks that compete for the same weeks, so they are written down
+separately: the **service** is the business, the **app** is the product that
+carries it.
 
-## 1. Account wizard (next up)
+Status: 29. August 2026.
 
-A small setup wizard replacing the hand-edited `accounts` file:
+## Done
 
-- **Step 1 — provider:** preset picker (Deutsche Telekom, FRITZ!Box, sipgate,
-  Easybell, custom SIP). Presets prefill domain, outbound proxy, STUN, and
-  media encryption; custom exposes all fields.
-- **Step 2 — credentials:** number/username and password. The password goes
-  into the **Keychain**, never into a file; the accounts line is generated
-  with a Keychain reference at runtime.
-- **Step 3 — test:** register against the provider with a visible live result
-  (registering → registered / error with the actual SIP failure reason), and
-  an optional test call to an echo service.
-- The wizard appears on first launch when no account exists and is reachable
-  from Settings later. The `accounts` file remains supported for power users.
+1. **Account wizard** — provider presets, Keychain, several accounts, live
+   registration test. Replaces the hand-edited `accounts` file, which still
+   works for power users.
+2. **Push API** — one internal event bus feeding HTTP webhooks:
+   `call.incoming|outgoing|answered|hungup|dtmf`, plus opt-in
+   `transcript.final` and `call.summary`. Signed with HMAC-SHA256.
+   `call.summary` now carries labelled fields next to the text.
+3. **MCP server** — `phone-mcp` over the local control socket: `dial`,
+   `assistant_call`, `answer`, `hangup`, `send_dtmf`, `get_state`,
+   `get_history`, `get_last_summary`.
+4. **Per line, not per app** — every SIP line has its own assistant profile,
+   answering rule, business hours, answer delay, and caller ID, and can be
+   taken online or offline on its own without re-registering the others.
 
-## 2. Push API (event webhooks)
+## Track A — the service (this is the business)
 
-Modeled on sipgate.io's push API (`newCall`, `onAnswer`, `onHangup`, `dtmf`),
-extended with what only a local app can offer:
+The paid product is a supervised monthly service, not an App Store download.
+The path into a customer's phone system is **call forwarding on no reply** to
+our own trunk: nothing is installed at the customer, no device, no
+registration against their line, and onboarding is one forwarding rule.
 
-- Configurable webhook URL(s) in Settings; HTTP POST with JSON per event.
-- Events: `call.incoming`, `call.outgoing`, `call.answered`, `call.hungup`
-  (with duration and missed flag), `call.dtmf`, plus opt-in
-  `transcript.final` (per finalized utterance) and `call.summary`
-  (post-call summary text).
-- Shared-secret signature header (HMAC) so receivers can verify the sender.
-- Privacy default: call metadata only; transcript/summary events are separate
-  opt-ins because they leave the machine.
-- Delivery is fire-and-forget with a small retry queue; failures show in the
-  panel status line.
+1. **Cloud stack end to end** (`cloud/`, in progress). A headless gateway
+   (baresip + `phone_tap`) plus a TypeScript brain (Gemini Live, tools,
+   transcript, summary, control API). Built and unit tested; registration,
+   SDP/NAT behaviour, codec negotiation, DTMF, and audio quality still need a
+   real call against sipgate. Everything else here waits on that.
+2. **Defensive flow first** — missed call → transcript → structured ticket
+   (caller, request, urgency, callback) → delivered by webhook, optionally an
+   SMS acknowledgement to the caller. It cannot fail embarrassingly; the live
+   voice agent can. The live agent stays opt-in per line.
+3. **Trunk and capacity** — booked voice channels terminating on the cloud
+   side, then a queue within that limit.
+4. **Tenants** — number configuration, tickets, and archive behind the brain,
+   customer-facing view reading it live.
 
-## 3. MCP server (automation for AI tools)
+## Track B — the app
 
-The same event stream and controls exposed as a local MCP server (stdio or
-localhost), so Claude/other agents can:
+The Mac app stays the interactive front end, the demo stage, and the lab for
+the same engine. It is a vehicle, not the revenue.
 
-- observe events (incoming call, transcript lines, summaries) as resources or
-  notifications,
-- act: `dial`, `answer`, `hangup`, `send_dtmf`, query call history.
+1. **Screens and information architecture** — settings sorted by intent rather
+   than by technology: what is app-wide (engine, keys, models, transcription)
+   versus what belongs to a line (profile, answering, hours, caller ID). The
+   per-line half is done; the tab structure and the duplicated transcript
+   surfaces (menu bar panel, library detail, separate conversation window) are
+   not.
+2. **Mac App Store, €7.99 one-time.** Open blockers, all real:
+   - no entitlements file, no App Sandbox, bundle identifier is still
+     `local.phone.mini`, ad-hoc signing;
+   - the audio tap socket lives in `/tmp` and must move into the container
+     (the path is already overridable by environment in `phone_tap.c`);
+   - `baresip` is copied from Homebrew and must be built and signed with our
+     own team identity, inheriting the sandbox;
+   - **licence**: `g722.so` links spandsp (LGPL-2.1), which does not survive
+     App Store terms. Ship the store build without G.722 — Opus and G.711 are
+     enough for Telekom and sipgate — or replace the implementation.
+   - macOS 27 "Golden Gate" ships mid-September 2026; build against that SDK.
+3. **Multi-call** — several lines, hold (re-INVITE plus injected hold music),
+   transfer (SIP REFER where the provider honours it, local bridging where it
+   does not). The building block for assistant → human handover, and the
+   better sales demo.
+4. **Detached engines via `ctrl_tcp`** instead of stdio pipes, so engines
+   survive app restarts and development stops tripping provider rate limits.
+   Also replaces log scraping with JSON events.
 
-This makes the phone scriptable without any cloud dependency. Webhooks (2) and
-MCP (3) share one internal event bus; the bus is the actual refactor, both
-transports are thin.
+## Watching
 
-## 4. Headless engine
-
-The call engine (SIP handling, transcription, summarization, assistant) split
-out of the menu bar app so it can run without a UI — on a server or a headless
-Mac, one instance per number:
-
-- **Missed-call flow first** (defensive by design): unanswered call →
-  transcript → structured ticket (caller, request, urgency, short summary) →
-  delivered via webhook — plus an optional SMS acknowledgement to the caller.
-  The live assistant stays opt-in and comes later here; it cannot
-  embarrassingly fail, the missed-call flow cannot.
-- Provider-agnostic input: own SIP registration, or ingesting transcripts from
-  provider webhook APIs where the line already produces them.
-- The menu bar app remains the interactive front end, demo stage, and R&D lab
-  for the same engine.
-
-This reorders the priorities: the event bus (2) and webhooks are the direct
-foundation for it, and the App Store packaging moves behind it.
-
-## 5. Mac App Store
-
-- App Sandbox: move the audio tap socket into the app container, entitlements
-  for network client + microphone; Application Support already lives in the
-  right place.
-- Longer term: link `libbaresip` statically instead of spawning the bundled
-  child process, removing the stdout parsing.
-- App Store signing/provisioning, screenshots, review notes with a test SIP
-  account, €2 one-time price. "Everything on-device" is the store pitch.
-
-## 6. Later / ideas
-
-- Cloud transcription as explicit opt-in alternative to Apple's on-device
-  models (e.g. Gemini live transcription), with API key in Keychain.
-- Multiple accounts / identities.
-- macOS Contacts integration for caller names.
-- Detached engines: control baresip via its ctrl_tcp module instead of stdio
-  pipes so engine processes survive app restarts and re-register far less —
-  development restarts currently trigger provider-side rate limiting.
-- Line board and call handling: per-number live status (free/ringing/in call),
-  call queueing with announcements within the line's concurrent-channel limit,
-  and transfer — SIP REFER where the provider honors it, local audio bridging
-  of two legs where it does not. Building block for assistant → human handoff.
+- **Foundation Models, autumn 2026.** WWDC26 opened the framework to other
+  providers (`LanguageModel` / `LanguageModelExecutor`, Gemini and Claude as
+  launch partners) and added Dynamic Profiles — swapping model, tools, and
+  instructions inside a running session, which is exactly the per-line profile
+  idea. Private Cloud Compute is reported to be free below two million
+  first-time downloads; verify before costing anything on it. There is still no
+  Apple speech-to-speech API, so live voice stays with Gemini or OpenAI, and
+  nothing suggests better narrowband transcription — 8 kHz telephone audio
+  remains Gemini's strength, not Apple's.
+- **Local models** — whisper.cpp / Parakeet class for transcription and Gemma
+  for summaries, via the new Core AI framework. Keeps the privacy story honest
+  for verticals that need it and removes per-minute cost.
+- **Repository split** — the Mac app and the cloud stack want separate
+  repositories; the cloud stack does not belong in a public one. The only
+  shared artefact is `Modules/phone_tap/phone_tap.c`, and its 16-byte contract
+  is asserted by tests on both sides.

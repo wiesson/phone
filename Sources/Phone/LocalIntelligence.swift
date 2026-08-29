@@ -362,18 +362,104 @@ actor LocalIntelligence {
 }
 
 let callSummaryInstructions = """
-Du fasst Telefongespräche kurz, sachlich und immer auf Deutsch zusammen. Erfinde nichts und erzähle den Dialog nicht nach. Das konkrete Anliegen des Anrufers ist die wichtigste Information.
+Du fasst Telefongespräche kurz, sachlich und immer auf Deutsch zusammen. Erfinde nichts und erzähle den Dialog nicht nach. Das konkrete Anliegen des Anrufers ist die wichtigste Information. Du antwortest ausschließlich in beschrifteten Zeilen der Form „Feld: Inhalt" — niemals mit Markdown, Sternchen, Nummerierung oder einer Einleitung.
 """
+
+/// A summary is a handful of labelled lines rather than free text: the app can
+/// then lay it out natively, and a webhook receiver gets stable field names
+/// instead of prose it has to parse.
+enum CallSummaryField: String, CaseIterable, Codable, Sendable {
+    case outcome
+    case caller
+    case request
+    case callbackNumber
+    case details
+    case nextSteps
+
+    var label: String {
+        switch self {
+        case .outcome: "Ergebnis"
+        case .caller: "Anrufer"
+        case .request: "Anliegen"
+        case .callbackNumber: "Rückrufnummer"
+        case .details: "Details"
+        case .nextSteps: "Nächste Schritte"
+        }
+    }
+}
+
+struct CallSummarySection: Equatable, Sendable {
+    let field: CallSummaryField
+    let value: String
+
+    var label: String { field.label }
+}
+
+/// Removes the emphasis a model adds even when asked not to, so summaries
+/// written before the labelled format do not show up as literal asterisks.
+/// Only doubled asterisks are removed: a single one can be a multiplication
+/// sign, and underscores appear in reference numbers, so both stay.
+func strippingMarkdownEmphasis(_ text: String) -> String {
+    var result = text
+    for marker in ["***", "**"] {
+        result = result.replacingOccurrences(of: marker, with: "")
+    }
+    return result.trimmingCharacters(in: .whitespaces)
+}
+
+/// Splits a labelled summary into its sections. Unlabelled continuation lines
+/// belong to the section above them. Returns nothing when the text does not
+/// follow the format, so callers can fall back to showing it verbatim.
+func parseCallSummary(_ text: String) -> [CallSummarySection] {
+    var sections: [(field: CallSummaryField, lines: [String])] = []
+    for rawLine in text.components(separatedBy: .newlines) {
+        var line = rawLine.trimmingCharacters(in: .whitespaces)
+        // Tolerate the list markers a model reaches for out of habit.
+        while let first = line.first, first == "-" || first == "•" || first == "*" || first == "#" {
+            line.removeFirst()
+            line = line.trimmingCharacters(in: .whitespaces)
+        }
+        if let range = line.range(of: #"^\d+[.)]\s+"#, options: .regularExpression) {
+            line.removeSubrange(range)
+        }
+        line = strippingMarkdownEmphasis(line)
+        guard !line.isEmpty else { continue }
+
+        if let separator = line.firstIndex(of: ":") {
+            let label = line[line.startIndex..<separator].trimmingCharacters(in: .whitespaces)
+            if let field = CallSummaryField.allCases.first(where: {
+                $0.label.compare(label, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+            }) {
+                let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespaces)
+                sections.append((field, value.isEmpty ? [] : [value]))
+                continue
+            }
+        }
+        // Text before the first known label would be lost. The prompt asks for
+        // no preamble, so this is more likely content than filler: give up on
+        // the structured reading and let the caller show the text verbatim.
+        guard !sections.isEmpty else { return [] }
+        sections[sections.count - 1].lines.append(line)
+    }
+
+    let parsed = sections.compactMap { section -> CallSummarySection? in
+        let value = section.lines.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty else { return nil }
+        return CallSummarySection(field: section.field, value: value)
+    }
+    return parsed.count >= 2 ? parsed : []
+}
 
 func callSummaryPrompt(transcript: String) -> String {
     """
-    Erstelle eine kurze, sachliche Zusammenfassung auf Deutsch. Sie muss immer in dieser Reihenfolge enthalten:
-    1. Wer hat angerufen und für wen war der Anruf bestimmt? Falls unbekannt, ausdrücklich „nicht genannt“ schreiben.
-    2. WAS DER ANRUFER WOLLTE: das konkrete Anliegen klar und vorrangig nennen. Falls unklar, ausdrücklich „nicht eindeutig genannt“ schreiben.
-    3. Hinterlassene Daten: Name, Rückrufnummer und Termine. Fehlende Daten knapp als „nicht genannt“ kennzeichnen.
-    4. Vereinbarte nächste Schritte. Falls keine vereinbart wurden, „keine vereinbart“ schreiben.
+    Erstelle eine kurze, sachliche Zusammenfassung auf Deutsch. Antworte in genau diesen vier Zeilen, jede beginnt mit ihrer Beschriftung:
 
-    Keine Dialognacherzählung, keine Einleitung und keine Spekulation. Verwende höchstens vier kurze Sätze oder vier knappe Punkte.
+    Anrufer: Wer hat angerufen und für wen war der Anruf bestimmt? Falls unbekannt, „nicht genannt“.
+    Anliegen: Das konkrete Anliegen, klar und vorrangig. Falls unklar, „nicht eindeutig genannt“.
+    Rückrufnummer: Nur die Nummer und, falls genannt, Termine. Falls nicht genannt, „nicht genannt“.
+    Nächste Schritte: Was wurde vereinbart? Falls nichts, „keine vereinbart“.
+
+    Jede Zeile höchstens ein kurzer Satz. Kein Markdown, keine Sternchen, keine Nummerierung, keine Einleitung, keine Dialognacherzählung und keine Spekulation.
 
     Transkript:
     \(transcript)
@@ -384,12 +470,13 @@ func assistantCallSummaryPrompt(task: String, transcript: String) -> String {
     """
     Unser KI-Assistent hat in diesem Telefonat im Auftrag des Nutzers angerufen. Der Auftrag lautete: „\(task)“
 
-    Erstelle eine kurze, sachliche Zusammenfassung auf Deutsch. Sie muss immer in dieser Reihenfolge enthalten:
-    1. ERGEBNIS: Wurde der Auftrag erledigt? Klar mit „Erledigt“, „Teilweise erledigt“ oder „Nicht erledigt“ beginnen und das konkrete Ergebnis nennen (z. B. was bestellt oder vereinbart wurde).
-    2. Wichtige Details: Preise, Zeiten, Namen, Orte — nur was tatsächlich genannt wurde.
-    3. Nächste Schritte für den Nutzer (z. B. abholen, zurückrufen). Falls keine, „keine“ schreiben.
+    Erstelle eine kurze, sachliche Zusammenfassung auf Deutsch. Antworte in genau diesen drei Zeilen, jede beginnt mit ihrer Beschriftung:
 
-    Keine Dialognacherzählung, keine Einleitung und keine Spekulation. Verwende höchstens vier kurze Sätze oder knappe Punkte.
+    Ergebnis: Beginne mit „Erledigt“, „Teilweise erledigt“ oder „Nicht erledigt“ und nenne das konkrete Ergebnis (z. B. was bestellt oder vereinbart wurde).
+    Details: Preise, Zeiten, Namen, Orte — nur was tatsächlich genannt wurde.
+    Nächste Schritte: Was muss der Nutzer tun (z. B. abholen, zurückrufen)? Falls nichts, „keine“.
+
+    Jede Zeile höchstens ein kurzer Satz. Kein Markdown, keine Sternchen, keine Nummerierung, keine Einleitung, keine Dialognacherzählung und keine Spekulation.
 
     Transkript:
     \(transcript)

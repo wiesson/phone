@@ -173,6 +173,14 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
     var savedProfileID: UUID? = nil
     var assistantInstructionsOverride: String? = nil
     var assistantContextData: String? = nil
+    /// A disabled account keeps its configuration and password but does not
+    /// register, so the line is invisible to the provider until it is enabled.
+    var isEnabled: Bool = true
+    /// Answering behaviour belongs to the line, not to the app: a business
+    /// number and a private number want different rules on the same Mac.
+    var assistantAnswerMode: AssistantAnswerMode = .never
+    var assistantAnswerDelay: Int = 5
+    var businessHours: BusinessHoursSchedule = BusinessHoursSchedule()
 
     init(
         provider: SIPProviderPreset,
@@ -188,7 +196,11 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         assistantProfileName: String? = nil,
         savedProfileID: UUID? = nil,
         assistantInstructionsOverride: String? = nil,
-        assistantContextData: String? = nil
+        assistantContextData: String? = nil,
+        isEnabled: Bool = true,
+        assistantAnswerMode: AssistantAnswerMode = .never,
+        assistantAnswerDelay: Int = 5,
+        businessHours: BusinessHoursSchedule = BusinessHoursSchedule()
     ) {
         self.provider = provider
         self.username = username
@@ -204,7 +216,13 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         self.savedProfileID = savedProfileID
         self.assistantInstructionsOverride = assistantInstructionsOverride
         self.assistantContextData = assistantContextData
+        self.isEnabled = isEnabled
+        self.assistantAnswerMode = assistantAnswerMode
+        self.assistantAnswerDelay = Self.clampedAnswerDelay(assistantAnswerDelay)
+        self.businessHours = businessHours
     }
+
+    static func clampedAnswerDelay(_ value: Int) -> Int { min(max(value, 0), 30) }
 
     var id: String { sipAddress }
     var sipAddress: String { "\(username)@\(domain)" }
@@ -368,6 +386,10 @@ extension ManagedSIPAccount {
         case savedProfileID
         case assistantInstructionsOverride
         case assistantContextData
+        case isEnabled
+        case assistantAnswerMode
+        case assistantAnswerDelay
+        case businessHours
     }
 
     init(from decoder: Decoder) throws {
@@ -388,7 +410,30 @@ extension ManagedSIPAccount {
         savedProfileID = try container.decodeIfPresent(UUID.self, forKey: .savedProfileID)
         assistantInstructionsOverride = try container.decodeIfPresent(String.self, forKey: .assistantInstructionsOverride)
         assistantContextData = try container.decodeIfPresent(String.self, forKey: .assistantContextData)
+        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        assistantAnswerMode = try container.decodeIfPresent(AssistantAnswerMode.self, forKey: .assistantAnswerMode) ?? .never
+        assistantAnswerDelay = Self.clampedAnswerDelay(
+            try container.decodeIfPresent(Int.self, forKey: .assistantAnswerDelay) ?? 5
+        )
+        businessHours = try container.decodeIfPresent(BusinessHoursSchedule.self, forKey: .businessHours)
+            ?? BusinessHoursSchedule()
     }
+}
+
+/// After a line was taken online or offline the outgoing line may have to move:
+/// an offline line cannot place calls, and the first line to come back online
+/// adopts an active address that still points at an offline line.
+func activeSIPAddress(
+    after change: ManagedSIPAccount,
+    accounts: [ManagedSIPAccount],
+    previousActive: String?
+) -> String? {
+    let activeIsOnline = accounts.first { $0.sipAddress == previousActive }?.isEnabled == true
+    if change.isEnabled {
+        return activeIsOnline ? previousActive : change.sipAddress
+    }
+    guard previousActive == change.sipAddress else { return previousActive }
+    return accounts.first(where: \.isEnabled)?.sipAddress ?? previousActive
 }
 
 func orderedManagedAccounts(_ accounts: [ManagedSIPAccount], activeSIPAddress: String?) -> [ManagedSIPAccount] {
@@ -424,6 +469,26 @@ struct ManagedAccountsFile: Codable, Equatable, Sendable {
         self.accounts = accounts
         self.activeSIPAddress = activeSIPAddress
         self.savedProfiles = savedProfiles
+    }
+}
+
+let assistantAnsweringMigrationDefaultsKey = "didMigrateAssistantAnsweringToAccounts"
+
+/// Answering used to be one setting for the whole app. The first launch after
+/// the move stamps those values onto every existing line, so no phone silently
+/// changes how it answers.
+func accountsAdoptingGlobalAnswering(
+    _ accounts: [ManagedSIPAccount],
+    mode: AssistantAnswerMode,
+    delay: Int,
+    businessHours: BusinessHoursSchedule
+) -> [ManagedSIPAccount] {
+    accounts.map { account in
+        var account = account
+        account.assistantAnswerMode = mode
+        account.assistantAnswerDelay = ManagedSIPAccount.clampedAnswerDelay(delay)
+        account.businessHours = businessHours
+        return account
     }
 }
 
@@ -474,7 +539,9 @@ struct ManagedSIPAccountsState: Equatable, Sendable {
             }
         }
         self.accounts = unique
-        self.activeSIPAddress = unique.contains { $0.sipAddress == activeSIPAddress } ? activeSIPAddress : unique.first?.sipAddress
+        self.activeSIPAddress = unique.contains { $0.sipAddress == activeSIPAddress }
+            ? activeSIPAddress
+            : Self.fallbackActiveAddress(in: unique)
     }
 
     var activeAccount: ManagedSIPAccount? {
@@ -514,10 +581,16 @@ struct ManagedSIPAccountsState: Equatable, Sendable {
         }
     }
 
+    /// Prefers an online line: making an offline line the outgoing one leaves
+    /// the app unregistered even though another line is up.
+    static func fallbackActiveAddress(in accounts: [ManagedSIPAccount]) -> String? {
+        (accounts.first(where: \.isEnabled) ?? accounts.first)?.sipAddress
+    }
+
     mutating func remove(_ account: ManagedSIPAccount) {
         accounts.removeAll { $0.sipAddress == account.sipAddress }
         if activeSIPAddress == account.sipAddress {
-            activeSIPAddress = accounts.first?.sipAddress
+            activeSIPAddress = Self.fallbackActiveAddress(in: accounts)
         }
     }
 }
@@ -554,6 +627,7 @@ func decodeManagedSIPAccounts(
 }
 
 enum SIPAccountError: LocalizedError {
+    case accountOffline
     case activeCall
     case duplicateAccount
     case invalidOutboundCallerID
@@ -561,6 +635,7 @@ enum SIPAccountError: LocalizedError {
     case invalidUsername
     case invalidPassword
     case keychain(OSStatus)
+    case lineBusy
     case missingDomain
     case missingManagedAccount
     case missingPassword
@@ -570,12 +645,14 @@ enum SIPAccountError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .accountOffline: "Take this line online before calling from it."
         case .activeCall: "Finish the current call before changing the SIP account."
         case .duplicateAccount: "An account with this SIP address already exists."
         case .invalidOutboundCallerID: "Enter an outbound caller ID containing only an optional leading +, digits, and spaces."
         case .invalidProviderSettings: "The provider settings contain unsupported characters."
         case .invalidUsername: "Enter a username without spaces, @, or SIP punctuation."
         case .invalidPassword: "The password cannot contain a line break."
+        case .lineBusy: "This line is still going online or offline. Try again in a moment."
         case .keychain(let status):
             SecCopyErrorMessageString(status, nil).map { ($0 as NSString) as String } ?? "The password could not be saved in Keychain."
         case .missingDomain: "Enter the SIP registrar."
@@ -950,7 +1027,13 @@ struct SetupWizard: View {
             assistantProfileName: editingAccount?.assistantProfileName,
             savedProfileID: editingAccount?.savedProfileID,
             assistantInstructionsOverride: editingAccount?.assistantInstructionsOverride,
-            assistantContextData: editingAccount?.assistantContextData
+            assistantContextData: editingAccount?.assistantContextData,
+            // Editing a line must not change whether it is online or how it
+            // answers; the wizard only owns the connection settings.
+            isEnabled: editingAccount?.isEnabled ?? true,
+            assistantAnswerMode: editingAccount?.assistantAnswerMode ?? .never,
+            assistantAnswerDelay: editingAccount?.assistantAnswerDelay ?? 5,
+            businessHours: editingAccount?.businessHours ?? BusinessHoursSchedule()
         )
     }
 

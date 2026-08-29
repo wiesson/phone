@@ -241,6 +241,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private var geminiTranscriptionActive = false
     private var autoAnswerTask: Task<Void, Never>?
     private var startsAssistantWhenConnected = false
+    private var incomingCallAttentionRequest: Int?
+    private var linesChangingEnablement: Set<String> = []
     private var assistantCallPlan = AssistantCallPlan()
     private var draftIDs: [Speaker: UUID] = [:]
     private var intelligenceRunning = false
@@ -302,7 +304,15 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     var registrationSummary: String? {
         guard !managedAccounts.isEmpty else { return nil }
-        return aggregateRegistrationState(Array(registrationStatuses.values), total: managedAccounts.count).summary
+        return aggregateRegistrationState(Array(registrationStatuses.values), total: enabledManagedAccounts.count).summary
+    }
+
+    var enabledManagedAccounts: [ManagedSIPAccount] {
+        managedAccounts.filter(\.isEnabled)
+    }
+
+    func isOnCurrentCall(_ account: ManagedSIPAccount) -> Bool {
+        currentCallInstanceID == sanitizedBaresipInstanceAOR(account.sipAddress)
     }
 
     func registrationStatus(for account: ManagedSIPAccount) -> RegistrationStatus {
@@ -398,7 +408,22 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             activeManagedSIPAddress = migrated.activeSIPAddress
             savedAssistantProfiles = migrated.savedProfiles ?? []
         }
-        try? persistManagedAccounts()
+        let needsAnsweringMigration = !defaults.bool(forKey: assistantAnsweringMigrationDefaultsKey)
+        if needsAnsweringMigration {
+            managedAccounts = accountsAdoptingGlobalAnswering(
+                managedAccounts,
+                mode: storedAssistantAnswerMode(defaults: defaults),
+                delay: defaults.object(forKey: "assistantAnswerDelay") as? Int ?? 5,
+                businessHours: storedBusinessHoursSchedule(defaults: defaults)
+            )
+        }
+        do {
+            try persistManagedAccounts()
+            // Only claim the migration once the values are safely on disk.
+            if needsAnsweringMigration { defaults.set(true, forKey: assistantAnsweringMigrationDefaultsKey) }
+        } catch {
+            phoneDiagnosticLog("phone-app: accounts could not be persisted at startup\n")
+        }
         number = defaults.string(forKey: "lastDialedNumber") ?? ""
         if let data = defaults.data(forKey: "callHistory"),
            let stored = try? JSONDecoder().decode([CallRecord].self, from: data) {
@@ -527,6 +552,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     func selectManagedAccount(_ account: ManagedSIPAccount) throws {
         guard currentCallInstanceID == nil else { throw SIPAccountError.activeCall }
+        guard account.isEnabled else { throw SIPAccountError.accountOffline }
         var accountsState = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
         guard accountsState.activeSIPAddress != account.sipAddress else { return }
         accountsState.select(account)
@@ -545,6 +571,9 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         updated.savedProfileID = account.savedProfileID
         updated.assistantInstructionsOverride = account.assistantInstructionsOverride
         updated.assistantContextData = account.assistantContextData
+        updated.assistantAnswerMode = account.assistantAnswerMode
+        updated.assistantAnswerDelay = ManagedSIPAccount.clampedAnswerDelay(account.assistantAnswerDelay)
+        updated.businessHours = account.businessHours
         var accountsState = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
         accountsState.update(updated)
         try saveManagedAccountsState(accountsState)
@@ -1077,35 +1106,124 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             return [instance.id: instance]
         }
 
+        var result: [String: BaresipInstance] = [:]
+        // The index decides the instance's RTP port range, so it is taken from
+        // the full account list: taking one line offline must not move the
+        // ports of the lines around it.
+        for (index, account) in managedAccounts.enumerated() where account.isEnabled {
+            let instance = try makeBaresipInstance(account: account, index: index)
+            result[instance.id] = instance
+        }
+        return result
+    }
+
+    private func makeBaresipInstance(account: ManagedSIPAccount, index: Int) throws -> BaresipInstance {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: instancesDirectory, withIntermediateDirectories: true)
         let sharedConfig = try String(contentsOf: configDirectory.appendingPathComponent("config"), encoding: .utf8)
         let contactsURL = configDirectory.appendingPathComponent("contacts")
-        var result: [String: BaresipInstance] = [:]
-        for (index, account) in managedAccounts.enumerated() {
-            let id = sanitizedBaresipInstanceAOR(account.sipAddress)
-            let directory = instancesDirectory.appendingPathComponent(id, isDirectory: true)
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            try perInstanceBaresipConfig(sharedConfig: sharedConfig, instanceIndex: index)
-                .write(to: directory.appendingPathComponent("config"), atomically: true, encoding: .utf8)
-            let password = try SIPPasswordStore.password(account: account.sipAddress)
-            try writePrivateFile(
-                managedInstanceAccountLine(account: account, password: password),
-                to: directory.appendingPathComponent("accounts")
-            )
-            if fileManager.fileExists(atPath: contactsURL.path) {
-                let contacts = try Data(contentsOf: contactsURL)
-                try contacts.write(to: directory.appendingPathComponent("contacts"), options: .atomic)
-            }
-            let instance = BaresipInstance(
-                id: id,
-                accountAOR: account.sipAddress,
-                configDirectory: directory,
-                pidFileURL: directory.appendingPathComponent("baresip.pid")
-            )
-            result[id] = instance
+        let id = sanitizedBaresipInstanceAOR(account.sipAddress)
+        let directory = instancesDirectory.appendingPathComponent(id, isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try perInstanceBaresipConfig(sharedConfig: sharedConfig, instanceIndex: index)
+            .write(to: directory.appendingPathComponent("config"), atomically: true, encoding: .utf8)
+        let password = try SIPPasswordStore.password(account: account.sipAddress)
+        try writePrivateFile(
+            managedInstanceAccountLine(account: account, password: password),
+            to: directory.appendingPathComponent("accounts")
+        )
+        if fileManager.fileExists(atPath: contactsURL.path) {
+            let contacts = try Data(contentsOf: contactsURL)
+            try contacts.write(to: directory.appendingPathComponent("contacts"), options: .atomic)
         }
-        return result
+        return BaresipInstance(
+            id: id,
+            accountAOR: account.sipAddress,
+            configDirectory: directory,
+            pidFileURL: directory.appendingPathComponent("baresip.pid")
+        )
+    }
+
+    /// Registers or unregisters a single line. A full restart would re-register
+    /// every account and trips provider-side rate limiting, so enabling and
+    /// disabling deliberately touches only the affected instance.
+    func setManagedAccountEnabled(_ account: ManagedSIPAccount, isEnabled: Bool) throws {
+        guard let index = managedAccounts.firstIndex(where: { $0.sipAddress == account.sipAddress }) else {
+            throw SIPAccountError.missingManagedAccount
+        }
+        guard managedAccounts[index].isEnabled != isEnabled else { return }
+        let instanceID = sanitizedBaresipInstanceAOR(account.sipAddress)
+        guard currentCallInstanceID != instanceID else { throw SIPAccountError.activeCall }
+        // Stopping pumps the run loop, so a second flip can arrive mid-flight
+        // and would race the first over the same instance id and pid file.
+        guard !linesChangingEnablement.contains(instanceID) else { throw SIPAccountError.lineBusy }
+        linesChangingEnablement.insert(instanceID)
+        defer { linesChangingEnablement.remove(instanceID) }
+
+        var accounts = managedAccounts
+        accounts[index].isEnabled = isEnabled
+        let updated = accounts[index]
+
+        let activeAddress = activeSIPAddress(
+            after: updated,
+            accounts: accounts,
+            previousActive: activeManagedSIPAddress
+        )
+
+        try saveManagedAccountsState(
+            ManagedSIPAccountsState(accounts: accounts, activeSIPAddress: activeAddress)
+        )
+
+        if isEnabled {
+            startManagedInstance(for: updated, index: index)
+        } else {
+            stopManagedInstance(id: instanceID)
+        }
+        refreshAggregateRegistrationStatus()
+        refreshIdleState()
+    }
+
+    private func startManagedInstance(for account: ManagedSIPAccount, index: Int) {
+        let instanceID = sanitizedBaresipInstanceAOR(account.sipAddress)
+        guard instances[instanceID] == nil else { return }
+        guard let executable = baresipExecutable else {
+            registrationStatuses[instanceID] = .failed("baresip was not found")
+            return
+        }
+        isShuttingDown = false
+        do {
+            try prepareRuntime()
+            let instance = try makeBaresipInstance(account: account, index: index)
+            instance.cleanupOrphanedProcess()
+            instances[instance.id] = instance
+            registrationStatuses[instance.id] = .registering
+            configureCallbacks(for: instance)
+            appendDiagnostic("phone-app[\(instance.id)]: starting baresip\n")
+            try instance.start(executable: executable, currentDirectory: applicationSupportDirectory)
+        } catch {
+            registrationStatuses[instanceID] = .failed(error.localizedDescription)
+        }
+    }
+
+    private func stopManagedInstance(id: String) {
+        guard let instance = instances[id] else { return }
+        // stopAndWait() pumps the run loop, so everything observable has to be
+        // correct before it is called: the instance is detached from its
+        // callbacks so no late output is attributed to a line that no longer
+        // exists, and the published state already reflects the line being gone.
+        // The global `isStoppingInstances` flag is deliberately not used — it
+        // would also swallow the termination of a different line on a call.
+        instance.onOutput = nil
+        instance.onTermination = nil
+        instance.onAudioFrame = nil
+        instances[id] = nil
+        registrationStatuses[id] = nil
+        lineBuffers[id] = nil
+        deferredIncomingCalls[id] = nil
+        instancesWithSIPTrace.remove(id)
+        refreshAggregateRegistrationStatus()
+        refreshIdleState()
+        instance.stopAndWait()
     }
 
     private func writePrivateFile(_ content: String, to url: URL) throws {
@@ -1192,6 +1310,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func didStop(_ instance: BaresipInstance) {
+        // A line that was taken offline is already gone from `instances`, and a
+        // replacement may already hold its id. Nothing may be touched before
+        // this instance is confirmed to still be the current one.
+        guard instances[instance.id] === instance else { return }
         lineBuffers[instance.id] = nil
         deferredIncomingCalls[instance.id] = nil
         if instance.registrationStatus == .registering {
@@ -1227,7 +1349,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func refreshAggregateRegistrationStatus() {
-        let total = managedAccounts.isEmpty ? (instances.isEmpty ? 0 : 1) : managedAccounts.count
+        let total = managedAccounts.isEmpty ? (instances.isEmpty ? 0 : 1) : enabledManagedAccounts.count
         registrationStatus = aggregateRegistrationState(Array(registrationStatuses.values), total: total).status
     }
 
@@ -1790,30 +1912,27 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         )
     }
 
-    private var assistantAnswerMode: AssistantAnswerMode {
-        storedAssistantAnswerMode(defaults: UserDefaults.standard)
-    }
-
-    private var assistantAnswerDelay: Int {
-        let stored = UserDefaults.standard.object(forKey: "assistantAnswerDelay") as? Int ?? 5
-        return min(max(stored, 0), 30)
+    func managedAccount(forInstanceID instanceID: String) -> ManagedSIPAccount? {
+        managedAccounts.first { sanitizedBaresipInstanceAOR($0.sipAddress) == instanceID }
     }
 
     private func armAutoAnswerIfNeeded(for instanceID: String) {
         cancelAutoAnswer()
         guard isGeminiConfigured else { return }
-        switch assistantAnswerMode {
-        case .never:
-            return
-        case .always:
-            break
-        case .outsideBusinessHours:
-            let defaults = UserDefaults.standard
-            let schedule = storedBusinessHoursSchedule(defaults: defaults)
-            guard !isWithinBusinessHours(date: Date(), calendar: .current, schedule: schedule) else { return }
-        }
+        // Answering is a property of the line that is ringing. A hand-edited
+        // accounts file has no managed line, so that setup keeps the old
+        // app-wide values.
+        let defaults = UserDefaults.standard
+        let account = managedAccount(forInstanceID: instanceID)
+        let answers = shouldAssistantAnswer(
+            mode: account?.assistantAnswerMode ?? storedAssistantAnswerMode(defaults: defaults),
+            businessHours: account?.businessHours ?? storedBusinessHoursSchedule(defaults: defaults),
+            date: Date()
+        )
+        guard answers else { return }
         isAutoAnswerArmed = true
-        let delay = assistantAnswerDelay
+        let delay = account?.assistantAnswerDelay
+            ?? ManagedSIPAccount.clampedAnswerDelay(defaults.object(forKey: "assistantAnswerDelay") as? Int ?? 5)
         autoAnswerTask = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: .seconds(delay))
@@ -1990,7 +2109,15 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                     try? await store.attachSummary(text, to: archiveRecord.id)
                 }
                 summary = CallSummary(text: text, createdAt: Date())
-                eventBus.publish(.callSummary(text: text))
+                eventBus.publish(
+                    .callSummary(
+                        text: text,
+                        fields: Dictionary(
+                            parseCallSummary(text).map { ($0.field.rawValue, $0.value) },
+                            uniquingKeysWith: { first, _ in first }
+                        )
+                    )
+                )
                 intelligenceStatus = "Processed locally"
                 if !retainTranscript { clearConversation() }
                 if includesContent, archiveRecord != nil {
@@ -2095,6 +2222,9 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         Task { @MainActor in
             if actionIdentifier == "answer-call" { self.answer() }
             if actionIdentifier == "reject-call" { self.reject() }
+            if actionIdentifier == UNNotificationDefaultActionIdentifier {
+                NotificationCenter.default.post(name: .phoneOpenLibrary, object: nil)
+            }
         }
     }
 
@@ -2107,6 +2237,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         content.categoryIdentifier = "incoming-call"
         clearIncomingCallNotification()
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "incoming-call", content: content, trigger: nil))
+        requestIncomingCallAttention()
     }
 
     private func showMissedCallNotification(caller: String?) {
@@ -2121,5 +2252,19 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: ["incoming-call"])
         center.removeDeliveredNotifications(withIdentifiers: ["incoming-call"])
+        cancelIncomingCallAttention()
+    }
+
+    /// Bounces the Dock icon until the app is activated. Only visible while the
+    /// app runs with a Dock icon; in menu bar only mode AppKit ignores it.
+    private func requestIncomingCallAttention() {
+        guard incomingCallAttentionRequest == nil else { return }
+        incomingCallAttentionRequest = NSApp.requestUserAttention(.criticalRequest)
+    }
+
+    private func cancelIncomingCallAttention() {
+        guard let request = incomingCallAttentionRequest else { return }
+        incomingCallAttentionRequest = nil
+        NSApp.cancelUserAttentionRequest(request)
     }
 }

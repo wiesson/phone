@@ -502,3 +502,124 @@ private func invalidAccount(
 private func activeCount(in state: ManagedSIPAccountsState) -> Int {
     state.accounts.count { $0.sipAddress == state.activeSIPAddress }
 }
+
+private func line(_ username: String, isEnabled: Bool = true) -> ManagedSIPAccount {
+    ManagedSIPAccount(
+        provider: .custom,
+        username: username,
+        domain: "example.test",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: "",
+        isEnabled: isEnabled
+    )
+}
+
+@Test
+func accountsStoredBeforeTheEnabledFlagExistedStayOnline() throws {
+    let encoded = try JSONEncoder().encode(line("user"))
+    var stored = try #require(
+        try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    stored.removeValue(forKey: "isEnabled")
+    let withoutFlag = try JSONSerialization.data(withJSONObject: stored)
+    let account = try JSONDecoder().decode(ManagedSIPAccount.self, from: withoutFlag)
+    #expect(account.isEnabled)
+}
+
+@Test
+func enablementSurvivesAnEncodeDecodeRoundTrip() throws {
+    let encoded = try JSONEncoder().encode(line("offline", isEnabled: false))
+    let decoded = try JSONDecoder().decode(ManagedSIPAccount.self, from: encoded)
+    #expect(!decoded.isEnabled)
+}
+
+@Test
+func takingTheOutgoingLineOfflineMovesItToTheNextOnlineLine() {
+    let first = line("first", isEnabled: false)
+    let second = line("second")
+    let address = activeSIPAddress(
+        after: first,
+        accounts: [first, second],
+        previousActive: first.sipAddress
+    )
+    #expect(address == second.sipAddress)
+}
+
+@Test
+func takingAnotherLineOfflineLeavesTheOutgoingLineAlone() {
+    let active = line("active")
+    let other = line("other", isEnabled: false)
+    let address = activeSIPAddress(
+        after: other,
+        accounts: [active, other],
+        previousActive: active.sipAddress
+    )
+    #expect(address == active.sipAddress)
+}
+
+@Test
+func theLastLineGoingOfflineKeepsTheOutgoingAddressSoTheAccountStaysSelected() {
+    let only = line("only", isEnabled: false)
+    let address = activeSIPAddress(after: only, accounts: [only], previousActive: only.sipAddress)
+    #expect(address == only.sipAddress)
+}
+
+@Test
+func aLineComingBackOnlineAdoptsAnOutgoingAddressThatPointsAtAnOfflineLine() {
+    let offline = line("offline", isEnabled: false)
+    let restored = line("restored")
+    let address = activeSIPAddress(
+        after: restored,
+        accounts: [offline, restored],
+        previousActive: offline.sipAddress
+    )
+    #expect(address == restored.sipAddress)
+}
+
+@Test
+func aLineComingBackOnlineDoesNotStealAnAlreadyOnlineOutgoingLine() {
+    let active = line("active")
+    let restored = line("restored")
+    let address = activeSIPAddress(
+        after: restored,
+        accounts: [active, restored],
+        previousActive: active.sipAddress
+    )
+    #expect(address == active.sipAddress)
+}
+
+@Test
+func removingTheOutgoingLinePrefersAnOnlineLineOverAnOfflineOne() {
+    let offline = line("offline", isEnabled: false)
+    let outgoing = line("outgoing")
+    let online = line("online")
+    var state = ManagedSIPAccountsState(
+        accounts: [offline, outgoing, online],
+        activeSIPAddress: outgoing.sipAddress
+    )
+
+    state.remove(outgoing)
+
+    // Falling back to the first account would leave the app unregistered even
+    // though `online` is up.
+    #expect(state.activeSIPAddress == online.sipAddress)
+}
+
+@Test
+func anUnknownOutgoingAddressFallsBackToAnOnlineLine() {
+    let state = ManagedSIPAccountsState(
+        accounts: [line("offline", isEnabled: false), line("online")],
+        activeSIPAddress: "gone@example.test"
+    )
+    #expect(state.activeSIPAddress == "online@example.test")
+}
+
+@Test
+func withOnlyOfflineLinesTheFirstOneStaysSelected() {
+    let state = ManagedSIPAccountsState(
+        accounts: [line("first", isEnabled: false), line("second", isEnabled: false)],
+        activeSIPAddress: nil
+    )
+    #expect(state.activeSIPAddress == "first@example.test")
+}

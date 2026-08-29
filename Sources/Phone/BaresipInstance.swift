@@ -119,6 +119,13 @@ func aggregateRegistrationState(_ statuses: [RegistrationStatus], total: Int) ->
     return RegistrationAggregate(status: .failed(failure), registered: registered, total: total)
 }
 
+/// Whether the pid file still belongs to this process, rather than to a
+/// successor that reused the same path.
+func pidFileNamesProcess(pid: Int32, at url: URL) -> Bool {
+    guard let value = try? String(contentsOf: url, encoding: .utf8) else { return false }
+    return Int32(value.trimmingCharacters(in: .whitespacesAndNewlines)) == pid
+}
+
 @MainActor
 final class BaresipInstance {
     let id: String
@@ -284,7 +291,12 @@ final class BaresipInstance {
         process = nil
         input = nil
         audioTap.stop()
-        try? FileManager.default.removeItem(at: pidFileURL)
+        // Successive instances for one line share this path. stopAndWait() gives
+        // up after its deadlines, so a process can die late — after a
+        // replacement already wrote its own pid — and must not delete that.
+        if pidFileNamesProcess(pid: stoppedProcess.processIdentifier, at: pidFileURL) {
+            try? FileManager.default.removeItem(at: pidFileURL)
+        }
         onTermination?(self)
     }
 }

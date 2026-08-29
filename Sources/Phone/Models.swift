@@ -201,6 +201,21 @@ func storedBusinessHoursSchedule(defaults: UserDefaults) -> BusinessHoursSchedul
     return schedule
 }
 
+/// Whether the assistant should pick up for a line with these settings.
+func shouldAssistantAnswer(
+    mode: AssistantAnswerMode,
+    businessHours: BusinessHoursSchedule,
+    date: Date,
+    calendar: Calendar = .current
+) -> Bool {
+    switch mode {
+    case .never: false
+    case .always: true
+    case .outsideBusinessHours:
+        !isWithinBusinessHours(date: date, calendar: calendar, schedule: businessHours)
+    }
+}
+
 func isWithinBusinessHours(
     date: Date,
     calendar: Calendar,

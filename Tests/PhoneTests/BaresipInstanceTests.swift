@@ -93,3 +93,17 @@ import Testing
     #expect(complete.summary == "3 of 3 registered")
     #expect(aggregateRegistrationState([.idle, .idle], total: 2).status == .idle)
 }
+
+@Test func aPIDFileIsOnlyClaimedByTheProcessThatWroteIt() throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("phone-pid-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    try "4711\n".write(to: url, atomically: true, encoding: .utf8)
+    #expect(pidFileNamesProcess(pid: 4711, at: url))
+    // A late-dying predecessor must not delete its successor's pid file.
+    #expect(!pidFileNamesProcess(pid: 4712, at: url))
+
+    try FileManager.default.removeItem(at: url)
+    #expect(!pidFileNamesProcess(pid: 4711, at: url))
+}

@@ -146,3 +146,94 @@ private func businessHoursTestDate(
         #expect(migrateAssistantAnswerMode(defaults: defaults) == .outsideBusinessHours)
     }
 }
+
+private func testLine(
+    _ username: String,
+    mode: AssistantAnswerMode = .never,
+    delay: Int = 5,
+    hours: BusinessHoursSchedule = BusinessHoursSchedule()
+) -> ManagedSIPAccount {
+    ManagedSIPAccount(
+        provider: .custom,
+        username: username,
+        domain: "example.test",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: "",
+        assistantAnswerMode: mode,
+        assistantAnswerDelay: delay,
+        businessHours: hours
+    )
+}
+
+@Test func eachLineDecidesForItselfWhetherTheAssistantAnswers() {
+    let tuesdayMorning = Date(timeIntervalSince1970: 1_756_368_000) // Tue 2025-08-28 08:00 UTC
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    let officeHours = BusinessHoursSchedule(
+        weekdays: .init(open: true, start: 7 * 60, end: 17 * 60),
+        weekend: .init(open: false, start: 0, end: 0)
+    )
+
+    #expect(!shouldAssistantAnswer(mode: .never, businessHours: officeHours, date: tuesdayMorning, calendar: calendar))
+    #expect(shouldAssistantAnswer(mode: .always, businessHours: officeHours, date: tuesdayMorning, calendar: calendar))
+    // Inside office hours a human is expected to pick up.
+    #expect(!shouldAssistantAnswer(
+        mode: .outsideBusinessHours,
+        businessHours: officeHours,
+        date: tuesdayMorning,
+        calendar: calendar
+    ))
+}
+
+@Test func theGlobalAnsweringSettingsAreStampedOntoEveryLineOnce() {
+    let hours = BusinessHoursSchedule(
+        weekdays: .init(open: true, start: 8 * 60, end: 18 * 60),
+        weekend: .init(open: true, start: 10 * 60, end: 14 * 60)
+    )
+    let migrated = accountsAdoptingGlobalAnswering(
+        [testLine("one"), testLine("two")],
+        mode: .always,
+        delay: 3,
+        businessHours: hours
+    )
+
+    #expect(migrated.allSatisfy { $0.assistantAnswerMode == .always })
+    #expect(migrated.allSatisfy { $0.assistantAnswerDelay == 3 })
+    #expect(migrated.allSatisfy { $0.businessHours == hours })
+}
+
+@Test func anAnswerDelayIsClampedToTheRangeTheStepperOffers() {
+    #expect(accountsAdoptingGlobalAnswering([testLine("one")], mode: .always, delay: 99, businessHours: BusinessHoursSchedule())[0].assistantAnswerDelay == 30)
+    #expect(accountsAdoptingGlobalAnswering([testLine("one")], mode: .always, delay: -5, businessHours: BusinessHoursSchedule())[0].assistantAnswerDelay == 0)
+}
+
+@Test func linesStoredBeforeAnsweringMovedKeepConservativeDefaults() throws {
+    let encoded = try JSONEncoder().encode(testLine("one", mode: .always, delay: 12))
+    var stored = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    for key in ["assistantAnswerMode", "assistantAnswerDelay", "businessHours"] {
+        stored.removeValue(forKey: key)
+    }
+    let decoded = try JSONDecoder().decode(
+        ManagedSIPAccount.self,
+        from: try JSONSerialization.data(withJSONObject: stored)
+    )
+
+    // The migration supplies the real values; decoding alone must never make a
+    // line start answering on its own.
+    #expect(decoded.assistantAnswerMode == .never)
+    #expect(decoded.assistantAnswerDelay == 5)
+}
+
+@Test func perLineAnsweringSurvivesAnEncodeDecodeRoundTrip() throws {
+    let hours = BusinessHoursSchedule(
+        weekdays: .init(open: false, start: 60, end: 120),
+        weekend: .init(open: true, start: 180, end: 240)
+    )
+    let encoded = try JSONEncoder().encode(testLine("one", mode: .outsideBusinessHours, delay: 7, hours: hours))
+    let decoded = try JSONDecoder().decode(ManagedSIPAccount.self, from: encoded)
+
+    #expect(decoded.assistantAnswerMode == .outsideBusinessHours)
+    #expect(decoded.assistantAnswerDelay == 7)
+    #expect(decoded.businessHours == hours)
+}

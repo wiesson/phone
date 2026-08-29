@@ -190,11 +190,14 @@ import Testing
 @Test func summaryPromptPrioritizesCallerIntentAndFallbackIsMarked() {
     let prompt = callSummaryPrompt(transcript: "Caller: Ich brauche am Dienstag einen Termin.")
 
+    // The prompt must ask for exactly the labels the parser understands, or
+    // summaries silently fall back to unstructured text.
+    for field in [CallSummaryField.caller, .request, .callbackNumber, .nextSteps] {
+        #expect(prompt.contains("\(field.label):"))
+    }
     #expect(prompt.contains("Wer hat angerufen"))
-    #expect(prompt.contains("WAS DER ANRUFER WOLLTE"))
-    #expect(prompt.contains("Name, Rückrufnummer und Termine"))
-    #expect(prompt.contains("Vereinbarte nächste Schritte"))
-    #expect(prompt.contains("Keine Dialognacherzählung"))
+    #expect(prompt.contains("Dialognacherzählung"))
+    #expect(prompt.contains("Kein Markdown"))
     #expect(callSummaryInstructions.contains("immer auf Deutsch"))
 
     let fallback = fallbackCallSummary([
@@ -212,9 +215,12 @@ import Testing
 @Test func assistantCallSummaryPromptLeadsWithOutcome() {
     let prompt = assistantCallSummaryPrompt(task: "Bestelle eine Pizza Thunfisch", transcript: "Assistant: Hallo.")
     #expect(prompt.contains("Bestelle eine Pizza Thunfisch"))
-    #expect(prompt.contains("ERGEBNIS"))
-    #expect(prompt.contains("Nächste Schritte"))
-    #expect(prompt.contains("Keine Dialognacherzählung"))
+    for field in [CallSummaryField.outcome, .details, .nextSteps] {
+        #expect(prompt.contains("\(field.label):"))
+    }
+    #expect(prompt.contains("Erledigt"))
+    #expect(prompt.contains("Dialognacherzählung"))
+    #expect(prompt.contains("Kein Markdown"))
 }
 
 @Test func resamplesGeminiAudioFrom24kTo8k() {
@@ -301,4 +307,70 @@ private func pcmSamples(_ data: Data) -> [Int16] {
 
     #expect(live == .state(.live))
     #expect(failed == .state(.failed("offline")))
+}
+
+@Test func parsesALabelledSummaryIntoFields() {
+    let sections = parseCallSummary("""
+    Anrufer: Frau Meier für die Praxis.
+    Anliegen: Möchte den Termin am Dienstag verschieben.
+    Rückrufnummer: 0211 1234567
+    Nächste Schritte: Praxis ruft am Montag zurück.
+    """)
+
+    #expect(sections.map(\.field) == [.caller, .request, .callbackNumber, .nextSteps])
+    #expect(sections[1].value == "Möchte den Termin am Dienstag verschieben.")
+    #expect(sections[2].label == "Rückrufnummer")
+}
+
+@Test func parsingSurvivesTheMarkdownAModelAddsAnyway() {
+    let sections = parseCallSummary("""
+    1. **Anrufer:** Nicht genannt
+    2. **Anliegen:** Erkundigen sich nach Reiseangeboten in Afrika
+    """)
+
+    #expect(sections.map(\.field) == [.caller, .request])
+    #expect(sections[0].value == "Nicht genannt")
+    #expect(sections[1].value == "Erkundigen sich nach Reiseangeboten in Afrika")
+}
+
+@Test func continuationLinesBelongToTheFieldAboveThem() {
+    let sections = parseCallSummary("""
+    Anliegen: Möchte ein Angebot
+    für eine Reise nach Oman.
+    Nächste Schritte: keine vereinbart
+    """)
+
+    #expect(sections.count == 2)
+    #expect(sections[0].value == "Möchte ein Angebot für eine Reise nach Oman.")
+}
+
+@Test func unlabelledSummariesStayVerbatimSoOldCallsStillRead() {
+    #expect(parseCallSummary("Der Anrufer wollte einen Termin und ruft morgen wieder an.").isEmpty)
+    // A single recognised label is not enough to call the text structured.
+    #expect(parseCallSummary("Anliegen: Termin").isEmpty)
+}
+
+@Test func onlyPairedEmphasisIsStripped() {
+    #expect(strippingMarkdownEmphasis("**Anliegen:** Termin") == "Anliegen: Termin")
+    #expect(strippingMarkdownEmphasis("2 * 3 Zimmer") == "2 * 3 Zimmer")
+    #expect(strippingMarkdownEmphasis("snake_case bleibt") == "snake_case bleibt")
+    #expect(strippingMarkdownEmphasis("Vorgang AB__CD") == "Vorgang AB__CD")
+}
+
+@Test func textBeforeTheFirstFieldIsNeverSilentlyDropped() {
+    // Would otherwise vanish from both the card and the webhook payload.
+    #expect(parseCallSummary("""
+    Hinweis: dringend
+    Anrufer: Frau Meier
+    Anliegen: Rückruf erbeten
+    """).isEmpty)
+}
+
+@Test func underscoresAndSingleAsterisksSurviveInValues() {
+    let sections = parseCallSummary("""
+    Anrufer: Herr Klein
+    Anliegen: Fragt nach Vorgang AB__CD, Menge 2 * 3 Paletten
+    """)
+
+    #expect(sections.last?.value == "Fragt nach Vorgang AB__CD, Menge 2 * 3 Paletten")
 }

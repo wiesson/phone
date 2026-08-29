@@ -43,7 +43,7 @@ public enum PhoneEventKind: Equatable, Sendable {
     case callHungup(peer: String?, duration: TimeInterval, missed: Bool)
     case callDTMF(digit: String)
     case transcriptFinal(speaker: String, text: String)
-    case callSummary(text: String)
+    case callSummary(text: String, fields: [String: String])
 
     public var type: String {
         switch self {
@@ -73,7 +73,11 @@ public enum PhoneEventKind: Equatable, Sendable {
             ["peer": peer.map(JSONValue.string) ?? .null, "duration": .double(duration), "missed": .bool(missed)]
         case .callDTMF(let digit): ["digit": .string(digit)]
         case .transcriptFinal(let speaker, let text): ["speaker": .string(speaker), "text": .string(text)]
-        case .callSummary(let text): ["text": .string(text)]
+        case .callSummary(let text, let fields):
+            [
+                "text": .string(text),
+                "fields": .object(fields.mapValues(JSONValue.string))
+            ]
         }
     }
 }
