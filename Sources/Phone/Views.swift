@@ -40,7 +40,7 @@ struct PhonePanel: View {
                     .symbolEffect(.pulse, isActive: phone.state.isRinging)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(phone.state.label)
+                Text(phone.callStateLabel)
                     .font(.system(size: 14, weight: .semibold))
                     .lineLimit(1)
                 PhoneAccountPicker(phone: phone)
@@ -369,6 +369,7 @@ struct ConversationView: View {
 struct PhoneSettingsView: View {
     @ObservedObject var phone: PhoneController
     @AppStorage("transcriptionEnabled") private var transcriptionEnabled = true
+    @AppStorage(useSystemContactsDefaultsKey) private var useSystemContacts = true
     @AppStorage("retainTranscript") private var retainTranscript = true
     @AppStorage("archiveConversations") private var archiveConversations = true
     @AppStorage("transcriptionLocale") private var transcriptionLocale = ""
@@ -442,6 +443,9 @@ struct PhoneSettingsView: View {
         .sheet(item: $accountToEdit) { account in
             SetupWizard(phone: phone, editing: account)
         }
+        .onChange(of: useSystemContacts) { _, _ in
+            phone.systemContactsSettingDidChange()
+        }
     }
 
     private var intelligenceSettings: some View {
@@ -451,6 +455,11 @@ struct PhoneSettingsView: View {
                 .disabled(!transcriptionEnabled)
             Toggle("Archive conversations on this Mac", isOn: $archiveConversations)
             Text("When enabled, final transcripts and summaries are stored locally on this Mac. Call metadata is always kept in the library.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Use macOS Contacts for caller names", isOn: $useSystemContacts)
+            Text("Contacts access is requested only when you first look up a caller or search for a contact.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

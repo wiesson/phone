@@ -242,6 +242,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private var pendingArchiveRecord: CallRecord?
     private var pendingDialRetry: String?
     private var contacts: [String: String] = [:]
+    private let contactsDirectory = ContactsDirectory()
+    private var contactsDirectoryCancellables: Set<AnyCancellable> = []
     private var instancesWithSIPTrace: Set<String> = []
     private var isStoppingInstances = false
     private var isShuttingDown = false
@@ -335,6 +337,18 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         store = (try? PhoneStore()) ?? (try! PhoneStore(path: ":memory:"))
         super.init()
         rotateDiagnosticLogIfNeeded()
+        contactsDirectory.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &contactsDirectoryCancellables)
+        contactsDirectory.$entries
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.state.isRinging else { return }
+                    self.showIncomingCallNotification(caller: self.state.peer)
+                }
+            }
+            .store(in: &contactsDirectoryCancellables)
         eventBus.subscribe { [weak self] event in
             self?.webhookTransport.deliver(event)
         }
@@ -383,7 +397,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 let count = try await CallHistoryMigration.migrate(
                     defaults: .standard,
                     store: self.store,
-                    displayName: self.displayName(for:)
+                    displayName: self.existingDisplayName(for:)
                 )
                 if count > 0 { NotificationCenter.default.post(name: .phoneArchiveChanged, object: nil) }
             } catch { }
@@ -685,8 +699,18 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             globalInstructions: globalInstructions,
             date: Date()
         )
+        let callerContext: String?
+        if sendsInitialGreeting, currentDirection == .incoming, let peer = state.peer,
+           let name = displayName(for: peer), name != peer {
+            callerContext = "Der Anrufer heißt \(name)."
+        } else {
+            callerContext = nil
+        }
+        let contextualInstructions = [profileInstructions, callerContext]
+            .compactMap { $0 }
+            .joined(separator: "\n\n")
         let instructions = composeAssistantSystemInstruction(
-            instructions: profileInstructions,
+            instructions: contextualInstructions,
             contextData: nil,
             includesGreetingTrigger: sendsInitialGreeting
         )
@@ -1394,16 +1418,63 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     /// Returns a display name for a dial target or caller id, if known.
     func displayName(for peer: String?) -> String? {
-        guard let peer else { return nil }
-        var value = peer
+        guard let user = displayLookupUser(for: peer) else { return nil }
+        let existing = existingDisplayName(forUser: user)
+        guard !normalizedPhoneNumber(user).isEmpty else { return existing }
+        let system = existing == nil ? contactsDirectory.displayName(for: user) : nil
+        return preferredContactDisplayName(existing: existing, system: system)
+    }
+
+    var callStateLabel: String {
+        switch state {
+        case .stopped: "Phone is off"
+        case .starting: "Registering SIP …"
+        case .ready: "Ready"
+        case .ringing(let peer):
+            peer.map { "Call from \(displayName(for: $0) ?? $0)" } ?? "Incoming call"
+        case .dialing(let peer):
+            "Calling \(displayName(for: peer) ?? peer)"
+        case .answering: "Connecting …"
+        case .connected(let peer):
+            peer.map { "Connected to \(displayName(for: $0) ?? $0)" } ?? "Connected"
+        case .error(let message): message
+        }
+    }
+
+    func contactSuggestions(matching query: String, limit: Int = 8) -> [ContactsDirectoryEntry] {
+        contactsDirectory.search(matching: query, limit: limit)
+    }
+
+    func systemContactsSettingDidChange() {
+        contactsDirectory.settingsDidChange()
+    }
+
+    private func existingDisplayName(for peer: String?) -> String? {
+        guard let user = displayLookupUser(for: peer) else { return nil }
+        return existingDisplayName(forUser: user)
+    }
+
+    private func existingDisplayName(forUser user: String) -> String? {
+        if let contact = contacts[user] { return contact }
+        let account = managedAccounts.first { account in
+            if normalizedSIPAOR(account.sipAddress) == normalizedSIPAOR(user) { return true }
+            return [account.username, account.outboundCallerID]
+                .compactMap { $0 }
+                .contains { phoneNumbersMatch($0, user) }
+        }
+        return account?.displayName
+    }
+
+    private func displayLookupUser(for peer: String?) -> String? {
+        guard var value = peer?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
         if value.lowercased().hasPrefix("sip:") { value.removeFirst(4) }
-        let user = value.split(separator: "@").first.map(String.init) ?? value
-        return contacts[user]
+        return value.split(separator: "@").first.map(String.init) ?? value
     }
 
     private func callerName(from line: String) -> String? {
-        guard let id = parseCallerName(from: line) else { return nil }
-        return contacts[id] ?? id
+        parseCallerName(from: line)
     }
 
     func clearHistory() {
@@ -1894,8 +1965,9 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private func showIncomingCallNotification(caller: String?) {
         let content = UNMutableNotificationContent()
+        let displayedCaller = caller.map { displayName(for: $0) ?? $0 }
         content.title = "Incoming call"
-        content.body = caller.map { "Call from \($0)" } ?? "The phone is ringing."
+        content.body = displayedCaller.map { "Call from \($0)" } ?? "The phone is ringing."
         content.sound = .default
         content.categoryIdentifier = "incoming-call"
         clearIncomingCallNotification()
@@ -1904,8 +1976,9 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private func showMissedCallNotification(caller: String?) {
         let content = UNMutableNotificationContent()
+        let displayedCaller = caller.map { displayName(for: $0) ?? $0 }
         content.title = "Missed call"
-        content.body = caller.map { "Call from \($0)" } ?? "A call was not answered."
+        content.body = displayedCaller.map { "Call from \($0)" } ?? "A call was not answered."
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "missed-\(UUID())", content: content, trigger: nil))
     }
 

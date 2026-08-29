@@ -230,6 +230,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSContactsUsageDescription</key><string>Phone shows contact names for incoming and outgoing calls.</string>
   <key>NSMicrophoneUsageDescription</key><string>Phone needs the microphone for SIP calls.</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>Phone transcribes calls locally on this Mac.</string>
   <key>CFBundleURLTypes</key>

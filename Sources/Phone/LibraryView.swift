@@ -355,7 +355,7 @@ private struct DesktopPhoneView: View {
                 Text(headerTitle)
                     .font(.title2.weight(.semibold))
                     .lineLimit(1)
-                Text(phone.state.label)
+                Text(phone.callStateLabel)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -454,16 +454,19 @@ private struct DesktopPhoneView: View {
     }
 
     private var dialer: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let suggestions = phone.contactSuggestions(matching: phone.number, limit: 8)
+        return VStack(alignment: .leading, spacing: 12) {
             Text("New call")
                 .font(.headline)
             HStack(spacing: 10) {
-                TextField("Phone number or SIP address", text: $phone.number)
+                TextField("Phone number, contact, or SIP address", text: $phone.number)
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.large)
                     .focused($numberFieldFocused)
                     .font(.system(size: 17, design: .rounded))
-                    .onSubmit { phone.dial() }
+                    .onSubmit {
+                        if !dialInputRequestsContactSearch(phone.number) { phone.dial() }
+                    }
 
                 Button(action: phone.dial) {
                     Label("Call", systemImage: "phone.fill")
@@ -472,8 +475,44 @@ private struct DesktopPhoneView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.green)
                 .controlSize(.large)
-                .disabled(phone.number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(
+                    phone.number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    dialInputRequestsContactSearch(phone.number)
+                )
+            }
 
+            if !suggestions.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(suggestions) { entry in
+                        Button {
+                            phone.number = entry.number
+                            numberFieldFocused = true
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "person.crop.circle")
+                                    .foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.displayName)
+                                        .font(.body.weight(.medium))
+                                    Text("\(entry.label) · \(entry.number)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.plain)
+                        if entry.id != suggestions.last?.id { Divider() }
+                    }
+                }
+                .background(.background, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(.primary.opacity(0.1))
+                }
             }
         }
         .padding(18)
@@ -518,7 +557,7 @@ private struct DesktopPhoneView: View {
         if let peer = phone.state.peer {
             return phone.displayName(for: peer) ?? peer
         }
-        return phone.state.isReady ? "Ready to call" : phone.state.label
+        return phone.state.isReady ? "Ready to call" : phone.callStateLabel
     }
 
     private func callActionButton(
