@@ -285,21 +285,16 @@ transcription remains independent and can continue alongside the bridge.
 
 ## External brain (experimental)
 
-Phone can route the live call-audio bridge through the companion service in
-`brain/` instead of connecting to Gemini directly. Set its WebSocket URL under
-Settings > Assistant, then start the service with:
+Phone can route the live call-audio bridge through a service of your own
+instead of connecting to Gemini directly. Set its `ws://` or `wss://` URL under
+Settings > Assistant; a valid URL also removes the need for an API key in
+Phone, because the brain owns the model session and its credentials.
 
-```sh
-cd brain
-npm install
-GEMINI_API_KEY=... npm start
-```
-
-`GEMINI_API_KEY` enables Gemini Live, `BRAIN_PORT` changes the loopback port
-from its default of `8791`, and optional `CONVEX_URL` enables the Tourvy tool
-backend instead of deterministic fixtures. When this mode is enabled, call
-audio flows through the brain process; review the privacy and deployment
-implications before using it with real calls.
+The contract is documented in [docs/ASSISTANT_BRAIN_PROTOCOL.md](docs/ASSISTANT_BRAIN_PROTOCOL.md):
+one WebSocket per call, a JSON setup message, PCM16 mono at 16 kHz towards the
+brain and 24 kHz back. When this mode is enabled, call audio flows through that
+process; review the privacy and deployment implications before using it with
+real calls.
 
 ## Assistant answering mode (experimental)
 

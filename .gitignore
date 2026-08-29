@@ -2,7 +2,6 @@
 .swiftpm/
 dist/
 .DS_Store
-brain/node_modules/
 runtime/*.log
 runtime/*.pid
 runtime/modules/
@@ -16,12 +15,4 @@ BACKLOG.local.md
 *.local.sh
 landing/
 *.local.plist
-cloud/runtime/
-cloud/gateway/dist/
-cloud/gateway/build/
-cloud/brain/node_modules/
-cloud/brain/dist/
-cloud/data/
 
-cloud/.env.development
-cloud/.env*.local
