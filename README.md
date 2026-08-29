@@ -11,20 +11,49 @@ optional conversation processing stay local on your Mac.
 
 ## Features
 
-- native SwiftUI menu bar app
-- incoming and outgoing SIP calls
-- answer, reject, and hang up
-- macOS notifications for incoming calls
-- call duration right in the menu bar
-- redial of the last dialed destination
-- persistent call history with one-click redial
-- mute and a DTMF keypad during calls
-- contact names from the baresip contacts file
+Telephony:
+
+- native SwiftUI menu bar app plus a full desktop phone window
+- multiple SIP accounts registered simultaneously — one engine per number
+- setup wizard with provider presets (Deutsche Telekom, sipgate, FRITZ!Box,
+  easybell), Keychain credential storage, and a live registration test
+- HD voice (G.722), TLS and SDES-SRTP
+- mute, DTMF keypad, call history with redial, macOS notifications
+- macOS Contacts names for incoming and outgoing calls, dial by name
 - handles tel:, callto:, and sip: links from other apps
-- Dock icon while the conversation window is open, menu-bar-only otherwise
-- TLS and SDES-SRTP with the bundled Deutsche Telekom configuration
-- local live transcription and summarization on supported Macs
-- no cloud processing and no persistent audio recording
+
+AI assistant per number:
+
+- each line answers with its own assistant profile (personal assistant, hotel
+  reception with availability data, travel intake with caller verification, or
+  a custom prompt)
+- business-hours logic: answer never, always, or only outside business hours
+  (separate weekday/weekend schedules)
+- outbound assistant calls: type a task, review the generated call brief, and
+  the assistant dials, waits for the callee to answer, navigates IVR menus and
+  hold queues itself (sending DTMF), and hands the call over to you when a
+  human picks up
+- the Mac microphone is muted automatically while the assistant speaks
+
+Transcription and archive:
+
+- live transcription of both call directions — on-device (Apple
+  SpeechAnalyzer) or cloud (Gemini), selectable
+- call summaries that answer "what did the caller want", with task outcomes
+  for assistant calls
+- searchable local SQLite call archive with transcripts and summaries
+
+Automation:
+
+- built-in MCP server: dial, answer, hang up, DTMF, state, history, last
+  summary, and assistant_call for agent-driven outbound calls
+- HMAC-signed webhooks for call events, optionally with transcript and summary
+
+Testing:
+
+- unit suite, loopback integration harness with audio assertions, an
+  11-scenario configuration matrix, and a live end-to-end test where the app
+  calls itself between two of its own numbers over the real carrier network
 
 ## Requirements
 
