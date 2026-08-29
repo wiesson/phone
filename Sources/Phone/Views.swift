@@ -217,7 +217,7 @@ struct PhonePanel: View {
                 Text(phone.summary == nil ? "Live transcript" : "Conversation")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
-                Button("Open") { openWindow(id: "conversation") }
+                Button("Open") { NotificationCenter.default.post(name: .phoneOpenLibrary, object: nil) }
                     .buttonStyle(.link)
                     .font(.system(size: 11))
             }
@@ -319,61 +319,6 @@ struct PhonePanel: View {
     }
 }
 
-struct ConversationView: View {
-    @ObservedObject var phone: PhoneController
-
-    var body: some View {
-        VStack(spacing: 0) {
-            conversationHeader
-            Divider()
-            ConversationTimeline(phone: phone)
-            Divider()
-            HStack {
-                Label(phone.intelligenceStatus, systemImage: "lock.shield")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Clear", action: phone.clearConversation)
-                    .disabled(phone.transcript.isEmpty && phone.summary == nil)
-                Button("Copy", action: phone.copyConversation)
-                    .disabled(phone.transcript.isEmpty && phone.summary == nil)
-                    .keyboardShortcut("c", modifiers: [.command, .shift])
-            }
-            .padding(14)
-        }
-        .frame(minWidth: 560, idealWidth: 680, minHeight: 460, idealHeight: 620)
-        .background(Color(nsColor: .windowBackgroundColor))
-    }
-
-    private var conversationHeader: some View {
-        HStack(spacing: 12) {
-            Image(systemName: phone.state.isInCall ? "waveform.circle.fill" : "text.bubble.fill")
-                .font(.system(size: 28))
-                .foregroundStyle(phone.state.isInCall ? .green : .blue)
-                .symbolEffect(.variableColor.iterative, isActive: phone.state.isInCall)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(phone.state.isInCall ? "Live call" : "Last call")
-                    .font(.title3.weight(.semibold))
-                Text(phone.displayName(for: phone.state.peer) ?? phone.state.peer ?? "Local transcript")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if phone.state.isInCall {
-                CallDuration(startedAt: phone.callStartedAt)
-                Button(action: phone.hangup) {
-                    Image(systemName: "phone.down.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.circle)
-                .tint(.red)
-                .controlSize(.large)
-            }
-        }
-        .padding(18)
-    }
-}
-
 struct PhoneSettingsView: View {
     @ObservedObject var phone: PhoneController
     @AppStorage("transcriptionEnabled") private var transcriptionEnabled = true
@@ -416,19 +361,19 @@ struct PhoneSettingsView: View {
 
     var body: some View {
         TabView {
-            intelligenceSettings
-                .tabItem { Label("Transcript", systemImage: "text.bubble") }
+            generalSettings
+                .tabItem { Label("General", systemImage: "gearshape") }
 
-            assistantSettings
-                .tabItem { Label("Assistant", systemImage: "sparkles") }
+            phoneSettings
+                .tabItem { Label("Lines", systemImage: "simcard") }
+
+            intelligenceSettings
+                .tabItem { Label("Intelligence", systemImage: "sparkles") }
 
             automationSettings
                 .tabItem { Label("Automation", systemImage: "bolt.horizontal") }
-
-            phoneSettings
-                .tabItem { Label("Phone", systemImage: "phone") }
         }
-        .frame(width: 520, height: 580)
+        .frame(width: 560, height: 620)
         .alert(
             accountToRemove.map { "Remove \($0.displayName)?" } ?? "Remove account?",
             isPresented: isConfirmingRemoval
@@ -475,18 +420,27 @@ struct PhoneSettingsView: View {
         }
     }
 
-    private var intelligenceSettings: some View {
+    private var generalSettings: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Toggle("Transcribe calls live", isOn: $transcriptionEnabled)
-            Toggle("Keep the last transcript after hanging up", isOn: $retainTranscript)
-                .disabled(!transcriptionEnabled)
-            Toggle("Archive conversations on this Mac", isOn: $archiveConversations)
-            Text("When enabled, final transcripts and summaries are stored locally on this Mac. Call metadata is always kept in the library.")
+            Toggle("Show the app in the Dock and app switcher", isOn: $showDockIcon)
+            if showDockIcon != (NSApp.activationPolicy() == .regular) {
+                Text("Takes effect after restarting Phone.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            Divider()
+
+            Toggle("Use macOS Contacts for caller names", isOn: $useSystemContacts)
+            Text("Contacts access is requested only when you first look up a caller or search for a contact.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Toggle("Use macOS Contacts for caller names", isOn: $useSystemContacts)
-            Text("Contacts access is requested only when you first look up a caller or search for a contact.")
+
+            Divider()
+
+            Toggle("Archive conversations on this Mac", isOn: $archiveConversations)
+            Text("When enabled, final transcripts and summaries are stored locally on this Mac. Call metadata is always kept in the library.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -494,7 +448,17 @@ struct PhoneSettingsView: View {
                 isConfirmingArchiveDeletion = true
             }
 
-            Divider()
+            Spacer()
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var transcriptionSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Toggle("Transcribe calls live", isOn: $transcriptionEnabled)
+            Toggle("Keep the last transcript after hanging up", isOn: $retainTranscript)
+                .disabled(!transcriptionEnabled)
 
             Picker("Transcription engine", selection: $transcriptionEngine) {
                 Text("Apple (on-device)").tag(TranscriptionEngine.apple.rawValue)
@@ -535,7 +499,18 @@ struct PhoneSettingsView: View {
                 }
             }
         }
-        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var intelligenceSettings: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                transcriptionSection
+                Divider()
+                assistantBridgeSection
+            }
+            .padding(24)
+        }
     }
 
     private var knownGeminiModels: [String] { [defaultGeminiLiveModel, "gemini-3.5-live-translate-preview"] }
@@ -565,9 +540,8 @@ struct PhoneSettingsView: View {
         return false
     }
 
-    private var assistantSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+    private var assistantBridgeSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
                         Text("Live call bridge")
@@ -676,8 +650,6 @@ struct PhoneSettingsView: View {
                     Image(systemName: "hand.raised.fill")
                         .foregroundStyle(.purple)
                 }
-            }
-            .padding(24)
         }
         .onAppear { phone.refreshAssistantConfiguration() }
         .onChange(of: assistantBrainURL) { _, _ in phone.refreshAssistantConfiguration() }
@@ -686,15 +658,6 @@ struct PhoneSettingsView: View {
     private var phoneSettings: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Toggle("Show the app in the Dock and app switcher", isOn: $showDockIcon)
-                if showDockIcon != (NSApp.activationPolicy() == .regular) {
-                    Text("Takes effect after restarting Phone.")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-
-                Divider()
-
                 Text("SIP accounts")
                     .font(.headline)
 

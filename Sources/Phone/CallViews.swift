@@ -304,6 +304,7 @@ struct SummaryCard: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .background(.blue.opacity(0.075), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {

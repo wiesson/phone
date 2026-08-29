@@ -31,3 +31,14 @@ import Testing
     #expect(!dialInputRequestsContactSearch("alice@example.com"))
     #expect(!dialInputRequestsContactSearch("   "))
 }
+
+@Test func aPeerIsShownAsOneIdentifier() {
+    // baresip reports the display part next to the URI, so the same number
+    // arrives twice.
+    #expect(presentablePeer("015228461402 sip:015228461402") == "015228461402")
+    #expect(presentablePeer("\"Arne\" <sip:4030108e0@sipgate.de>") == "4030108e0@sipgate.de")
+    #expect(presentablePeer("+494482980303") == "+494482980303")
+    // The URI wins over a display part; names come from the contact lookup.
+    #expect(presentablePeer("+4915112345 sip:reception@hotel.example") == "reception@hotel.example")
+    #expect(presentablePeer("") == "")
+}

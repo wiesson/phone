@@ -58,12 +58,6 @@ struct PhoneApp: App {
         .defaultSize(width: 1_100, height: 700)
         .windowResizability(.contentMinSize)
 
-        Window("Conversation", id: "conversation") {
-            ConversationView(phone: phone)
-        }
-        .defaultSize(width: 680, height: 620)
-        .windowResizability(.contentMinSize)
-
         Window("Set Up Phone", id: "setup") {
             SetupWizard(phone: phone)
         }
@@ -97,22 +91,9 @@ private struct MenuBarPhoneLabel: View {
                 openLibrary()
             }
             .onChange(of: model.state.isConnected) { wasConnected, isConnected in
-                if !wasConnected && isConnected {
-                    if let libraryWindow = NSApp.windows.first(where: {
-                        $0.isVisible && $0.identifier?.rawValue.contains("library") == true
-                    }) {
-                        NSApp.activate(ignoringOtherApps: true)
-                        libraryWindow.orderFrontRegardless()
-                    } else {
-                        openWindow(id: "conversation")
-                        NSApp.activate(ignoringOtherApps: true)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                            NSApp.activate(ignoringOtherApps: true)
-                            NSApp.windows.first { $0.identifier?.rawValue.contains("conversation") == true }?
-                                .orderFrontRegardless()
-                        }
-                    }
-                }
+                // One window for everything: a connected call brings the call
+                // list forward, where the live call owns the detail pane.
+                if !wasConnected && isConnected { openLibrary() }
             }
     }
 
