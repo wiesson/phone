@@ -49,6 +49,20 @@ static size_t inject_count;
 static bool inject_active;
 static uint64_t inject_underruns;
 
+static void widen_datagram_socket(int descriptor, int option)
+{
+    /*
+     * macOS caps AF_UNIX datagrams at net.local.dgram.maxdgram, which
+     * defaults to 2048 bytes. A 20 ms Opus frame at 48 kHz stereo is 3856
+     * bytes including the header, so every packet would fail with EMSGSIZE
+     * and be dropped silently. Enlarging the socket buffer lifts that cap
+     * above the 60 KiB PTAP maximum.
+     */
+    int size = 4 * (int)(PHONE_TAP_MAX_PAYLOAD + sizeof(struct phone_header));
+
+    (void)setsockopt(descriptor, SOL_SOCKET, option, &size, sizeof(size));
+}
+
 static uint32_t little_endian_u32(uint32_t value)
 {
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
@@ -300,6 +314,7 @@ static int module_init(void)
         return errno;
 
     (void)fcntl(tap_socket, F_SETFL, O_NONBLOCK);
+    widen_datagram_socket(tap_socket, SO_SNDBUF);
     memset(&tap_address, 0, sizeof(tap_address));
     tap_address.sun_family = AF_UNIX;
     tap_path = getenv("PHONE_TAP_SOCKET");
@@ -323,6 +338,7 @@ static int module_init(void)
         return error;
     }
     (void)fcntl(inject_socket, F_SETFL, O_NONBLOCK);
+    widen_datagram_socket(inject_socket, SO_RCVBUF);
     memset(&inject_address, 0, sizeof(inject_address));
     inject_address.sun_family = AF_UNIX;
     configured_inject_path = getenv("PHONE_INJECT_SOCKET");

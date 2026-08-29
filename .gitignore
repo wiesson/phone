@@ -22,3 +22,6 @@ cloud/gateway/build/
 cloud/brain/node_modules/
 cloud/brain/dist/
 cloud/data/
+
+cloud/.env.development
+cloud/.env*.local
