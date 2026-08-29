@@ -21,6 +21,10 @@ Status: 29. August 2026.
 4. **Per line, not per app** — every SIP line has its own assistant profile,
    answering rule, business hours, answer delay, and caller ID, and can be
    taken online or offline on its own without re-registering the others.
+5. **Repository split** — the cloud stack lives in the private
+   `nordwerk/zentrale`; this repository stays public and holds the Mac app.
+   `Modules/phone_tap/phone_tap.c` is the source of truth here and is vendored
+   there; both sides assert the same 16-byte PTAP header.
 
 ## Track A — the service (this is the business)
 
@@ -87,7 +91,3 @@ the same engine. It is a vehicle, not the revenue.
 - **Local models** — whisper.cpp / Parakeet class for transcription and Gemma
   for summaries, via the new Core AI framework. Keeps the privacy story honest
   for verticals that need it and removes per-minute cost.
-- **Repository split** — the Mac app and the cloud stack want separate
-  repositories; the cloud stack does not belong in a public one. The only
-  shared artefact is `Modules/phone_tap/phone_tap.c`, and its 16-byte contract
-  is asserted by tests on both sides.
