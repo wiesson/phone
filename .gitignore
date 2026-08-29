@@ -12,3 +12,4 @@ runtime/baresip/current_contact
 runtime/baresip/uuid
 runtime/baresip/*.log
 BACKLOG.local.md
+*.local.md
