@@ -13,14 +13,32 @@ struct PhoneAccountPicker: View {
         if phone.managedAccounts.count > 1 && !phone.state.isInCall && !phone.state.isRinging {
             Menu {
                 ForEach(phone.managedAccounts) { account in
-                    Button {
-                        try? phone.selectManagedAccount(account)
+                    Menu {
+                        Section("Assistant profile") {
+                            ForEach(AssistantProfile.allCases) { profile in
+                                Button {
+                                    var updated = account
+                                    updated.assistantProfile = profile
+                                    updated.assistantInstructionsOverride = nil
+                                    updated.assistantContextData = nil
+                                    try? phone.updateManagedAccountMetadata(updated)
+                                } label: {
+                                    if account.assistantProfile == profile {
+                                        Label(profile.displayName, systemImage: "checkmark")
+                                    } else {
+                                        Text(profile.displayName)
+                                    }
+                                }
+                            }
+                        }
                     } label: {
                         if phone.activeManagedSIPAddress == account.sipAddress {
                             Label(accountLabel(account), systemImage: "checkmark")
                         } else {
                             Text(accountLabel(account))
                         }
+                    } primaryAction: {
+                        try? phone.selectManagedAccount(account)
                     }
                 }
             } label: {
