@@ -522,6 +522,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
         updated.label = account.label
         updated.assistantProfile = account.assistantProfile
+        updated.assistantProfileName = account.assistantProfileName
         updated.assistantInstructionsOverride = account.assistantInstructionsOverride
         updated.assistantContextData = account.assistantContextData
         var accountsState = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)

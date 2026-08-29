@@ -155,6 +155,7 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
     var sipDisplayName: String? = nil
     var outboundCallerID: String? = nil
     var assistantProfile: AssistantProfile = .personalAssistant
+    var assistantProfileName: String? = nil
     var assistantInstructionsOverride: String? = nil
     var assistantContextData: String? = nil
 
@@ -169,6 +170,7 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         sipDisplayName: String? = nil,
         outboundCallerID: String? = nil,
         assistantProfile: AssistantProfile = .personalAssistant,
+        assistantProfileName: String? = nil,
         assistantInstructionsOverride: String? = nil,
         assistantContextData: String? = nil
     ) {
@@ -182,6 +184,7 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         self.sipDisplayName = sipDisplayName
         self.outboundCallerID = Self.normalizedOutboundCallerID(outboundCallerID)
         self.assistantProfile = assistantProfile
+        self.assistantProfileName = assistantProfileName
         self.assistantInstructionsOverride = assistantInstructionsOverride
         self.assistantContextData = assistantContextData
     }
@@ -191,6 +194,10 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
     var displayName: String {
         let value = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return value.isEmpty ? username : value
+    }
+    var assistantProfileDisplay: String {
+        let custom = assistantProfileName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return custom.isEmpty ? assistantProfile.displayName : custom
     }
     var registrationDisplay: String {
         let address = provider == .custom ? sipAddress : username
@@ -262,6 +269,7 @@ enum ManagedSIPAccountField: CaseIterable, Hashable, Sendable {
     case sipDisplayName
     case outboundCallerID
     case assistantProfile
+    case assistantProfileName
     case assistantInstructionsOverride
     case assistantContextData
 
@@ -269,7 +277,7 @@ enum ManagedSIPAccountField: CaseIterable, Hashable, Sendable {
         switch self {
         case .username, .domain, .password, .outboundProxy, .stunServer, .mediaEncryption, .sipDisplayName, .outboundCallerID:
             true
-        case .provider, .label, .assistantProfile, .assistantInstructionsOverride, .assistantContextData:
+        case .provider, .label, .assistantProfile, .assistantProfileName, .assistantInstructionsOverride, .assistantContextData:
             false
         }
     }
@@ -328,6 +336,7 @@ extension ManagedSIPAccount {
         case sipDisplayName
         case outboundCallerID
         case assistantProfile
+        case assistantProfileName
         case assistantInstructionsOverride
         case assistantContextData
     }
@@ -346,6 +355,7 @@ extension ManagedSIPAccount {
             try container.decodeIfPresent(String.self, forKey: .outboundCallerID)
         )
         assistantProfile = try container.decodeIfPresent(AssistantProfile.self, forKey: .assistantProfile) ?? .personalAssistant
+        assistantProfileName = try container.decodeIfPresent(String.self, forKey: .assistantProfileName)
         assistantInstructionsOverride = try container.decodeIfPresent(String.self, forKey: .assistantInstructionsOverride)
         assistantContextData = try container.decodeIfPresent(String.self, forKey: .assistantContextData)
     }

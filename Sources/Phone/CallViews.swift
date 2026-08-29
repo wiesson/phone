@@ -19,6 +19,7 @@ struct PhoneAccountPicker: View {
                                 Button {
                                     var updated = account
                                     updated.assistantProfile = profile
+                                    updated.assistantProfileName = nil
                                     updated.assistantInstructionsOverride = nil
                                     updated.assistantContextData = nil
                                     try? phone.updateManagedAccountMetadata(updated)
@@ -84,11 +85,11 @@ struct PhoneAccountPicker: View {
         guard let active = phone.managedAccounts.first(where: {
             $0.sipAddress == phone.activeManagedSIPAddress
         }) else { return display }
-        return "\(display) · \(active.assistantProfile.displayName)"
+        return "\(display) · \(active.assistantProfileDisplay)"
     }
 
     private func accountLabel(_ account: ManagedSIPAccount) -> String {
-        "\(account.displayName) — \(account.assistantProfile.displayName)"
+        "\(account.displayName) — \(account.assistantProfileDisplay)"
     }
 }
 

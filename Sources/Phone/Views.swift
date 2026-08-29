@@ -891,7 +891,7 @@ struct PhoneSettingsView: View {
             }
             Spacer()
             registrationIndicator(for: account)
-            Text(account.assistantProfile.displayName)
+            Text(account.assistantProfileDisplay)
                 .font(.caption2.weight(.medium))
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)

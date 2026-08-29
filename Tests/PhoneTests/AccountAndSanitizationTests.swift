@@ -357,6 +357,7 @@ private let accountFieldClassificationCases = [
     AccountFieldClassificationCase(field: .sipDisplayName, isRegistrationRelevant: true),
     AccountFieldClassificationCase(field: .outboundCallerID, isRegistrationRelevant: true),
     AccountFieldClassificationCase(field: .assistantProfile, isRegistrationRelevant: false),
+    AccountFieldClassificationCase(field: .assistantProfileName, isRegistrationRelevant: false),
     AccountFieldClassificationCase(field: .assistantInstructionsOverride, isRegistrationRelevant: false),
     AccountFieldClassificationCase(field: .assistantContextData, isRegistrationRelevant: false)
 ]
