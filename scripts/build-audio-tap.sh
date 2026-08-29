@@ -11,6 +11,7 @@ fi
 BARESIP_PREFIX=${BARESIP_PREFIX:-$(brew --prefix baresip 2>/dev/null || true)}
 LIBRE_PREFIX=${LIBRE_PREFIX:-$(brew --prefix libre 2>/dev/null || true)}
 SPANDSP_PREFIX=${SPANDSP_PREFIX:-$(brew --prefix spandsp 2>/dev/null || true)}
+OPUS_PREFIX=${OPUS_PREFIX:-$(brew --prefix opus 2>/dev/null || true)}
 
 if [ -z "$BARESIP_PREFIX" ] || [ ! -d "$BARESIP_PREFIX/lib/baresip/modules" ]; then
   echo "baresip was not found. Install it with: brew install baresip" >&2
@@ -86,4 +87,76 @@ else
     -o "$MODULES/g722.so"
   codesign --force --sign - "$MODULES/g722.so"
   echo "Built: $MODULES/g722.so"
+fi
+
+OPUS_SOURCE_DIR="$ROOT/Modules/opus"
+OPUS_ARCHIVE="$ROOT/.build/source-cache/baresip-v4.11.0.tar.gz"
+OPUS_CHECKSUM=e170ad5857994dfed0c84c4c04eb904fa410f3ec2d5a6c789b50b3fda47ba98c
+OPUS_SOURCES="decode.c encode.c opus.c opus.h sdp.c"
+rm -f "$MODULES/opus.so"
+
+opus_sources_available=yes
+for source in $OPUS_SOURCES; do
+  if [ ! -f "$OPUS_SOURCE_DIR/$source" ]; then
+    opus_sources_available=no
+  fi
+done
+
+if [ "$opus_sources_available" = no ]; then
+  brew_archive=$(brew --cache --build-from-source baresip 2>/dev/null || true)
+  if [ -f "$brew_archive" ]; then
+    OPUS_ARCHIVE=$brew_archive
+  elif [ ! -f "$OPUS_ARCHIVE" ]; then
+    mkdir -p "$(dirname "$OPUS_ARCHIVE")"
+    if ! curl -fL --connect-timeout 10 --retry 1 \
+      https://github.com/baresip/baresip/archive/refs/tags/v4.11.0.tar.gz \
+      -o "$OPUS_ARCHIVE"; then
+      rm -f "$OPUS_ARCHIVE"
+    fi
+  fi
+  if [ -f "$OPUS_ARCHIVE" ]; then
+    actual_checksum=$(shasum -a 256 "$OPUS_ARCHIVE" | awk '{print $1}')
+    if [ "$actual_checksum" = "$OPUS_CHECKSUM" ]; then
+      mkdir -p "$OPUS_SOURCE_DIR"
+      tar -xzf "$OPUS_ARCHIVE" -C "$OPUS_SOURCE_DIR" \
+        --strip-components 3 \
+        baresip-4.11.0/modules/opus/decode.c \
+        baresip-4.11.0/modules/opus/encode.c \
+        baresip-4.11.0/modules/opus/opus.c \
+        baresip-4.11.0/modules/opus/opus.h \
+        baresip-4.11.0/modules/opus/sdp.c
+      echo "Vendored: $OPUS_SOURCE_DIR"
+    else
+      echo "Skipping opus.so: baresip v4.11.0 source checksum did not match" >&2
+    fi
+  fi
+fi
+
+opus_sources_available=yes
+for source in $OPUS_SOURCES; do
+  if [ ! -f "$OPUS_SOURCE_DIR/$source" ]; then
+    opus_sources_available=no
+  fi
+done
+
+if [ "$opus_sources_available" = no ]; then
+  echo "Skipping opus.so: baresip v4.11.0 module source is unavailable" >&2
+elif [ -z "$OPUS_PREFIX" ] || [ ! -f "$OPUS_PREFIX/include/opus/opus.h" ] || \
+     [ ! -f "$OPUS_PREFIX/lib/libopus.a" ]; then
+  echo "Skipping opus.so: Homebrew opus static library is unavailable" >&2
+else
+  xcrun clang \
+    -std=c11 -O2 -Wall -Wextra -Werror \
+    -bundle -undefined dynamic_lookup \
+    -I"$BARESIP_PREFIX/include" \
+    -I"$LIBRE_PREFIX/include/re" \
+    -I"$OPUS_PREFIX/include" \
+    "$OPUS_SOURCE_DIR/decode.c" \
+    "$OPUS_SOURCE_DIR/encode.c" \
+    "$OPUS_SOURCE_DIR/opus.c" \
+    "$OPUS_SOURCE_DIR/sdp.c" \
+    "$OPUS_PREFIX/lib/libopus.a" \
+    -o "$MODULES/opus.so"
+  codesign --force --sign - "$MODULES/opus.so"
+  echo "Built: $MODULES/opus.so"
 fi

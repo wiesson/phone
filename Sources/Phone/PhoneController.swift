@@ -69,21 +69,27 @@ func filteringAudioStatistics(from text: String) -> String {
     return result
 }
 
-func configEnsuringPreferredG722Module(_ content: String) -> String {
+func configEnsuringPreferredAudioCodecModules(_ content: String, modules: [String]) -> String {
     var lines = content.components(separatedBy: "\n")
-    let g722Indexes = lines.indices.filter { index in
-        let fields = lines[index].split(whereSeparator: { $0.isWhitespace })
-        return fields.count >= 2 && fields[0] == "module" && fields[1] == "g722.so"
+    let preferredModules = ["opus.so", "g722.so"].filter(modules.contains)
+    var preferredLines: [String] = []
+
+    for module in preferredModules {
+        let indexes = lines.indices.filter { index in
+            let fields = lines[index].split(whereSeparator: { $0.isWhitespace })
+            return fields.count >= 2 && fields[0] == "module" && fields[1] == Substring(module)
+        }
+        preferredLines.append(indexes.first.map { lines[$0] } ?? "module\t\t\t\(module)")
+        for index in indexes.reversed() {
+            lines.remove(at: index)
+        }
     }
-    let g722Line = g722Indexes.first.map { lines[$0] } ?? "module\t\t\tg722.so"
-    for index in g722Indexes.reversed() {
-        lines.remove(at: index)
-    }
+
     let g711Index = lines.firstIndex { line in
         let fields = line.split(whereSeparator: { $0.isWhitespace })
         return fields.count >= 2 && fields[0] == "module" && fields[1] == "g711.so"
     } ?? lines.endIndex
-    lines.insert(g722Line, at: g711Index)
+    lines.insert(contentsOf: preferredLines, at: g711Index)
     return lines.joined(separator: "\n")
 }
 
@@ -870,7 +876,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             try copyIfMissing(to: configDirectory.appendingPathComponent("accounts"), from: [developmentAccount])
         }
         try updateModulePath(bundledModulesDirectory)
-        try ensurePreferredG722Module(bundledModulesDirectory)
+        try ensurePreferredAudioCodecModules(bundledModulesDirectory)
     }
 
     private func copyIfMissing(to destination: URL, from candidates: [URL?]) throws {
@@ -903,12 +909,16 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
-    private func ensurePreferredG722Module(_ modulesDirectory: URL) throws {
+    private func ensurePreferredAudioCodecModules(_ modulesDirectory: URL) throws {
         let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: modulesDirectory.appendingPathComponent("g722.so").path) else { return }
+        let modules = ["opus.so", "g722.so"].filter { module in
+            fileManager.fileExists(atPath: modulesDirectory.appendingPathComponent(module).path)
+        }
+        guard !modules.isEmpty else { return }
+
         let url = configDirectory.appendingPathComponent("config")
         let content = try String(contentsOf: url, encoding: .utf8)
-        let updated = configEnsuringPreferredG722Module(content)
+        let updated = configEnsuringPreferredAudioCodecModules(content, modules: modules)
         if updated != content {
             try updated.write(to: url, atomically: true, encoding: .utf8)
         }

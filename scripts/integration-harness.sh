@@ -134,6 +134,7 @@ integration_select_scenario() {
   TRANSPORT=udp
   CODEC=PCMU
   CODEC_RATE=8000
+  CODEC_CHANNELS=1
   CODEC_MODULE=
   SIP_TRACE=no
   DTMF_MODE=none
@@ -155,6 +156,12 @@ integration_select_scenario() {
       CODEC_RATE=16000
       CODEC_MODULE="module g722.so"
       SIP_TRACE=yes
+      ;;
+    codec-opus)
+      CODEC=opus
+      CODEC_RATE=48000
+      CODEC_CHANNELS=2
+      CODEC_MODULE="module opus.so"
       ;;
     dtmf-inband) DTMF_MODE=in-band ;;
     dtmf-rfc2833) DTMF_MODE=rfc2833 ;;
@@ -231,7 +238,7 @@ CONFIG
 integration_account() {
   port=$1
   answer_mode=$2
-  params="regint=0;answermode=$answer_mode;audio_codecs=$CODEC/$CODEC_RATE/1"
+  params="regint=0;answermode=$answer_mode;audio_codecs=$CODEC/$CODEC_RATE/$CODEC_CHANNELS"
   if [ "$DTMF_MODE" = in-band ]; then
     params="$params;autelev_pt=0"
   elif [ "$DTMF_MODE" = rfc2833 ]; then
@@ -398,7 +405,9 @@ run_integration_scenario() {
     integration_fail "baresip was not found; run sh scripts/build-app.sh or brew install baresip"
   fi
 
-  if [ "$BARESIP" = "$BUNDLED_BARESIP" ]; then
+  if [ -n "${BARESIP_MODULES:-}" ]; then
+    MODULES=$BARESIP_MODULES
+  elif [ "$BARESIP" = "$BUNDLED_BARESIP" ]; then
     MODULES=$BUNDLED_MODULES
   else
     BARESIP_PREFIX=$(CDPATH= cd -- "$(dirname "$BARESIP")/.." && pwd)
@@ -411,6 +420,9 @@ run_integration_scenario() {
 
   if [ "$CODEC" = G722 ]; then
     integration_require_optional_module g722.so "G.722"
+  fi
+  if [ "$CODEC" = opus ]; then
+    integration_require_optional_module opus.so "Opus"
   fi
 
   EXTRA_MODULE=

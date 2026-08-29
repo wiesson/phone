@@ -63,6 +63,7 @@ run_case transport-tcp tcp PCMU n/a none
 run_case codec-pcma udp PCMA n/a none
 run_case codec-pcmu udp PCMU n/a none
 run_case codec-g722 udp G722 n/a none
+run_case codec-opus udp opus n/a none
 run_case dtmf-inband udp PCMU in-band none
 run_case dtmf-rfc2833 udp PCMU rfc2833 none
 run_case media-none udp PCMU n/a none

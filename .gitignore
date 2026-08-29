@@ -13,3 +13,5 @@ runtime/baresip/uuid
 runtime/baresip/*.log
 BACKLOG.local.md
 *.local.md
+*.local.sh
+landing/

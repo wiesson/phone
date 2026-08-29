@@ -55,8 +55,23 @@ if [ -f "$ROOT/runtime/modules/g722.so" ]; then
   mv "$temporary_config" "$config"
 fi
 
+if [ -f "$ROOT/runtime/modules/opus.so" ]; then
+  config="$APP/Contents/Resources/baresip/config"
+  temporary_config="$config.tmp"
+  awk '
+    /^[[:space:]]*#?[[:space:]]*module[[:space:]]+opus[.]so([[:space:]]|$)/ { next }
+    /^[[:space:]]*module[[:space:]]+(g722|g711)[.]so([[:space:]]|$)/ && !added {
+      print "module\t\t\topus.so"
+      added = 1
+    }
+    { print }
+    END { if (!added) print "module\t\t\topus.so" }
+  ' "$config" > "$temporary_config"
+  mv "$temporary_config" "$config"
+fi
+
 for module in $(awk '$1 == "module" || $1 == "module_app" {print $2}' "$APP/Contents/Resources/baresip/config"); do
-  if [ "$module" = "phone_tap.so" ] || [ "$module" = "g722.so" ]; then
+  if [ "$module" = "phone_tap.so" ] || [ "$module" = "opus.so" ] || [ "$module" = "g722.so" ]; then
     source="$ROOT/runtime/modules/$module"
   else
     source="$BARESIP_PREFIX/lib/baresip/modules/$module"
