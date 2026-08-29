@@ -20,6 +20,7 @@ struct PhoneAccountPicker: View {
                                     var updated = account
                                     updated.assistantProfile = profile
                                     updated.assistantProfileName = nil
+                                    updated.savedProfileID = nil
                                     updated.assistantInstructionsOverride = nil
                                     updated.assistantContextData = nil
                                     try? phone.updateManagedAccountMetadata(updated)
@@ -28,6 +29,24 @@ struct PhoneAccountPicker: View {
                                         Label(profile.displayName, systemImage: "checkmark")
                                     } else {
                                         Text(profile.displayName)
+                                    }
+                                }
+                            }
+                        }
+                        if !phone.savedAssistantProfiles.isEmpty {
+                            Section("Saved profiles") {
+                                ForEach(phone.savedAssistantProfiles) { profile in
+                                    Button {
+                                        var updated = account
+                                        updated.assistantProfile = .custom
+                                        updated.savedProfileID = profile.id
+                                        try? phone.updateManagedAccountMetadata(updated)
+                                    } label: {
+                                        if account.savedProfileID == profile.id {
+                                            Label(profile.name, systemImage: "checkmark")
+                                        } else {
+                                            Text(profile.name)
+                                        }
                                     }
                                 }
                             }
@@ -85,11 +104,11 @@ struct PhoneAccountPicker: View {
         guard let active = phone.managedAccounts.first(where: {
             $0.sipAddress == phone.activeManagedSIPAddress
         }) else { return display }
-        return "\(display) · \(active.assistantProfileDisplay)"
+        return "\(display) · \(phone.assistantProfileDisplay(for: active))"
     }
 
     private func accountLabel(_ account: ManagedSIPAccount) -> String {
-        "\(account.displayName) — \(account.assistantProfileDisplay)"
+        "\(account.displayName) — \(phone.assistantProfileDisplay(for: account))"
     }
 }
 

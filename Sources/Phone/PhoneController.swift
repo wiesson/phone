@@ -219,6 +219,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     @Published private(set) var isMuted = false
     private var mutedByBridge = false
     @Published private(set) var managedAccounts: [ManagedSIPAccount] = []
+    @Published private(set) var savedAssistantProfiles: [SavedAssistantProfile] = []
     @Published private(set) var activeManagedSIPAddress: String?
     @Published private(set) var unmanagedAccountAOR: String?
     @Published private(set) var currentCallAccountAOR: String?
@@ -370,9 +371,14 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             }
         }
         let defaults = UserDefaults.standard
-        if let fileState = Self.loadAccountsFile(from: accountsFileURL) {
-            managedAccounts = fileState.accounts
-            activeManagedSIPAddress = fileState.activeSIPAddress
+        if let file = Self.loadAccountsFile(from: accountsFileURL) {
+            let state = ManagedSIPAccountsState(
+                accounts: file.accounts,
+                activeSIPAddress: file.activeSIPAddress
+            )
+            managedAccounts = state.accounts
+            activeManagedSIPAddress = state.activeSIPAddress
+            savedAssistantProfiles = file.savedProfiles ?? []
         } else {
             // Migration path: accept Data or (from external edits) String defaults.
             let storedAccounts = defaults.data(forKey: "managedSIPAccounts")
@@ -382,8 +388,15 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 legacyAccountData: defaults.data(forKey: "managedSIPAccount"),
                 activeSIPAddress: defaults.string(forKey: "activeManagedSIPAccount")
             )
-            managedAccounts = result.state.accounts
-            activeManagedSIPAddress = result.state.activeSIPAddress
+            let migrated = migrateSavedAssistantProfiles(
+                in: ManagedAccountsFile(
+                    accounts: result.state.accounts,
+                    activeSIPAddress: result.state.activeSIPAddress
+                )
+            )
+            managedAccounts = migrated.accounts
+            activeManagedSIPAddress = migrated.activeSIPAddress
+            savedAssistantProfiles = migrated.savedProfiles ?? []
         }
         try? persistManagedAccounts()
         number = defaults.string(forKey: "lastDialedNumber") ?? ""
@@ -529,11 +542,87 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         updated.label = account.label
         updated.assistantProfile = account.assistantProfile
         updated.assistantProfileName = account.assistantProfileName
+        updated.savedProfileID = account.savedProfileID
         updated.assistantInstructionsOverride = account.assistantInstructionsOverride
         updated.assistantContextData = account.assistantContextData
         var accountsState = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
         accountsState.update(updated)
         try saveManagedAccountsState(accountsState)
+    }
+
+    func savedAssistantProfile(id: UUID?) -> SavedAssistantProfile? {
+        guard let id else { return nil }
+        return savedAssistantProfiles.first { $0.id == id }
+    }
+
+    func assistantProfileDisplay(for account: ManagedSIPAccount) -> String {
+        account.assistantProfileDisplay(savedProfiles: savedAssistantProfiles)
+    }
+
+    func updateSavedAssistantProfile(
+        id: UUID,
+        change: (inout SavedAssistantProfile) -> Void
+    ) throws {
+        guard let index = savedAssistantProfiles.firstIndex(where: { $0.id == id }) else {
+            throw SIPAccountError.missingSavedAssistantProfile
+        }
+        var profiles = savedAssistantProfiles
+        change(&profiles[index])
+        let state = ManagedSIPAccountsState(
+            accounts: managedAccounts,
+            activeSIPAddress: activeManagedSIPAddress
+        )
+        try saveManagedAccountsState(state, savedProfiles: profiles)
+    }
+
+    @discardableResult
+    func saveNewAssistantProfile(
+        name: String,
+        instructions: String,
+        contextData: String?,
+        for account: ManagedSIPAccount
+    ) throws -> SavedAssistantProfile {
+        guard var updated = managedAccounts.first(where: { $0.sipAddress == account.sipAddress }) else {
+            throw SIPAccountError.missingManagedAccount
+        }
+        let profile = SavedAssistantProfile(
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            instructions: instructions,
+            contextData: contextData
+        )
+        var profiles = savedAssistantProfiles
+        profiles.append(profile)
+        updated.assistantProfile = .custom
+        updated.savedProfileID = profile.id
+        updated.assistantInstructionsOverride = instructions
+        updated.assistantContextData = contextData
+        var state = ManagedSIPAccountsState(
+            accounts: managedAccounts,
+            activeSIPAddress: activeManagedSIPAddress
+        )
+        state.update(updated)
+        try saveManagedAccountsState(state, savedProfiles: profiles)
+        return profile
+    }
+
+    func deleteSavedAssistantProfile(id: UUID) throws {
+        guard let profile = savedAssistantProfiles.first(where: { $0.id == id }) else {
+            throw SIPAccountError.missingSavedAssistantProfile
+        }
+        var state = ManagedSIPAccountsState(
+            accounts: managedAccounts,
+            activeSIPAddress: activeManagedSIPAddress
+        )
+        for var account in state.accounts where account.savedProfileID == id {
+            account.savedProfileID = nil
+            account.assistantProfile = .custom
+            account.assistantProfileName = profile.name
+            account.assistantInstructionsOverride = profile.instructions
+            account.assistantContextData = profile.contextData ?? account.assistantContextData
+            state.update(account)
+        }
+        let profiles = savedAssistantProfiles.filter { $0.id != id }
+        try saveManagedAccountsState(state, savedProfiles: profiles)
     }
 
     func removeManagedAccount(_ account: ManagedSIPAccount) throws {
@@ -1161,15 +1250,23 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         try saveManagedAccountsState(state)
     }
 
-    private func saveManagedAccountsState(_ state: ManagedSIPAccountsState) throws {
+    private func saveManagedAccountsState(
+        _ state: ManagedSIPAccountsState,
+        savedProfiles profiles: [SavedAssistantProfile]? = nil
+    ) throws {
         // accounts.json is the single canonical store; the UserDefaults keys are
         // removed after migration so no second representation can drift.
-        if state.accounts.isEmpty {
+        let profiles = profiles ?? savedAssistantProfiles
+        if state.accounts.isEmpty && profiles.isEmpty {
             try? FileManager.default.removeItem(at: accountsFileURL)
         } else {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let file = ManagedAccountsFile(accounts: state.accounts, activeSIPAddress: state.activeSIPAddress)
+            let file = ManagedAccountsFile(
+                accounts: state.accounts,
+                activeSIPAddress: state.activeSIPAddress,
+                savedProfiles: profiles
+            )
             let data = try encoder.encode(file)
             try FileManager.default.createDirectory(at: applicationSupportDirectory, withIntermediateDirectories: true)
             try data.write(to: accountsFileURL, options: .atomic)
@@ -1180,6 +1277,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         defaults.removeObject(forKey: "managedSIPAccount")
         defaults.removeObject(forKey: "managedAccount")
         managedAccounts = state.accounts
+        savedAssistantProfiles = profiles
         activeManagedSIPAddress = state.activeSIPAddress
     }
 
@@ -1187,11 +1285,11 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         applicationSupportDirectory.appendingPathComponent("accounts.json")
     }
 
-    private static func loadAccountsFile(from url: URL) -> ManagedSIPAccountsState? {
+    private static func loadAccountsFile(from url: URL) -> ManagedAccountsFile? {
         guard let data = try? Data(contentsOf: url),
               let file = try? JSONDecoder().decode(ManagedAccountsFile.self, from: data),
-              !file.accounts.isEmpty else { return nil }
-        return ManagedSIPAccountsState(accounts: file.accounts, activeSIPAddress: file.activeSIPAddress)
+              !file.accounts.isEmpty || !(file.savedProfiles ?? []).isEmpty else { return nil }
+        return migrateSavedAssistantProfiles(in: file)
     }
 
     private func appendDiagnostic(_ text: String) {
@@ -1680,6 +1778,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private func assistantSystemInstruction(calledAOR: String?, globalInstructions: String, date: Date) -> String {
         let resolved = resolveAssistantProfile(
             accounts: managedAccounts,
+            savedProfiles: savedAssistantProfiles,
             calledAOR: calledAOR,
             activeSIPAddress: activeManagedSIPAddress,
             globalInstructions: globalInstructions,

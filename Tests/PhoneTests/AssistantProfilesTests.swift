@@ -62,6 +62,172 @@ import Testing
     #expect(result.contextData == nil)
 }
 
+@Test func migratesCustomOverrideIntoSavedProfile() throws {
+    let account = ManagedSIPAccount(
+        provider: .custom,
+        username: "reception",
+        domain: "example.com",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: "",
+        label: "Front desk",
+        assistantProfile: .custom,
+        assistantInstructionsOverride: "Answer as the front desk",
+        assistantContextData: "Hours: 09:00–17:00"
+    )
+
+    let migrated = migrateSavedAssistantProfiles(
+        in: ManagedAccountsFile(accounts: [account], activeSIPAddress: account.sipAddress)
+    )
+    let profile = try #require(migrated.savedProfiles?.first)
+
+    #expect(migrated.savedProfiles?.count == 1)
+    #expect(profile.name == "Custom (Front desk)")
+    #expect(profile.instructions == "Answer as the front desk")
+    #expect(profile.contextData == "Hours: 09:00–17:00")
+    #expect(migrated.accounts.first?.savedProfileID == profile.id)
+    #expect(migrated.accounts.first?.assistantInstructionsOverride == "Answer as the front desk")
+}
+
+@Test func migrationDeduplicatesIdenticalInstructions() throws {
+    let first = profileAccount(
+        username: "first",
+        domain: "example.com",
+        profile: .custom,
+        instructions: "Shared instructions"
+    )
+    let second = profileAccount(
+        username: "second",
+        domain: "example.net",
+        profile: .custom,
+        instructions: "Shared instructions"
+    )
+
+    let migrated = migrateSavedAssistantProfiles(
+        in: ManagedAccountsFile(accounts: [first, second], activeSIPAddress: first.sipAddress)
+    )
+
+    #expect(migrated.savedProfiles?.count == 1)
+    #expect(migrated.accounts[0].savedProfileID != nil)
+    #expect(migrated.accounts[0].savedProfileID == migrated.accounts[1].savedProfileID)
+}
+
+@Test func migrationRunsOnlyWhenSavedProfilesFieldIsAbsent() {
+    let fallbackAccount = profileAccount(
+        username: "fallback",
+        domain: "example.com",
+        profile: .custom,
+        instructions: "Keep this private fallback"
+    )
+    let alreadyMigrated = ManagedAccountsFile(
+        accounts: [fallbackAccount],
+        activeSIPAddress: fallbackAccount.sipAddress,
+        savedProfiles: []
+    )
+
+    let loaded = migrateSavedAssistantProfiles(in: alreadyMigrated)
+
+    #expect(loaded.savedProfiles == [])
+    #expect(loaded.accounts.first?.savedProfileID == nil)
+    #expect(loaded.accounts.first?.assistantInstructionsOverride == "Keep this private fallback")
+}
+
+@Test func savedProfileReferenceResolvesNameInstructionsAndContext() {
+    let profile = SavedAssistantProfile(
+        name: "Shared reception",
+        instructions: "Use the shared prompt",
+        contextData: "Shared context"
+    )
+    let account = ManagedSIPAccount(
+        provider: .custom,
+        username: "reception",
+        domain: "example.com",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: "",
+        assistantProfile: .custom,
+        savedProfileID: profile.id
+    )
+    let result = resolveAssistantProfile(
+        accounts: [account],
+        savedProfiles: [profile],
+        calledAOR: account.sipAddress,
+        activeSIPAddress: nil,
+        globalInstructions: "Global"
+    )
+
+    #expect(account.assistantProfileDisplay(savedProfiles: [profile]) == "Shared reception")
+    #expect(result.instructions == "Use the shared prompt")
+    #expect(result.contextData == "Shared context")
+}
+
+@Test func savedProfileInstructionsTakePrecedenceOverAccountOverride() {
+    let profile = SavedAssistantProfile(name: "Saved", instructions: "Saved instructions")
+    let account = ManagedSIPAccount(
+        provider: .custom,
+        username: "user",
+        domain: "example.com",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: "",
+        assistantProfile: .custom,
+        savedProfileID: profile.id,
+        assistantInstructionsOverride: "Legacy fallback"
+    )
+    let result = resolveAssistantProfile(
+        accounts: [account],
+        savedProfiles: [profile],
+        calledAOR: account.sipAddress,
+        activeSIPAddress: nil,
+        globalInstructions: "Global"
+    )
+
+    #expect(result.instructions == "Saved instructions")
+}
+
+@Test func managedAccountsFileRoundTripsSavedProfiles() throws {
+    let profile = SavedAssistantProfile(
+        name: "Reception",
+        instructions: "Answer professionally",
+        contextData: "Open weekdays"
+    )
+    let account = profileAccount(
+        username: "user",
+        domain: "example.com",
+        profile: .custom
+    )
+    let file = ManagedAccountsFile(
+        accounts: [account],
+        activeSIPAddress: account.sipAddress,
+        savedProfiles: [profile]
+    )
+
+    let data = try JSONEncoder().encode(file)
+    let decoded = try JSONDecoder().decode(ManagedAccountsFile.self, from: data)
+
+    #expect(decoded == file)
+}
+
+@Test func managedAccountsFileDecodesAndEncodesWithoutSavedProfiles() throws {
+    let json = """
+    {
+      "accounts": [],
+      "activeSIPAddress": null
+    }
+    """
+    let decoded = try JSONDecoder().decode(
+        ManagedAccountsFile.self,
+        from: try #require(json.data(using: .utf8))
+    )
+    let encoded = try JSONEncoder().encode(decoded)
+    let encodedObject = try #require(
+        JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+
+    #expect(decoded.savedProfiles == nil)
+    #expect(encodedObject["savedProfiles"] == nil)
+}
+
 @Test func hotelAvailabilityHasFourteenDeterministicThreeRoomRows() throws {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))

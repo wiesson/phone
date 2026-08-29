@@ -399,7 +399,15 @@ struct PhoneSettingsView: View {
     @State private var accountError: String?
     @State private var showsAccountInstructions = false
     @State private var showsAccountData = false
+    @State private var isNamingNewProfile = false
+    @State private var newProfileName = ""
+    @State private var profileToDelete: SavedAssistantProfile?
     @State private var isConfirmingArchiveDeletion = false
+
+    private enum AssistantProfileSelection: Hashable {
+        case builtIn(AssistantProfile)
+        case saved(UUID)
+    }
 
     var body: some View {
         TabView {
@@ -439,6 +447,20 @@ struct PhoneSettingsView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This removes all locally archived transcripts, summaries, and call metadata. Recent calls in the menu bar are unaffected.")
+        }
+        .alert("Save as new profile", isPresented: $isNamingNewProfile) {
+            TextField("Profile name", text: $newProfileName)
+            Button("Save", action: saveAsNewProfile)
+                .disabled(newProfileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) { newProfileName = "" }
+        } message: {
+            Text("The current instructions and data will be available to every SIP account.")
+        }
+        .alert("Delete saved profile?", isPresented: isDeletingSavedProfile) {
+            Button("Delete Profile", role: .destructive, action: deleteSavedProfile)
+            Button("Cancel", role: .cancel) { profileToDelete = nil }
+        } message: {
+            Text("Accounts using this profile will keep a private copy of its instructions.")
         }
         .sheet(item: $accountToEdit) { account in
             SetupWizard(phone: phone, editing: account)
@@ -870,6 +892,13 @@ struct PhoneSettingsView: View {
         )
     }
 
+    private var isDeletingSavedProfile: Binding<Bool> {
+        Binding(
+            get: { profileToDelete != nil },
+            set: { if !$0 { profileToDelete = nil } }
+        )
+    }
+
     private func accountRow(_ account: ManagedSIPAccount) -> some View {
         HStack(spacing: 10) {
             Button {
@@ -891,7 +920,7 @@ struct PhoneSettingsView: View {
             }
             Spacer()
             registrationIndicator(for: account)
-            Text(account.assistantProfileDisplay)
+            Text(phone.assistantProfileDisplay(for: account))
                 .font(.caption2.weight(.medium))
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
@@ -960,9 +989,20 @@ struct PhoneSettingsView: View {
     private func accountProfileEditor(_ account: ManagedSIPAccount) -> some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                Picker("Assistant profile", selection: profileBinding(for: account)) {
-                    ForEach(AssistantProfile.allCases) { profile in
-                        Text(profile.displayName).tag(profile)
+                Picker("Assistant profile", selection: profileSelectionBinding(for: account)) {
+                    Section("Built-in profiles") {
+                        ForEach(AssistantProfile.allCases) { profile in
+                            Text(profile.displayName)
+                                .tag(AssistantProfileSelection.builtIn(profile))
+                        }
+                    }
+                    if !phone.savedAssistantProfiles.isEmpty {
+                        Section("Saved profiles") {
+                            ForEach(phone.savedAssistantProfiles) { profile in
+                                Text(profile.name)
+                                    .tag(AssistantProfileSelection.saved(profile.id))
+                            }
+                        }
                     }
                 }
 
@@ -974,7 +1014,7 @@ struct PhoneSettingsView: View {
                             .padding(5)
                             .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
                         Button("Reset to preset") {
-                            updateAccount(account) { $0.assistantInstructionsOverride = nil }
+                            resetInstructions(for: account)
                         }
                         .controlSize(.small)
                     }
@@ -989,26 +1029,58 @@ struct PhoneSettingsView: View {
                             .padding(5)
                             .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
                         Button("Reset to preset") {
-                            updateAccount(account) { $0.assistantContextData = nil }
+                            resetContextData(for: account)
                         }
                         .controlSize(.small)
                     }
                     .padding(.top, 6)
                 }
+
+                HStack {
+                    Button("Save as new profile…") {
+                        newProfileName = ""
+                        isNamingNewProfile = true
+                    }
+                    if let profile = phone.savedAssistantProfile(
+                        id: (selectedAccount ?? account).savedProfileID
+                    ) {
+                        Button("Delete profile", role: .destructive) {
+                            profileToDelete = profile
+                        }
+                    }
+                }
+                .controlSize(.small)
             }
         } label: {
             Text("Assistant for \(account.displayName)")
         }
     }
 
-    private func profileBinding(for account: ManagedSIPAccount) -> Binding<AssistantProfile> {
+    private func profileSelectionBinding(for account: ManagedSIPAccount) -> Binding<AssistantProfileSelection> {
         Binding(
-            get: { selectedAccount?.assistantProfile ?? account.assistantProfile },
-            set: { profile in
-                updateAccount(account) {
-                    $0.assistantProfile = profile
-                    $0.assistantInstructionsOverride = nil
-                    $0.assistantContextData = nil
+            get: {
+                let current = selectedAccount ?? account
+                if let id = current.savedProfileID,
+                   phone.savedAssistantProfile(id: id) != nil {
+                    return .saved(id)
+                }
+                return .builtIn(current.assistantProfile)
+            },
+            set: { selection in
+                switch selection {
+                case .builtIn(let profile):
+                    updateAccount(account) {
+                        $0.assistantProfile = profile
+                        $0.assistantProfileName = nil
+                        $0.savedProfileID = nil
+                        $0.assistantInstructionsOverride = nil
+                        $0.assistantContextData = nil
+                    }
+                case .saved(let id):
+                    updateAccount(account) {
+                        $0.assistantProfile = .custom
+                        $0.savedProfileID = id
+                    }
                 }
             }
         )
@@ -1018,10 +1090,18 @@ struct PhoneSettingsView: View {
         Binding(
             get: {
                 let current = selectedAccount ?? account
-                return current.assistantInstructionsOverride
+                return phone.savedAssistantProfile(id: current.savedProfileID)?.instructions
+                    ?? current.assistantInstructionsOverride
                     ?? current.assistantProfile.presetInstructions(globalFallback: assistantInstructions)
             },
-            set: { value in updateAccount(account) { $0.assistantInstructionsOverride = value } }
+            set: { value in
+                let current = selectedAccount ?? account
+                if let id = current.savedProfileID {
+                    updateSavedProfile(id: id) { $0.instructions = value }
+                } else {
+                    updateAccount(account) { $0.assistantInstructionsOverride = value }
+                }
+            }
         )
     }
 
@@ -1029,12 +1109,79 @@ struct PhoneSettingsView: View {
         Binding(
             get: {
                 let current = selectedAccount ?? account
-                return current.assistantContextData
+                return phone.savedAssistantProfile(id: current.savedProfileID)?.contextData
+                    ?? current.assistantContextData
                     ?? current.assistantProfile.presetContextData(startingAt: Date())
                     ?? ""
             },
-            set: { value in updateAccount(account) { $0.assistantContextData = value } }
+            set: { value in
+                let current = selectedAccount ?? account
+                if let id = current.savedProfileID {
+                    updateSavedProfile(id: id) { $0.contextData = value }
+                } else {
+                    updateAccount(account) { $0.assistantContextData = value }
+                }
+            }
         )
+    }
+
+    private func resetInstructions(for account: ManagedSIPAccount) {
+        let current = selectedAccount ?? account
+        if let id = current.savedProfileID {
+            updateSavedProfile(id: id) { $0.instructions = "" }
+        } else {
+            updateAccount(account) { $0.assistantInstructionsOverride = nil }
+        }
+    }
+
+    private func resetContextData(for account: ManagedSIPAccount) {
+        let current = selectedAccount ?? account
+        if let id = current.savedProfileID {
+            updateSavedProfile(id: id) { $0.contextData = nil }
+        } else {
+            updateAccount(account) { $0.assistantContextData = nil }
+        }
+    }
+
+    private func updateSavedProfile(
+        id: UUID,
+        change: (inout SavedAssistantProfile) -> Void
+    ) {
+        accountError = nil
+        do {
+            try phone.updateSavedAssistantProfile(id: id, change: change)
+        } catch {
+            accountError = error.localizedDescription
+        }
+    }
+
+    private func saveAsNewProfile() {
+        guard let account = selectedAccount else { return }
+        let instructions = instructionsBinding(for: account).wrappedValue
+        let context = contextDataBinding(for: account).wrappedValue
+        accountError = nil
+        do {
+            try phone.saveNewAssistantProfile(
+                name: newProfileName,
+                instructions: instructions,
+                contextData: context.isEmpty ? nil : context,
+                for: account
+            )
+            newProfileName = ""
+        } catch {
+            accountError = error.localizedDescription
+        }
+    }
+
+    private func deleteSavedProfile() {
+        guard let profile = profileToDelete else { return }
+        profileToDelete = nil
+        accountError = nil
+        do {
+            try phone.deleteSavedAssistantProfile(id: profile.id)
+        } catch {
+            accountError = error.localizedDescription
+        }
     }
 
     private func updateAccount(_ account: ManagedSIPAccount, change: (inout ManagedSIPAccount) -> Void) {

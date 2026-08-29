@@ -27,6 +27,7 @@ func normalizedSIPAOR(_ value: String?) -> String? {
 
 func resolveAssistantProfile(
     accounts: [ManagedSIPAccount],
+    savedProfiles: [SavedAssistantProfile] = [],
     calledAOR: String?,
     activeSIPAddress: String?,
     globalInstructions: String,
@@ -43,9 +44,14 @@ func resolveAssistantProfile(
     guard let account else {
         return ResolvedAssistantProfile(account: nil, instructions: globalInstructions, contextData: nil)
     }
-    let instructions = account.assistantInstructionsOverride
+    let savedProfile = account.savedProfileID.flatMap { id in
+        savedProfiles.first { $0.id == id }
+    }
+    let instructions = savedProfile?.instructions
+        ?? account.assistantInstructionsOverride
         ?? account.assistantProfile.presetInstructions(globalFallback: globalInstructions)
-    let contextData = account.assistantContextData
+    let contextData = savedProfile?.contextData
+        ?? account.assistantContextData
         ?? account.assistantProfile.presetContextData(startingAt: date, calendar: calendar)
     return ResolvedAssistantProfile(account: account, instructions: instructions, contextData: contextData)
 }

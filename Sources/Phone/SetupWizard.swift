@@ -88,6 +88,20 @@ enum AssistantProfile: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+struct SavedAssistantProfile: Codable, Equatable, Identifiable, Sendable {
+    var id: UUID
+    var name: String
+    var instructions: String
+    var contextData: String?
+
+    init(id: UUID = UUID(), name: String, instructions: String, contextData: String? = nil) {
+        self.id = id
+        self.name = name
+        self.instructions = instructions
+        self.contextData = contextData
+    }
+}
+
 func travelDemoBookings(startingAt date: Date, calendar: Calendar = .current) -> String {
     var calendar = calendar
     let start = calendar.startOfDay(for: date)
@@ -156,6 +170,7 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
     var outboundCallerID: String? = nil
     var assistantProfile: AssistantProfile = .personalAssistant
     var assistantProfileName: String? = nil
+    var savedProfileID: UUID? = nil
     var assistantInstructionsOverride: String? = nil
     var assistantContextData: String? = nil
 
@@ -171,6 +186,7 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         outboundCallerID: String? = nil,
         assistantProfile: AssistantProfile = .personalAssistant,
         assistantProfileName: String? = nil,
+        savedProfileID: UUID? = nil,
         assistantInstructionsOverride: String? = nil,
         assistantContextData: String? = nil
     ) {
@@ -185,6 +201,7 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         self.outboundCallerID = Self.normalizedOutboundCallerID(outboundCallerID)
         self.assistantProfile = assistantProfile
         self.assistantProfileName = assistantProfileName
+        self.savedProfileID = savedProfileID
         self.assistantInstructionsOverride = assistantInstructionsOverride
         self.assistantContextData = assistantContextData
     }
@@ -198,6 +215,14 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
     var assistantProfileDisplay: String {
         let custom = assistantProfileName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return custom.isEmpty ? assistantProfile.displayName : custom
+    }
+    func assistantProfileDisplay(savedProfiles: [SavedAssistantProfile]) -> String {
+        if let savedProfileID,
+           let profile = savedProfiles.first(where: { $0.id == savedProfileID }) {
+            let name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty { return name }
+        }
+        return assistantProfileDisplay
     }
     var registrationDisplay: String {
         let address = provider == .custom ? sipAddress : username
@@ -270,6 +295,7 @@ enum ManagedSIPAccountField: CaseIterable, Hashable, Sendable {
     case outboundCallerID
     case assistantProfile
     case assistantProfileName
+    case savedProfileID
     case assistantInstructionsOverride
     case assistantContextData
 
@@ -277,7 +303,7 @@ enum ManagedSIPAccountField: CaseIterable, Hashable, Sendable {
         switch self {
         case .username, .domain, .password, .outboundProxy, .stunServer, .mediaEncryption, .sipDisplayName, .outboundCallerID:
             true
-        case .provider, .label, .assistantProfile, .assistantProfileName, .assistantInstructionsOverride, .assistantContextData:
+        case .provider, .label, .assistantProfile, .assistantProfileName, .savedProfileID, .assistantInstructionsOverride, .assistantContextData:
             false
         }
     }
@@ -316,6 +342,8 @@ func managedSIPAccountEditPlan(
     if original.sipDisplayName != updated.sipDisplayName { changedFields.insert(.sipDisplayName) }
     if original.outboundCallerID != updated.outboundCallerID { changedFields.insert(.outboundCallerID) }
     if original.assistantProfile != updated.assistantProfile { changedFields.insert(.assistantProfile) }
+    if original.assistantProfileName != updated.assistantProfileName { changedFields.insert(.assistantProfileName) }
+    if original.savedProfileID != updated.savedProfileID { changedFields.insert(.savedProfileID) }
     if original.assistantInstructionsOverride != updated.assistantInstructionsOverride {
         changedFields.insert(.assistantInstructionsOverride)
     }
@@ -337,6 +365,7 @@ extension ManagedSIPAccount {
         case outboundCallerID
         case assistantProfile
         case assistantProfileName
+        case savedProfileID
         case assistantInstructionsOverride
         case assistantContextData
     }
@@ -356,6 +385,7 @@ extension ManagedSIPAccount {
         )
         assistantProfile = try container.decodeIfPresent(AssistantProfile.self, forKey: .assistantProfile) ?? .personalAssistant
         assistantProfileName = try container.decodeIfPresent(String.self, forKey: .assistantProfileName)
+        savedProfileID = try container.decodeIfPresent(UUID.self, forKey: .savedProfileID)
         assistantInstructionsOverride = try container.decodeIfPresent(String.self, forKey: .assistantInstructionsOverride)
         assistantContextData = try container.decodeIfPresent(String.self, forKey: .assistantContextData)
     }
@@ -384,6 +414,50 @@ func managedAccountsFileContent(
 struct ManagedAccountsFile: Codable, Equatable, Sendable {
     var accounts: [ManagedSIPAccount]
     var activeSIPAddress: String?
+    var savedProfiles: [SavedAssistantProfile]?
+
+    init(
+        accounts: [ManagedSIPAccount],
+        activeSIPAddress: String?,
+        savedProfiles: [SavedAssistantProfile]? = nil
+    ) {
+        self.accounts = accounts
+        self.activeSIPAddress = activeSIPAddress
+        self.savedProfiles = savedProfiles
+    }
+}
+
+func migrateSavedAssistantProfiles(in file: ManagedAccountsFile) -> ManagedAccountsFile {
+    guard file.savedProfiles == nil else { return file }
+    var accounts = file.accounts
+    var profiles: [SavedAssistantProfile] = []
+
+    for index in accounts.indices {
+        guard accounts[index].assistantProfile == .custom,
+              accounts[index].savedProfileID == nil,
+              let instructions = accounts[index].assistantInstructionsOverride,
+              !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+
+        if let existing = profiles.first(where: { $0.instructions == instructions }) {
+            accounts[index].savedProfileID = existing.id
+        } else {
+            let trimmedName = accounts[index].assistantProfileName?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let profile = SavedAssistantProfile(
+                name: trimmedName.isEmpty ? "Custom (\(accounts[index].displayName))" : trimmedName,
+                instructions: instructions,
+                contextData: accounts[index].assistantContextData
+            )
+            profiles.append(profile)
+            accounts[index].savedProfileID = profile.id
+        }
+    }
+
+    return ManagedAccountsFile(
+        accounts: accounts,
+        activeSIPAddress: file.activeSIPAddress,
+        savedProfiles: profiles
+    )
 }
 
 struct ManagedSIPAccountsState: Equatable, Sendable {
@@ -490,6 +564,7 @@ enum SIPAccountError: LocalizedError {
     case missingDomain
     case missingManagedAccount
     case missingPassword
+    case missingSavedAssistantProfile
     case missingStoredPassword
     case missingUsername
 
@@ -506,6 +581,7 @@ enum SIPAccountError: LocalizedError {
         case .missingDomain: "Enter the SIP registrar."
         case .missingManagedAccount: "The managed SIP account is missing."
         case .missingPassword: "Enter the SIP password."
+        case .missingSavedAssistantProfile: "The saved assistant profile is missing."
         case .missingStoredPassword: "The SIP password is missing from Keychain."
         case .missingUsername: "Enter the phone number or SIP username."
         }
@@ -627,7 +703,7 @@ struct SetupWizard: View {
             Divider()
             footer
         }
-        .frame(width: 620, height: 520)
+        .frame(width: 560, height: 600)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear(perform: reset)
     }
@@ -753,7 +829,8 @@ struct SetupWizard: View {
     }
 
     private var credentialsStep: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Enter your credentials")
                     .font(.headline)
@@ -795,9 +872,9 @@ struct SetupWizard: View {
                     .font(.callout)
                     .textSelection(.enabled)
             }
-            Spacer()
+            }
+            .padding(28)
         }
-        .padding(28)
         .onAppear { focusedField = .username }
     }
 
@@ -870,6 +947,8 @@ struct SetupWizard: View {
             sipDisplayName: trimmedDisplayName.isEmpty ? nil : trimmedDisplayName,
             outboundCallerID: outboundCallerID,
             assistantProfile: editingAccount?.assistantProfile ?? .personalAssistant,
+            assistantProfileName: editingAccount?.assistantProfileName,
+            savedProfileID: editingAccount?.savedProfileID,
             assistantInstructionsOverride: editingAccount?.assistantInstructionsOverride,
             assistantContextData: editingAccount?.assistantContextData
         )
