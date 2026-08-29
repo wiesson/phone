@@ -364,13 +364,21 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             }
         }
         let defaults = UserDefaults.standard
-        let result = decodeManagedSIPAccounts(
-            accountsData: defaults.data(forKey: "managedSIPAccounts"),
-            legacyAccountData: defaults.data(forKey: "managedSIPAccount"),
-            activeSIPAddress: defaults.string(forKey: "activeManagedSIPAccount")
-        )
-        managedAccounts = result.state.accounts
-        activeManagedSIPAddress = result.state.activeSIPAddress
+        if let fileState = Self.loadAccountsFile(from: accountsFileURL) {
+            managedAccounts = fileState.accounts
+            activeManagedSIPAddress = fileState.activeSIPAddress
+        } else {
+            // Migration path: accept Data or (from external edits) String defaults.
+            let storedAccounts = defaults.data(forKey: "managedSIPAccounts")
+                ?? (defaults.string(forKey: "managedSIPAccounts")?.data(using: .utf8))
+            let result = decodeManagedSIPAccounts(
+                accountsData: storedAccounts,
+                legacyAccountData: defaults.data(forKey: "managedSIPAccount"),
+                activeSIPAddress: defaults.string(forKey: "activeManagedSIPAccount")
+            )
+            managedAccounts = result.state.accounts
+            activeManagedSIPAddress = result.state.activeSIPAddress
+        }
         try? persistManagedAccounts()
         number = defaults.string(forKey: "lastDialedNumber") ?? ""
         if let data = defaults.data(forKey: "callHistory"),
@@ -1143,19 +1151,36 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func saveManagedAccountsState(_ state: ManagedSIPAccountsState) throws {
-        let defaults = UserDefaults.standard
+        // accounts.json is the single canonical store; the UserDefaults keys are
+        // removed after migration so no second representation can drift.
         if state.accounts.isEmpty {
-            defaults.removeObject(forKey: "managedSIPAccounts")
-            defaults.removeObject(forKey: "activeManagedSIPAccount")
+            try? FileManager.default.removeItem(at: accountsFileURL)
         } else {
-            let data = try JSONEncoder().encode(state.accounts)
-            defaults.set(data, forKey: "managedSIPAccounts")
-            defaults.set(state.activeSIPAddress, forKey: "activeManagedSIPAccount")
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let file = ManagedAccountsFile(accounts: state.accounts, activeSIPAddress: state.activeSIPAddress)
+            let data = try encoder.encode(file)
+            try FileManager.default.createDirectory(at: applicationSupportDirectory, withIntermediateDirectories: true)
+            try data.write(to: accountsFileURL, options: .atomic)
         }
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: "managedSIPAccounts")
+        defaults.removeObject(forKey: "activeManagedSIPAccount")
         defaults.removeObject(forKey: "managedSIPAccount")
         defaults.removeObject(forKey: "managedAccount")
         managedAccounts = state.accounts
         activeManagedSIPAddress = state.activeSIPAddress
+    }
+
+    private var accountsFileURL: URL {
+        applicationSupportDirectory.appendingPathComponent("accounts.json")
+    }
+
+    private static func loadAccountsFile(from url: URL) -> ManagedSIPAccountsState? {
+        guard let data = try? Data(contentsOf: url),
+              let file = try? JSONDecoder().decode(ManagedAccountsFile.self, from: data),
+              !file.accounts.isEmpty else { return nil }
+        return ManagedSIPAccountsState(accounts: file.accounts, activeSIPAddress: file.activeSIPAddress)
     }
 
     private func appendDiagnostic(_ text: String) {

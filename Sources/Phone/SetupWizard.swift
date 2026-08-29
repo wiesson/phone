@@ -371,6 +371,11 @@ func managedAccountsFileContent(
         .joined()
 }
 
+struct ManagedAccountsFile: Codable, Equatable, Sendable {
+    var accounts: [ManagedSIPAccount]
+    var activeSIPAddress: String?
+}
+
 struct ManagedSIPAccountsState: Equatable, Sendable {
     private(set) var accounts: [ManagedSIPAccount]
     private(set) var activeSIPAddress: String?
