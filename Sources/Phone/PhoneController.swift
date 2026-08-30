@@ -1757,6 +1757,50 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
+    private func callPayload(_ call: ArchivedCall) -> JSONValue {
+        .object([
+            "call_id": .string(call.id.uuidString),
+            "direction": .string(call.direction.rawValue),
+            "peer": call.peer.map { JSONValue.string(presentablePeer($0)) } ?? .null,
+            "name": (displayName(for: call.peer) ?? call.displayName).map(JSONValue.string) ?? .null,
+            "timestamp": .string(ISO8601DateFormatter().string(from: call.startedAt)),
+            "duration": .double(call.duration),
+            "missed": .bool(call.missed),
+            "has_summary": .bool(call.summary != nil)
+        ])
+    }
+
+    private func linePayload(_ account: ManagedSIPAccount) -> JSONValue {
+        let status: String
+        switch registrationStatus(for: account) {
+        case .registered: status = "registered"
+        case .registering: status = "registering"
+        case .failed(let message): status = "failed: \(message)"
+        case .idle: status = account.isEnabled ? "idle" : "offline"
+        }
+        return .object([
+            "line": .string(account.displayName),
+            "sip_address": .string(account.sipAddress),
+            "provider": .string(account.provider.shortName),
+            "enabled": .bool(account.isEnabled),
+            "registration": .string(status),
+            "assistant_profile": .string(assistantProfileDisplay(for: account)),
+            "answers_incoming": .string(account.assistantAnswerMode.rawValue),
+            "is_outgoing_line": .bool(account.sipAddress == activeManagedSIPAddress)
+        ])
+    }
+
+    /// Matches the name an agent is most likely to use: the label from
+    /// list_lines, the bare user part, or the full SIP address.
+    private func managedAccount(matching query: String) -> ManagedSIPAccount? {
+        let query = query.lowercased()
+        return managedAccounts.first {
+            $0.displayName.lowercased() == query
+                || $0.username.lowercased() == query
+                || $0.sipAddress.lowercased() == query
+        }
+    }
+
     /// Ships the labelled fields next to the text so a receiving agent does not
     /// have to parse prose.
     private func summaryPayload(text: String, createdAt: Date, callID: UUID? = nil) -> JSONValue {
@@ -1845,25 +1889,64 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 "registered": .bool(hasRegisteredAccount),
                 "muted": .bool(isMuted)
             ]))
-        case .getHistory(let limit):
-            let formatter = ISO8601DateFormatter()
+        case .getHistory(let limit, let query):
             do {
-                let calls = try await store.fetchCalls(limit: limit, offset: 0)
-                return .success(.array(calls.map { call in
-                    JSONValue.object([
-                        "call_id": .string(call.id.uuidString),
-                        "direction": .string(call.direction.rawValue),
-                        "peer": call.peer.map(JSONValue.string) ?? .null,
-                        "name": (displayName(for: call.peer) ?? call.displayName).map(JSONValue.string) ?? .null,
-                        "timestamp": .string(formatter.string(from: call.startedAt)),
-                        "duration": .double(call.duration),
-                        "missed": .bool(call.missed),
-                        "has_summary": .bool(call.summary != nil)
-                    ])
-                }))
+                let calls = try await store.fetchCalls(query: query, limit: limit, offset: 0)
+                return .success(.array(calls.map(callPayload)))
             } catch {
                 return .failure(ControlError(code: "unavailable", message: error.localizedDescription))
             }
+        case .listLines:
+            return .success(.array(managedAccounts.map(linePayload)))
+        case .setLineEnabled(let line, let enabled):
+            guard let account = managedAccount(matching: line) else {
+                return .failure(ControlError(code: "unknown_line", message: "No configured line matches '\(line)'."))
+            }
+            do {
+                try setManagedAccountEnabled(account, isEnabled: enabled)
+                let updated = managedAccounts.first { $0.sipAddress == account.sipAddress } ?? account
+                return .success(linePayload(updated))
+            } catch {
+                return .failure(ControlError(code: "invalid_state", message: error.localizedDescription))
+            }
+        case .setLineProfile(let line, let profileName):
+            guard var account = managedAccount(matching: line) else {
+                return .failure(ControlError(code: "unknown_line", message: "No configured line matches '\(line)'."))
+            }
+            let query = profileName.lowercased()
+            if let saved = savedAssistantProfiles.first(where: { $0.name.lowercased() == query }) {
+                account.assistantProfile = .custom
+                account.savedProfileID = saved.id
+                account.assistantProfileName = saved.name
+            } else if let preset = AssistantProfile.allCases.first(where: {
+                $0.displayName.lowercased() == query || $0.rawValue.lowercased() == query
+            }) {
+                account.assistantProfile = preset
+                account.savedProfileID = nil
+                account.assistantProfileName = nil
+                account.assistantInstructionsOverride = nil
+                account.assistantContextData = nil
+            } else {
+                let available = (AssistantProfile.allCases.map(\.displayName) + savedAssistantProfiles.map(\.name))
+                    .joined(separator: ", ")
+                return .failure(ControlError(code: "unknown_profile", message: "No profile named '\(profileName)'. Available: \(available)."))
+            }
+            do {
+                try updateManagedAccountMetadata(account)
+                let updated = managedAccounts.first { $0.sipAddress == account.sipAddress } ?? account
+                return .success(linePayload(updated))
+            } catch {
+                return .failure(ControlError(code: "invalid_state", message: error.localizedDescription))
+            }
+        case .findContact(let name):
+            let matches = contactSuggestions(matching: name, limit: 10).map { entry in
+                JSONValue.object([
+                    "name": .string(entry.displayName),
+                    "number": .string(entry.number),
+                    "label": .string(entry.label)
+                ])
+            }
+            return .success(.array(matches))
         case .getLastSummary:
             if let summary {
                 return .success(summaryPayload(text: summary.text, createdAt: summary.createdAt))

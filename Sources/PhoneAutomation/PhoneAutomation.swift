@@ -169,9 +169,13 @@ public enum ControlCommand: Equatable, Sendable {
     case hangup
     case sendDTMF(String)
     case getState
-    case getHistory(Int)
+    case getHistory(limit: Int, query: String?)
     case getLastSummary
     case getTranscript(String?)
+    case listLines
+    case setLineEnabled(line: String, enabled: Bool)
+    case setLineProfile(line: String, profile: String)
+    case findContact(String)
 }
 
 public struct ControlError: Error, Codable, Equatable, Sendable {
@@ -249,6 +253,41 @@ public enum ControlRequestParser {
             return .success(.sendDTMF(digit))
         case "get_state":
             return noArguments(args, command: .getState)
+        case "list_lines":
+            return noArguments(args, command: .listLines)
+        case "set_line_enabled":
+            guard Set(args.keys).isSubset(of: ["line", "enabled"]),
+                  case .string(let line)? = args["line"],
+                  !line.trimmingCharacters(in: .whitespaces).isEmpty,
+                  case .bool(let enabled)? = args["enabled"] else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "set_line_enabled requires a non-empty string line and a boolean enabled."
+                ))
+            }
+            return .success(.setLineEnabled(line: line.trimmingCharacters(in: .whitespaces), enabled: enabled))
+        case "set_line_profile":
+            guard Set(args.keys).isSubset(of: ["line", "profile"]),
+                  case .string(let line)? = args["line"],
+                  !line.trimmingCharacters(in: .whitespaces).isEmpty,
+                  case .string(let profile)? = args["profile"],
+                  !profile.trimmingCharacters(in: .whitespaces).isEmpty else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "set_line_profile requires non-empty string arguments line and profile."
+                ))
+            }
+            return .success(.setLineProfile(
+                line: line.trimmingCharacters(in: .whitespaces),
+                profile: profile.trimmingCharacters(in: .whitespaces)
+            ))
+        case "find_contact":
+            guard Set(args.keys).isSubset(of: ["name"]),
+                  case .string(let name)? = args["name"],
+                  !name.trimmingCharacters(in: .whitespaces).isEmpty else {
+                return .failure(ControlError(code: "invalid_arguments", message: "find_contact requires a non-empty string name."))
+            }
+            return .success(.findContact(name.trimmingCharacters(in: .whitespaces)))
         case "get_transcript":
             guard Set(args.keys).isSubset(of: ["call_id"]) else {
                 return .failure(ControlError(code: "invalid_arguments", message: "get_transcript accepts only the optional call_id argument."))
@@ -262,8 +301,8 @@ public enum ControlRequestParser {
             }
             return .success(.getTranscript(nil))
         case "get_history":
-            guard Set(args.keys).isSubset(of: ["limit"]) else {
-                return .failure(ControlError(code: "invalid_arguments", message: "get_history accepts only the optional limit argument."))
+            guard Set(args.keys).isSubset(of: ["limit", "query"]) else {
+                return .failure(ControlError(code: "invalid_arguments", message: "get_history accepts only the optional limit and query arguments."))
             }
             let limit: Int
             if let value = args["limit"] {
@@ -274,7 +313,14 @@ public enum ControlRequestParser {
             } else {
                 limit = 20
             }
-            return .success(.getHistory(limit))
+            var query: String?
+            if let value = args["query"] {
+                guard case .string(let text) = value, !text.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    return .failure(ControlError(code: "invalid_arguments", message: "query must be a non-empty string."))
+                }
+                query = text.trimmingCharacters(in: .whitespaces)
+            }
+            return .success(.getHistory(limit: limit, query: query))
         case "get_last_summary":
             return noArguments(args, command: .getLastSummary)
         default:
@@ -322,13 +368,38 @@ public enum MCPProtocol {
         tool("get_state", "Get the current registration and call state."),
         tool(
             "get_history",
-            "Get recent calls from the on-device call archive, newest first: call_id, direction, peer, caller name, timestamp, duration, whether it was missed, and whether a summary exists.",
-            properties: ["limit": .object(["type": .string("integer"), "minimum": .integer(1), "maximum": .integer(50), "default": .integer(20)])]
+            "Get recent calls from the on-device call archive, newest first: call_id, direction, peer, caller name, timestamp, duration, whether it was missed, and whether a summary exists. With query, search names, numbers, summaries and transcript text instead of returning the newest calls.",
+            properties: [
+                "limit": .object(["type": .string("integer"), "minimum": .integer(1), "maximum": .integer(50), "default": .integer(20)]),
+                "query": schema("string")
+            ]
         ),
         tool(
             "get_last_summary",
             "Get the most recent call summary, including its structured fields (caller, request, callbackNumber, nextSteps, outcome, details) when the summary is in the labelled format.",
             properties: [:]
+        ),
+        tool(
+            "list_lines",
+            "List the configured SIP lines: label, SIP address, provider, whether the line is online, its registration state, its assistant profile, and which line outgoing calls use. Call this before dial or set_line_* so you know the exact line names."
+        ),
+        tool(
+            "set_line_enabled",
+            "Take one SIP line online or offline. An offline line keeps its configuration but does not register, so it receives no calls and cannot place any. Other lines keep their registration. Refuses while that line is on a call.",
+            properties: ["line": schema("string"), "enabled": .object(["type": .string("boolean")])],
+            required: ["line", "enabled"]
+        ),
+        tool(
+            "set_line_profile",
+            "Switch the assistant profile of one SIP line. The profile decides what the assistant says when it answers that number. Use list_lines for the available line names and the profile each line currently uses.",
+            properties: ["line": schema("string"), "profile": schema("string")],
+            required: ["line", "profile"]
+        ),
+        tool(
+            "find_contact",
+            "Look up numbers for a contact by name, so a call can be placed to the right number instead of guessing. Returns display name, number, and label per match.",
+            properties: ["name": schema("string")],
+            required: ["name"]
         ),
         tool(
             "get_transcript",

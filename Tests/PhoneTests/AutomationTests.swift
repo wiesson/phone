@@ -40,7 +40,7 @@ import Testing
     #expect(throws: ControlError.self) { try ControlRequestParser.parse(emptyTask).get() }
 
     let history = Data(#"{"cmd":"get_history","args":{"limit":7}}"#.utf8)
-    #expect(try ControlRequestParser.parse(history).get() == .getHistory(7))
+    #expect(try ControlRequestParser.parse(history).get() == .getHistory(limit: 7, query: nil))
 
     let injected = Data("{\"cmd\":\"dial\",\"args\":{\"number\":\"123\\n/hangup\"}}".utf8)
     guard case .failure(let injectionError) = ControlRequestParser.parse(injected) else {
@@ -91,7 +91,11 @@ import Testing
         guard case .object(let object) = tool, case .string(let name) = object["name"] else { return nil }
         return name
     }
-    #expect(names == ["dial", "assistant_call", "answer", "hangup", "send_dtmf", "get_state", "get_history", "get_last_summary", "get_transcript"])
+    #expect(names == [
+        "dial", "assistant_call", "answer", "hangup", "send_dtmf", "get_state",
+        "get_history", "get_last_summary", "list_lines", "set_line_enabled",
+        "set_line_profile", "find_contact", "get_transcript"
+    ])
     for tool in tools {
         guard case .object(let object) = tool, case .object(let schema) = object["inputSchema"] else {
             Issue.record("Tool is missing an input schema")
@@ -118,6 +122,54 @@ import Testing
     let unknown = Data(#"{"cmd":"get_transcript","args":{"other":"x"}}"#.utf8)
     guard case .failure = ControlRequestParser.parse(unknown) else {
         Issue.record("an unknown argument must be rejected")
+        return
+    }
+}
+
+@Test func lineCommandsRequireTheArgumentsTheirDescriptionsPromise() throws {
+    let list = Data(#"{"cmd":"list_lines","args":{}}"#.utf8)
+    #expect(try ControlRequestParser.parse(list).get() == .listLines)
+
+    let enable = Data(#"{"cmd":"set_line_enabled","args":{"line":" nordwerk Test ","enabled":false}}"#.utf8)
+    #expect(try ControlRequestParser.parse(enable).get() == .setLineEnabled(line: "nordwerk Test", enabled: false))
+
+    // A missing or non-boolean flag must not be guessed at: it decides whether
+    // a line stops receiving calls.
+    for body in [
+        #"{"cmd":"set_line_enabled","args":{"line":"a"}}"#,
+        #"{"cmd":"set_line_enabled","args":{"line":"a","enabled":"yes"}}"#,
+        #"{"cmd":"set_line_enabled","args":{"line":"","enabled":true}}"#
+    ] {
+        guard case .failure = ControlRequestParser.parse(Data(body.utf8)) else {
+            Issue.record("must reject: \(body)")
+            return
+        }
+    }
+
+    let profile = Data(#"{"cmd":"set_line_profile","args":{"line":"TM Travel","profile":"Mia · Take Memories"}}"#.utf8)
+    #expect(try ControlRequestParser.parse(profile).get() == .setLineProfile(line: "TM Travel", profile: "Mia · Take Memories"))
+}
+
+@Test func historySearchIsOptionalAndValidated() throws {
+    let plain = Data(#"{"cmd":"get_history","args":{"limit":3}}"#.utf8)
+    #expect(try ControlRequestParser.parse(plain).get() == .getHistory(limit: 3, query: nil))
+
+    let searched = Data(#"{"cmd":"get_history","args":{"query":" Oman "}}"#.utf8)
+    #expect(try ControlRequestParser.parse(searched).get() == .getHistory(limit: 20, query: "Oman"))
+
+    let blank = Data(#"{"cmd":"get_history","args":{"query":"  "}}"#.utf8)
+    guard case .failure = ControlRequestParser.parse(blank) else {
+        Issue.record("a blank query must be rejected rather than returning everything")
+        return
+    }
+}
+
+@Test func contactLookupNeedsAName() throws {
+    let found = Data(#"{"cmd":"find_contact","args":{"name":" Heike "}}"#.utf8)
+    #expect(try ControlRequestParser.parse(found).get() == .findContact("Heike"))
+
+    guard case .failure = ControlRequestParser.parse(Data(#"{"cmd":"find_contact","args":{}}"#.utf8)) else {
+        Issue.record("find_contact without a name must be rejected")
         return
     }
 }
