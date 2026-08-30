@@ -373,12 +373,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             self?.showAutomationStatus(message)
         }
         controlServer.onCommand = { [weak self] command in
-            await MainActor.run {
-                guard let self else {
-                    return .failure(ControlError(code: "unavailable", message: "Phone control is unavailable."))
-                }
-                return self.handleControlCommand(command)
+            guard let self else {
+                return .failure(ControlError(code: "unavailable", message: "Phone control is unavailable."))
             }
+            return await self.handleControlCommand(command)
         }
         let defaults = UserDefaults.standard
         if let file = Self.loadAccountsFile(from: accountsFileURL) {
@@ -1759,6 +1757,24 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
+    /// Ships the labelled fields next to the text so a receiving agent does not
+    /// have to parse prose.
+    private func summaryPayload(text: String, createdAt: Date, callID: UUID? = nil) -> JSONValue {
+        var payload: [String: JSONValue] = [
+            "text": .string(text),
+            "timestamp": .string(ISO8601DateFormatter().string(from: createdAt))
+        ]
+        if let callID { payload["call_id"] = .string(callID.uuidString) }
+        let sections = parseCallSummary(text)
+        if !sections.isEmpty {
+            payload["fields"] = .object(Dictionary(
+                sections.map { ($0.field.rawValue, JSONValue.string($0.value)) },
+                uniquingKeysWith: { first, _ in first }
+            ))
+        }
+        return .object(payload)
+    }
+
     private func switchAccountForControl(_ accountQuery: String?) -> ControlError? {
         guard let accountQuery else { return nil }
         let query = accountQuery.lowercased()
@@ -1777,7 +1793,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
-    private func handleControlCommand(_ command: ControlCommand) -> ControlResponse {
+    private func handleControlCommand(_ command: ControlCommand) async -> ControlResponse {
         guard hasRegisteredAccount else {
             return .failure(ControlError(code: "not_registered", message: "Phone is not registered with a SIP provider."))
         }
@@ -1831,23 +1847,63 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             ]))
         case .getHistory(let limit):
             let formatter = ISO8601DateFormatter()
-            let records = history.prefix(limit).map { record in
-                JSONValue.object([
-                    "id": .string(record.id.uuidString),
-                    "direction": .string(record.direction.rawValue),
-                    "peer": record.peer.map(JSONValue.string) ?? .null,
-                    "timestamp": .string(formatter.string(from: record.date)),
-                    "duration": .double(record.duration),
-                    "missed": .bool(record.missed)
-                ])
+            do {
+                let calls = try await store.fetchCalls(limit: limit, offset: 0)
+                return .success(.array(calls.map { call in
+                    JSONValue.object([
+                        "call_id": .string(call.id.uuidString),
+                        "direction": .string(call.direction.rawValue),
+                        "peer": call.peer.map(JSONValue.string) ?? .null,
+                        "name": (displayName(for: call.peer) ?? call.displayName).map(JSONValue.string) ?? .null,
+                        "timestamp": .string(formatter.string(from: call.startedAt)),
+                        "duration": .double(call.duration),
+                        "missed": .bool(call.missed),
+                        "has_summary": .bool(call.summary != nil)
+                    ])
+                }))
+            } catch {
+                return .failure(ControlError(code: "unavailable", message: error.localizedDescription))
             }
-            return .success(.array(records))
         case .getLastSummary:
-            guard let summary else { return .success(.null) }
-            return .success(.object([
-                "text": .string(summary.text),
-                "timestamp": .string(ISO8601DateFormatter().string(from: summary.createdAt))
-            ]))
+            if let summary {
+                return .success(summaryPayload(text: summary.text, createdAt: summary.createdAt))
+            }
+            do {
+                let calls = try await store.fetchCalls(limit: 50, offset: 0)
+                guard let call = calls.first(where: { $0.summary != nil }), let text = call.summary else {
+                    return .success(.null)
+                }
+                return .success(summaryPayload(text: text, createdAt: call.startedAt, callID: call.id))
+            } catch {
+                return .failure(ControlError(code: "unavailable", message: error.localizedDescription))
+            }
+        case .getTranscript(let identifier):
+            do {
+                let callID: UUID?
+                if let identifier {
+                    guard let parsed = UUID(uuidString: identifier) else {
+                        return .failure(ControlError(code: "invalid_arguments", message: "call_id must be a UUID from get_history."))
+                    }
+                    callID = parsed
+                } else {
+                    callID = try await store.fetchCalls(limit: 1, offset: 0).first?.id
+                }
+                guard let callID else { return .success(.array([])) }
+                let entries = try await store.fetchUtterances(callId: callID)
+                let formatter = ISO8601DateFormatter()
+                return .success(.object([
+                    "call_id": .string(callID.uuidString),
+                    "utterances": .array(entries.map { entry in
+                        JSONValue.object([
+                            "speaker": .string(entry.speakerTitle.lowercased()),
+                            "text": .string(entry.text),
+                            "timestamp": .string(formatter.string(from: entry.createdAt))
+                        ])
+                    })
+                ]))
+            } catch {
+                return .failure(ControlError(code: "unavailable", message: error.localizedDescription))
+            }
         }
     }
 

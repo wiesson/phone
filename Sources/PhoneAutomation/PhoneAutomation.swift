@@ -171,6 +171,7 @@ public enum ControlCommand: Equatable, Sendable {
     case getState
     case getHistory(Int)
     case getLastSummary
+    case getTranscript(String?)
 }
 
 public struct ControlError: Error, Codable, Equatable, Sendable {
@@ -248,6 +249,18 @@ public enum ControlRequestParser {
             return .success(.sendDTMF(digit))
         case "get_state":
             return noArguments(args, command: .getState)
+        case "get_transcript":
+            guard Set(args.keys).isSubset(of: ["call_id"]) else {
+                return .failure(ControlError(code: "invalid_arguments", message: "get_transcript accepts only the optional call_id argument."))
+            }
+            if let value = args["call_id"] {
+                guard case .string(let identifier) = value,
+                      !identifier.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    return .failure(ControlError(code: "invalid_arguments", message: "call_id must be a non-empty string."))
+                }
+                return .success(.getTranscript(identifier.trimmingCharacters(in: .whitespaces)))
+            }
+            return .success(.getTranscript(nil))
         case "get_history":
             guard Set(args.keys).isSubset(of: ["limit"]) else {
                 return .failure(ControlError(code: "invalid_arguments", message: "get_history accepts only the optional limit argument."))
@@ -307,8 +320,21 @@ public enum MCPProtocol {
         tool("hangup", "Hang up the active call."),
         tool("send_dtmf", "Send a DTMF digit during the active call.", properties: ["digit": .object(["type": .string("string"), "pattern": .string("^[0-9*#]$")])], required: ["digit"]),
         tool("get_state", "Get the current registration and call state."),
-        tool("get_history", "Get recent call history.", properties: ["limit": .object(["type": .string("integer"), "minimum": .integer(1), "maximum": .integer(50), "default": .integer(20)])]),
-        tool("get_last_summary", "Get the most recent local call summary.")
+        tool(
+            "get_history",
+            "Get recent calls from the on-device call archive, newest first: call_id, direction, peer, caller name, timestamp, duration, whether it was missed, and whether a summary exists.",
+            properties: ["limit": .object(["type": .string("integer"), "minimum": .integer(1), "maximum": .integer(50), "default": .integer(20)])]
+        ),
+        tool(
+            "get_last_summary",
+            "Get the most recent call summary, including its structured fields (caller, request, callbackNumber, nextSteps, outcome, details) when the summary is in the labelled format.",
+            properties: [:]
+        ),
+        tool(
+            "get_transcript",
+            "Get the transcript of a call as an ordered list of utterances with speaker and text. Without call_id this returns the transcript of the most recent call. Use get_history first to find a call_id.",
+            properties: ["call_id": schema("string")]
+        )
     ]
 
     public static func response(

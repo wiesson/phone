@@ -91,7 +91,7 @@ import Testing
         guard case .object(let object) = tool, case .string(let name) = object["name"] else { return nil }
         return name
     }
-    #expect(names == ["dial", "assistant_call", "answer", "hangup", "send_dtmf", "get_state", "get_history", "get_last_summary"])
+    #expect(names == ["dial", "assistant_call", "answer", "hangup", "send_dtmf", "get_state", "get_history", "get_last_summary", "get_transcript"])
     for tool in tools {
         guard case .object(let object) = tool, case .object(let schema) = object["inputSchema"] else {
             Issue.record("Tool is missing an input schema")
@@ -99,5 +99,25 @@ import Testing
         }
         #expect(schema["type"] == .string("object"))
         #expect(schema["additionalProperties"] == .bool(false))
+    }
+}
+
+@Test func transcriptCommandTakesAnOptionalCallIdentifier() throws {
+    let bare = Data(#"{"cmd":"get_transcript","args":{}}"#.utf8)
+    #expect(try ControlRequestParser.parse(bare).get() == .getTranscript(nil))
+
+    let identified = Data(#"{"cmd":"get_transcript","args":{"call_id":" abc "}}"#.utf8)
+    #expect(try ControlRequestParser.parse(identified).get() == .getTranscript("abc"))
+
+    let empty = Data(#"{"cmd":"get_transcript","args":{"call_id":"  "}}"#.utf8)
+    guard case .failure = ControlRequestParser.parse(empty) else {
+        Issue.record("an empty call_id must be rejected")
+        return
+    }
+
+    let unknown = Data(#"{"cmd":"get_transcript","args":{"other":"x"}}"#.utf8)
+    guard case .failure = ControlRequestParser.parse(unknown) else {
+        Issue.record("an unknown argument must be rejected")
+        return
     }
 }
