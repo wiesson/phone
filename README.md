@@ -45,8 +45,8 @@ Transcription and archive:
 
 Automation:
 
-- built-in MCP server: dial, answer, hang up, DTMF, state, history, last
-  summary, and assistant_call for agent-driven outbound calls
+- built-in MCP server for calls, history, end-to-end SIP line provisioning,
+  registration status, and per-line assistant prompts, profiles, and answering rules
 - HMAC-signed webhooks for call events, optionally with transcript and summary
 
 Testing:
@@ -193,11 +193,45 @@ claude mcp add phone -- /Applications/Phone.app/Contents/Helpers/phone-mcp
 ```
 
 For a build kept in this repository, replace the command with the absolute path
-to `dist/Phone.app/Contents/Helpers/phone-mcp`. The server exposes `dial`,
-`answer`, `hangup`, `send_dtmf`, `get_state`, `get_history`, and
-`get_last_summary`. `dial` requires a `number` string, `send_dtmf` requires one
-`digit` from `0`–`9`, `*`, or `#`, and `get_history` accepts an optional `limit`
-from 1 through 50.
+to `dist/Phone.app/Contents/Helpers/phone-mcp`. The server exposes these tools.
+`read` tools only inspect local state, `write` tools change persisted
+configuration, and `action` tools reach the telephone network.
+
+| Tool | Parameters | Access |
+| --- | --- | --- |
+| `dial` | `number`; optional `account` | action |
+| `assistant_call` | `number`, `task`; optional `account` | action |
+| `answer`, `hangup` | none | action |
+| `send_dtmf` | `digit` (`0`–`9`, `*`, or `#`) | action |
+| `get_state` | none | read |
+| `get_history` | optional `limit` (1–50), `query` | read |
+| `get_last_summary` | none | read |
+| `get_transcript` | optional `call_id`, `limit` (1–500) | read |
+| `list_lines` | none | read |
+| `create_line` | `username`, `password`; optional provider and SIP/display settings | write |
+| `update_line` | `line`; optional password, provider, SIP/display settings | write |
+| `delete_line` | `line` | write |
+| `select_active_line` | `line` | write |
+| `get_registration_status` | optional `line` | read |
+| `set_line_enabled` | `line`, `enabled` | write |
+| `set_line_profile` | `line`, `profile` | write |
+| `set_line_prompt` | `line`, `instructions`; optional `context_data` | write |
+| `create_assistant_profile` | `name`, `instructions`; optional `context_data` | write |
+| `update_assistant_profile` | `profile_id`; optional name, instructions, context | write |
+| `delete_assistant_profile` | `profile_id` | write |
+| `list_assistant_profiles` | none | read |
+| `set_line_answer_mode` | `line`, `mode`; optional `answer_delay_seconds` | write |
+| `set_line_business_hours` | `line`, weekday window, weekend window | write |
+| `find_contact` | `name` | read |
+
+Provider identifiers are `telekom`, `fritzBox`, `sipgate`, `easybell`, and
+`custom`. Explicit `domain`, `outbound_proxy`, `stun_server`, and
+`media_encryption` values override preset defaults. Passwords are accepted only
+by `create_line` and `update_line`, stored in Keychain, and never returned. A
+failed `create_line` registration returns `registered: false` and the provider's
+`last_error`; the saved line remains available for correction with `update_line`.
+Business-hours windows use `open`, `start_minute`, and `end_minute`, where the
+minute values are 0–1439 and a window may cross midnight.
 
 The helper connects only to
 `~/Library/Application Support/Phone/control.sock`. The app creates that Unix

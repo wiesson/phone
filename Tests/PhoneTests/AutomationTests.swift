@@ -93,8 +93,12 @@ import Testing
     }
     #expect(names == [
         "dial", "assistant_call", "answer", "hangup", "send_dtmf", "get_state",
-        "get_history", "get_last_summary", "list_lines", "set_line_enabled",
-        "set_line_profile", "find_contact", "get_transcript"
+        "get_history", "get_last_summary", "list_lines",
+        "create_line", "update_line", "delete_line", "select_active_line",
+        "get_registration_status", "set_line_enabled", "set_line_profile",
+        "set_line_prompt", "create_assistant_profile", "update_assistant_profile",
+        "delete_assistant_profile", "list_assistant_profiles", "set_line_answer_mode",
+        "set_line_business_hours", "find_contact", "get_transcript"
     ])
     for tool in tools {
         guard case .object(let object) = tool, case .object(let schema) = object["inputSchema"] else {
@@ -103,6 +107,22 @@ import Testing
         }
         #expect(schema["type"] == .string("object"))
         #expect(schema["additionalProperties"] == .bool(false))
+    }
+
+    for name in ["create_line", "update_line"] {
+        let tool = try #require(tools.first { tool in
+            guard case .object(let object) = tool else { return false }
+            return object["name"] == .string(name)
+        })
+        guard case .object(let object) = tool,
+              case .object(let inputSchema) = object["inputSchema"],
+              case .object(let properties) = inputSchema["properties"],
+              case .object(let password) = properties["password"] else {
+            Issue.record("\(name) must declare an input-only password")
+            continue
+        }
+        #expect(password["type"] == .string("string"))
+        #expect(password["writeOnly"] == .bool(true))
     }
 }
 
@@ -148,6 +168,70 @@ import Testing
 
     let profile = Data(#"{"cmd":"set_line_profile","args":{"line":"TM Travel","profile":"Mia · Take Memories"}}"#.utf8)
     #expect(try ControlRequestParser.parse(profile).get() == .setLineProfile(line: "TM Travel", profile: "Mia · Take Memories"))
+}
+
+@Test func provisioningCommandsPreservePasswordsOnlyAsInputs() throws {
+    let create = Data(#"{"cmd":"create_line","args":{"provider":"telekom","username":" +49123 ","password":"  private value  ","label":" Home "}}"#.utf8)
+    #expect(try ControlRequestParser.parse(create).get() == .createLine(ControlCreateLine(
+        provider: "telekom",
+        username: "+49123",
+        password: "  private value  ",
+        domain: nil,
+        outboundProxy: nil,
+        stunServer: nil,
+        mediaEncryption: nil,
+        label: "Home",
+        sipDisplayName: nil,
+        outboundCallerID: nil
+    )))
+
+    let update = Data(#"{"cmd":"update_line","args":{"line":" Home ","domain":"sip.example.test"}}"#.utf8)
+    #expect(try ControlRequestParser.parse(update).get() == .updateLine(ControlUpdateLine(
+        line: "Home",
+        provider: nil,
+        password: nil,
+        domain: "sip.example.test",
+        outboundProxy: nil,
+        stunServer: nil,
+        mediaEncryption: nil,
+        label: nil,
+        sipDisplayName: nil,
+        outboundCallerID: nil
+    )))
+
+    for body in [
+        #"{"cmd":"create_line","args":{"provider":"unknown","username":"u","password":"p"}}"#,
+        #"{"cmd":"create_line","args":{"username":"u"}}"#,
+        #"{"cmd":"update_line","args":{"line":"Home"}}"#
+    ] {
+        guard case .failure = ControlRequestParser.parse(Data(body.utf8)) else {
+            Issue.record("must reject: \(body)")
+            return
+        }
+    }
+}
+
+@Test func assistantConfigurationCommandsRoundTripTheirWireArguments() throws {
+    let answerMode = Data(#"{"cmd":"set_line_answer_mode","args":{"line":" Work ","mode":"outside_business_hours","answer_delay_seconds":45}}"#.utf8)
+    #expect(try ControlRequestParser.parse(answerMode).get() == .setLineAnswerMode(
+        line: "Work",
+        mode: .outsideBusinessHours,
+        answerDelaySeconds: 45
+    ))
+
+    let hours = Data(#"{"cmd":"set_line_business_hours","args":{"line":"Work","weekdays":{"open":true,"start_minute":510,"end_minute":1050},"weekend":{"open":false,"start_minute":600,"end_minute":840}}}"#.utf8)
+    #expect(try ControlRequestParser.parse(hours).get() == .setLineBusinessHours(
+        line: "Work",
+        weekdays: .init(open: true, startMinute: 510, endMinute: 1050),
+        weekend: .init(open: false, startMinute: 600, endMinute: 840)
+    ))
+
+    let prompt = Data(#"{"cmd":"set_line_prompt","args":{"line":"Work","instructions":" Answer as support. ","context_data":" Tier: gold "}}"#.utf8)
+    #expect(try ControlRequestParser.parse(prompt).get() == .setLinePrompt(
+        line: "Work",
+        instructions: "Answer as support.",
+        contextData: "Tier: gold"
+    ))
 }
 
 @Test func historySearchIsOptionalAndValidated() throws {
@@ -211,11 +295,19 @@ import Testing
         #expect(byName[name]?["idempotentHint"] == .bool(false), "\(name) twice means twice")
         #expect(byName[name]?["openWorldHint"] == .bool(true), "\(name) reaches the network")
     }
-    for name in ["get_state", "get_history", "get_last_summary", "get_transcript", "list_lines", "find_contact"] {
+    for name in [
+        "get_state", "get_history", "get_last_summary", "get_transcript", "list_lines",
+        "get_registration_status", "list_assistant_profiles", "find_contact"
+    ] {
         #expect(byName[name]?["readOnlyHint"] == .bool(true), "\(name) must be read-only")
         #expect(byName[name]?["destructiveHint"] == .bool(false), "\(name) must not be destructive")
     }
-    for name in ["set_line_enabled", "set_line_profile"] {
+    for name in [
+        "create_line", "update_line", "delete_line", "select_active_line",
+        "set_line_enabled", "set_line_profile", "set_line_prompt", "create_assistant_profile",
+        "update_assistant_profile", "delete_assistant_profile", "set_line_answer_mode",
+        "set_line_business_hours"
+    ] {
         #expect(byName[name]?["readOnlyHint"] == .bool(false), "\(name) changes configuration")
         #expect(byName[name]?["idempotentHint"] == .bool(true), "\(name) settles on the same state")
     }
