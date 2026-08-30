@@ -108,10 +108,10 @@ import Testing
 
 @Test func transcriptCommandTakesAnOptionalCallIdentifier() throws {
     let bare = Data(#"{"cmd":"get_transcript","args":{}}"#.utf8)
-    #expect(try ControlRequestParser.parse(bare).get() == .getTranscript(nil))
+    #expect(try ControlRequestParser.parse(bare).get() == .getTranscript(callID: nil, limit: 200))
 
     let identified = Data(#"{"cmd":"get_transcript","args":{"call_id":" abc "}}"#.utf8)
-    #expect(try ControlRequestParser.parse(identified).get() == .getTranscript("abc"))
+    #expect(try ControlRequestParser.parse(identified).get() == .getTranscript(callID: "abc", limit: 200))
 
     let empty = Data(#"{"cmd":"get_transcript","args":{"call_id":"  "}}"#.utf8)
     guard case .failure = ControlRequestParser.parse(empty) else {
@@ -171,5 +171,23 @@ import Testing
     guard case .failure = ControlRequestParser.parse(Data(#"{"cmd":"find_contact","args":{}}"#.utf8)) else {
         Issue.record("find_contact without a name must be rejected")
         return
+    }
+}
+
+@Test func transcriptPagingIsBoundedSoTheReplyStaysReadable() throws {
+    // The control client reads at most 64 KiB, so an unbounded transcript would
+    // come back as truncated, invalid JSON.
+    let paged = Data(#"{"cmd":"get_transcript","args":{"limit":10}}"#.utf8)
+    #expect(try ControlRequestParser.parse(paged).get() == .getTranscript(callID: nil, limit: 10))
+
+    for body in [
+        #"{"cmd":"get_transcript","args":{"limit":0}}"#,
+        #"{"cmd":"get_transcript","args":{"limit":501}}"#,
+        #"{"cmd":"get_transcript","args":{"limit":"20"}}"#
+    ] {
+        guard case .failure = ControlRequestParser.parse(Data(body.utf8)) else {
+            Issue.record("must reject: \(body)")
+            return
+        }
     }
 }

@@ -127,8 +127,64 @@ struct LibraryView: View {
             DesktopPhoneView(phone: phone, numberFieldFocused: $numberFieldFocused)
                 .navigationTitle(phone.state.peer.map { displayName(forPeer: $0) } ?? "Call")
         } else {
-            selectionDetail
+            VStack(spacing: 0) {
+                phoneStatusBanner
+                selectionDetail
+            }
         }
+    }
+
+    /// The call list has no room for a phone that is off or unregistered, and
+    /// the dialer no longer lives in the sidebar — so the state says so here,
+    /// with the way out attached.
+    @ViewBuilder
+    private var phoneStatusBanner: some View {
+        switch phone.state {
+        case .error(let message):
+            statusBanner(message, systemImage: "exclamationmark.triangle.fill", tint: .orange, action: "Try Again") {
+                phone.recoverFromError()
+            }
+        case .stopped:
+            statusBanner(
+                phone.managedAccounts.contains(where: \.isEnabled)
+                    ? "The phone is off."
+                    : "Every line is offline. Take one online in Settings › Lines.",
+                systemImage: "phone.down.fill",
+                tint: .secondary,
+                action: phone.managedAccounts.contains(where: \.isEnabled) ? "Start Phone" : nil
+            ) {
+                phone.recoverFromError()
+            }
+        case .starting:
+            statusBanner("Registering with the provider …", systemImage: "phone.badge.clock", tint: .secondary, action: nil) {}
+        default:
+            EmptyView()
+        }
+    }
+
+    private func statusBanner(
+        _ message: String,
+        systemImage: String,
+        tint: Color,
+        action: String?,
+        perform: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .foregroundStyle(tint)
+            Text(message)
+                .font(.callout)
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            if let action {
+                Button(action, action: perform)
+                    .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background(tint.opacity(0.10))
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     @ViewBuilder
@@ -331,7 +387,7 @@ struct LibraryView: View {
         do {
             try await store.deleteCall(call.id)
             if selection?.callID == call.id {
-                selection = .phone
+                selection = nil
                 utterances = []
             }
             await refreshCalls()
@@ -902,13 +958,16 @@ private struct KeypadPopover: View {
     @ObservedObject var phone: PhoneController
     let dismiss: () -> Void
 
+    // Deliberately local: binding straight to phone.number would let an edit
+    // here rewrite the target of a call that is already dialling.
+    @State private var entry = ""
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("New call")
                 .font(.headline)
-            TextField("Number, contact, or SIP address", text: $phone.number)
+            TextField("Number, contact, or SIP address", text: $entry)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 280)
                 .focused($fieldFocused)
@@ -922,16 +981,21 @@ private struct KeypadPopover: View {
                     Label("Call", systemImage: "phone.fill")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!phone.state.isReady || phone.number.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(!phone.state.isReady || entry.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             .frame(width: 280)
         }
         .padding(16)
-        .onAppear { fieldFocused = true }
+        .onAppear {
+            entry = phone.number
+            fieldFocused = true
+        }
     }
 
     private func dial() {
-        guard phone.state.isReady, !phone.number.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        let target = entry.trimmingCharacters(in: .whitespaces)
+        guard phone.state.isReady, !target.isEmpty else { return }
+        phone.number = target
         phone.dial()
         dismiss()
     }

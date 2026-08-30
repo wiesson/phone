@@ -219,6 +219,33 @@ actor PhoneStore {
         return calls
     }
 
+    /// Looks up one archived call, so a caller can tell an unknown identifier
+    /// apart from a call that simply has no transcript.
+    func call(id: UUID) throws -> ArchivedCall? {
+        let statement = try prepare(
+            """
+            SELECT id, direction, peer, display_name, started_at, duration, missed, summary
+            FROM calls WHERE id = ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind(id.uuidString, at: 1, in: statement)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        guard let direction = text(statement, column: 1).flatMap(CallDirection.init(rawValue:)) else {
+            throw PhoneStoreError.invalidRecord
+        }
+        return ArchivedCall(
+            id: id,
+            direction: direction,
+            peer: text(statement, column: 2),
+            displayName: text(statement, column: 3),
+            startedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 4)),
+            duration: sqlite3_column_double(statement, 5),
+            missed: sqlite3_column_int(statement, 6) != 0,
+            summary: text(statement, column: 7)
+        )
+    }
+
     func fetchUtterances(callId: UUID) throws -> [TranscriptEntry] {
         let statement = try prepare(
             """

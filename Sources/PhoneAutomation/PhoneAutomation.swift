@@ -171,7 +171,7 @@ public enum ControlCommand: Equatable, Sendable {
     case getState
     case getHistory(limit: Int, query: String?)
     case getLastSummary
-    case getTranscript(String?)
+    case getTranscript(callID: String?, limit: Int)
     case listLines
     case setLineEnabled(line: String, enabled: Bool)
     case setLineProfile(line: String, profile: String)
@@ -289,17 +289,25 @@ public enum ControlRequestParser {
             }
             return .success(.findContact(name.trimmingCharacters(in: .whitespaces)))
         case "get_transcript":
-            guard Set(args.keys).isSubset(of: ["call_id"]) else {
-                return .failure(ControlError(code: "invalid_arguments", message: "get_transcript accepts only the optional call_id argument."))
+            guard Set(args.keys).isSubset(of: ["call_id", "limit"]) else {
+                return .failure(ControlError(code: "invalid_arguments", message: "get_transcript accepts only the optional call_id and limit arguments."))
             }
+            var callID: String?
             if let value = args["call_id"] {
                 guard case .string(let identifier) = value,
                       !identifier.trimmingCharacters(in: .whitespaces).isEmpty else {
                     return .failure(ControlError(code: "invalid_arguments", message: "call_id must be a non-empty string."))
                 }
-                return .success(.getTranscript(identifier.trimmingCharacters(in: .whitespaces)))
+                callID = identifier.trimmingCharacters(in: .whitespaces)
             }
-            return .success(.getTranscript(nil))
+            var limit = 200
+            if let value = args["limit"] {
+                guard case .integer(let requested) = value, (1...500).contains(requested) else {
+                    return .failure(ControlError(code: "invalid_arguments", message: "limit must be an integer from 1 through 500."))
+                }
+                limit = requested
+            }
+            return .success(.getTranscript(callID: callID, limit: limit))
         case "get_history":
             guard Set(args.keys).isSubset(of: ["limit", "query"]) else {
                 return .failure(ControlError(code: "invalid_arguments", message: "get_history accepts only the optional limit and query arguments."))
@@ -363,7 +371,7 @@ public enum MCPProtocol {
         tool("dial", "Dial a phone number or SIP address. Optionally select the outgoing line first via account (label, username, or SIP address of a configured account).", properties: ["number": schema("string"), "account": schema("string")], required: ["number"]),
         tool("assistant_call", "Place an outbound call handled by the AI voice assistant. The task describes what the assistant should accomplish on the call (goal, tone, key details); it navigates IVR menus itself and hands over to the user when a human answers.", properties: ["number": schema("string"), "task": schema("string"), "account": schema("string")], required: ["number", "task"]),
         tool("answer", "Answer the incoming call."),
-        tool("hangup", "Hang up the active call."),
+        tool("hangup", "Hang up the active call. The call is archived a moment later, so a get_history immediately afterwards may not list it yet."),
         tool("send_dtmf", "Send a DTMF digit during the active call.", properties: ["digit": .object(["type": .string("string"), "pattern": .string("^[0-9*#]$")])], required: ["digit"]),
         tool("get_state", "Get the current registration and call state."),
         tool(
@@ -403,8 +411,11 @@ public enum MCPProtocol {
         ),
         tool(
             "get_transcript",
-            "Get the transcript of a call as an ordered list of utterances with speaker and text. Without call_id this returns the transcript of the most recent call. Use get_history first to find a call_id.",
-            properties: ["call_id": schema("string")]
+            "Get the transcript of a call as an ordered list of utterances with speaker and text, oldest first. Without call_id this returns the most recent call. Use get_history to find a call_id. The reply reports utterance_count and truncated; if truncated is true, ask again with a larger limit or work from get_last_summary instead.",
+            properties: [
+                "call_id": schema("string"),
+                "limit": .object(["type": .string("integer"), "minimum": .integer(1), "maximum": .integer(500), "default": .integer(200)])
+            ]
         )
     ]
 

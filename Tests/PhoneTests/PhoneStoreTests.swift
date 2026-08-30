@@ -163,3 +163,19 @@ private func sampleCall(id: UUID, peer: String, date: Date) -> CallRecord {
         missed: false
     )
 }
+
+@Test func lookingUpACallTellsUnknownIdsApartFromEmptyOnes() async throws {
+    let database = try TemporaryPhoneStore()
+    let store = database.store
+    let call = sampleCall(id: UUID(), peer: "+491234", date: Date(timeIntervalSince1970: 1_800_000_000))
+    try await store.recordCall(call, displayName: "Alice")
+
+    let found = try #require(try await store.call(id: call.id))
+    #expect(found.id == call.id)
+    #expect(found.displayName == "Alice")
+    #expect(found.peer == "+491234")
+
+    // Without this an invented id would answer like a real call that simply
+    // has no transcript.
+    #expect(try await store.call(id: UUID()) == nil)
+}

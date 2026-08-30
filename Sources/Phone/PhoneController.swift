@@ -242,6 +242,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private var autoAnswerTask: Task<Void, Never>?
     private var startsAssistantWhenConnected = false
     private var incomingCallAttentionRequest: Int?
+    private var dialedTarget: String?
     private var linesChangingEnablement: Set<String> = []
     private var assistantCallPlan = AssistantCallPlan()
     private var draftIDs: [Speaker: UUID] = [:]
@@ -718,6 +719,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private func beginDial(_ value: String, clearsRetry: Bool) {
         if clearsRetry { pendingDialRetry = nil }
+        dialedTarget = value
         number = value
         UserDefaults.standard.set(value, forKey: "lastDialedNumber")
         currentDirection = .outgoing
@@ -1553,7 +1555,9 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 startGeminiLive(sendsInitialGreeting: true)
             }
         case .dialing:
-            state = .dialing(number)
+            // `number` is bound to a text field and may have been edited since
+            // the dial started; the retry path reads this state back.
+            state = .dialing(dialedTarget ?? number)
             clearIncomingCallNotification()
         case .securityViolation:
             recordCall(missed: false)
@@ -1803,12 +1807,20 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     /// Ships the labelled fields next to the text so a receiving agent does not
     /// have to parse prose.
-    private func summaryPayload(text: String, createdAt: Date, callID: UUID? = nil) -> JSONValue {
+    private func summaryPayload(
+        text: String,
+        createdAt: Date,
+        callID: UUID? = nil,
+        source: String
+    ) -> JSONValue {
         var payload: [String: JSONValue] = [
             "text": .string(text),
-            "timestamp": .string(ISO8601DateFormatter().string(from: createdAt))
+            "timestamp": .string(ISO8601DateFormatter().string(from: createdAt)),
+            "call_id": callID.map { JSONValue.string($0.uuidString) } ?? .null,
+            // "live" is the call in progress or the one just finished, whose
+            // archive entry may not exist yet; "archive" is a stored call.
+            "source": .string(source)
         ]
-        if let callID { payload["call_id"] = .string(callID.uuidString) }
         let sections = parseCallSummary(text)
         if !sections.isEmpty {
             payload["fields"] = .object(Dictionary(
@@ -1838,8 +1850,16 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func handleControlCommand(_ command: ControlCommand) async -> ControlResponse {
-        guard hasRegisteredAccount else {
-            return .failure(ControlError(code: "not_registered", message: "Phone is not registered with a SIP provider."))
+        // Only the commands that need a line on the wire require registration.
+        // Reading, and putting a line back online, must keep working — otherwise
+        // an agent that takes the last line offline can never undo it.
+        switch command {
+        case .dial, .assistantCall, .answer, .hangup, .sendDTMF:
+            guard hasRegisteredAccount else {
+                return .failure(ControlError(code: "not_registered", message: "Phone is not registered with a SIP provider. Use list_lines to see which lines are offline."))
+            }
+        default:
+            break
         }
         switch command {
         case .dial(let target, let accountQuery):
@@ -1949,34 +1969,44 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             return .success(.array(matches))
         case .getLastSummary:
             if let summary {
-                return .success(summaryPayload(text: summary.text, createdAt: summary.createdAt))
+                return .success(summaryPayload(text: summary.text, createdAt: summary.createdAt, source: "live"))
             }
             do {
                 let calls = try await store.fetchCalls(limit: 50, offset: 0)
                 guard let call = calls.first(where: { $0.summary != nil }), let text = call.summary else {
                     return .success(.null)
                 }
-                return .success(summaryPayload(text: text, createdAt: call.startedAt, callID: call.id))
+                return .success(summaryPayload(text: text, createdAt: call.startedAt, callID: call.id, source: "archive"))
             } catch {
                 return .failure(ControlError(code: "unavailable", message: error.localizedDescription))
             }
-        case .getTranscript(let identifier):
+        case .getTranscript(let identifier, let limit):
             do {
-                let callID: UUID?
+                let call: ArchivedCall?
                 if let identifier {
                     guard let parsed = UUID(uuidString: identifier) else {
                         return .failure(ControlError(code: "invalid_arguments", message: "call_id must be a UUID from get_history."))
                     }
-                    callID = parsed
+                    call = try await store.call(id: parsed)
+                    guard call != nil else {
+                        return .failure(ControlError(code: "not_found", message: "No archived call has the id \(parsed.uuidString)."))
+                    }
                 } else {
-                    callID = try await store.fetchCalls(limit: 1, offset: 0).first?.id
+                    call = try await store.fetchCalls(limit: 1, offset: 0).first
                 }
-                guard let callID else { return .success(.array([])) }
-                let entries = try await store.fetchUtterances(callId: callID)
+                guard let call else {
+                    return .failure(ControlError(code: "not_found", message: "The call archive is empty."))
+                }
+                let entries = try await store.fetchUtterances(callId: call.id)
+                // The control client reads at most 64 KiB, so a long call has to
+                // arrive in pieces rather than be truncated into invalid JSON.
+                let page = entries.prefix(limit)
                 let formatter = ISO8601DateFormatter()
                 return .success(.object([
-                    "call_id": .string(callID.uuidString),
-                    "utterances": .array(entries.map { entry in
+                    "call_id": .string(call.id.uuidString),
+                    "utterance_count": .integer(entries.count),
+                    "truncated": .bool(entries.count > page.count),
+                    "utterances": .array(page.map { entry in
                         JSONValue.object([
                             "speaker": .string(entry.speakerTitle.lowercased()),
                             "text": .string(entry.text),
