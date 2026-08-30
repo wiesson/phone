@@ -17,6 +17,8 @@ private actor FakeSipgateClient: SipgateClientProtocol {
     let createdDevice: SipgateDevice
     let detailsByID: [String: SipgateDeviceDetails]
     let missingDeviceIDs: Set<String>
+    let failsDetailsAfterRotation: Bool
+    private var didRotate = false
     private var calls: [Call] = []
 
     init(
@@ -29,8 +31,10 @@ private actor FakeSipgateClient: SipgateClientProtocol {
             type: "REGISTER"
         ),
         detailsByID: [String: SipgateDeviceDetails] = [:],
-        missingDeviceIDs: Set<String> = []
+        missingDeviceIDs: Set<String> = [],
+        failsDetailsAfterRotation: Bool = false
     ) {
+        self.failsDetailsAfterRotation = failsDetailsAfterRotation
         self.userID = userID
         self.devices = devices
         self.createdDevice = createdDevice
@@ -55,6 +59,9 @@ private actor FakeSipgateClient: SipgateClientProtocol {
 
     func deviceDetails(deviceID: String) async throws -> SipgateDeviceDetails {
         calls.append(.deviceDetails(deviceID))
+        if failsDetailsAfterRotation, didRotate {
+            throw SipgateProvisioningError.networkUnavailable
+        }
         if missingDeviceIDs.contains(deviceID) {
             throw SipgateProvisioningError.requestDenied(status: 404, message: nil)
         }
@@ -66,6 +73,7 @@ private actor FakeSipgateClient: SipgateClientProtocol {
 
     func rotatePassword(deviceID: String) async throws {
         calls.append(.rotatePassword(deviceID))
+        didRotate = true
     }
 
     func recordedCalls() -> [Call] { calls }
@@ -164,7 +172,7 @@ private func registerDetails(
     #expect(calls == [.authenticatedUser, .listDevices("w0"), .deviceDetails(device.id)])
 }
 
-@Test func createsThenRotatesBeforeReadingSipgateCredentials() async throws {
+@Test func rotatesOnlyAfterTheCredentialsCouldBeReadOnce() async throws {
     let created = registerDevice(id: "e-new", alias: "Phone Mac")
     let current = registerDevice(id: created.id, alias: created.alias, online: true)
     let fake = FakeSipgateClient(
@@ -184,9 +192,13 @@ private func registerDetails(
 
     #expect(plan.password == "rotated-secret")
     #expect(plan.device.online)
+    // The credentials are read once before rotation so the local preflight can
+    // still refuse the line while the old password is still valid, and once
+    // after, to learn the new one.
     #expect(calls == [
         .authenticatedUser,
         .createDevice("w0", "Phone Mac"),
+        .deviceDetails(created.id),
         .rotatePassword(created.id),
         .deviceDetails(created.id)
     ])
@@ -331,4 +343,43 @@ private func registerDetails(
         contentType: "text/plain",
         sensitiveValues: sensitive
     ) == nil)
+}
+
+@Test func rotationThatCannotBeReadBackIsReportedAsSuchNotAsAGenericFailure() async throws {
+    let device = SipgateDevice(id: "e0", alias: "Mac", online: true, type: "REGISTER")
+    let fake = FakeSipgateClient(
+        devices: [device],
+        detailsByID: [
+            "e0": SipgateDeviceDetails(
+                device: device,
+                credentials: SipgateDeviceCredentials(
+                    username: "4030108e0",
+                    password: "old-password-value",
+                    sipServer: "sipgate.de",
+                    outboundProxy: "sipgate.de"
+                )
+            )
+        ],
+        failsDetailsAfterRotation: true
+    )
+    let service = SipgateProvisioningService(client: fake)
+
+    do {
+        _ = try await service.provisioningPlan(for: ControlProvisionFromSipgate(
+            deviceID: "e0",
+            createDevice: false,
+            alias: nil,
+            label: nil,
+            rotatePassword: true
+        ))
+        Issue.record("expected the rotation failure to surface")
+    } catch let error as SipgateProvisioningError {
+        guard case .rotatedWithoutProvisioning(let deviceID, _) = error else {
+            Issue.record("expected rotatedWithoutProvisioning, got \(error)")
+            return
+        }
+        #expect(deviceID == "e0")
+        // The message must warn that the device is now unusable.
+        #expect(error.errorDescription?.contains("no longer works") == true)
+    }
 }

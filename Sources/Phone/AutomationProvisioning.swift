@@ -161,6 +161,7 @@ func controlError(for error: SipgateProvisioningError) -> ControlError {
     case .deviceNotFound: code = "sipgate_device_not_found"
     case .notRegisterDevice: code = "sipgate_device_not_register"
     case .credentialsMissing: code = "sipgate_device_credentials_missing"
+    case .rotatedWithoutProvisioning: code = "sipgate_password_rotated_without_provisioning"
     }
     return ControlError(code: code, message: error.localizedDescription)
 }

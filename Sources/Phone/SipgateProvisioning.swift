@@ -67,9 +67,12 @@ enum SipgateProvisioningError: LocalizedError, Equatable, Sendable {
     case deviceNotFound(String)
     case notRegisterDevice(String)
     case credentialsMissing
+    case rotatedWithoutProvisioning(deviceID: String, reason: String)
 
     var errorDescription: String? {
         switch self {
+        case .rotatedWithoutProvisioning(let deviceID, let reason):
+            "The SIP password of sipgate device \(deviceID) was rotated, but the line was not provisioned: \(reason). That device's old password no longer works; provision it again to obtain the new one."
         case .missingPAT:
             "No sipgate PAT is available in Keychain. Run 'sipgate-mcp setup' and try again."
         case .invalidArguments:
@@ -141,7 +144,14 @@ struct SipgateProvisioningService: Sendable {
         return try await client.listRegisterDevices(userID: userID).filter(\.isRegister)
     }
 
-    func provisioningPlan(for arguments: ControlProvisionFromSipgate) async throws -> SipgateProvisioningPlan {
+    /// `preflight` runs the local checks that can still refuse the line — an
+    /// active call, a duplicate account. It runs BEFORE any password rotation,
+    /// because a rotation that is followed by a local refusal would leave the
+    /// sipgate device with a password nobody holds.
+    func provisioningPlan(
+        for arguments: ControlProvisionFromSipgate,
+        preflight: (ManagedSIPAccount) throws -> Void = { _ in }
+    ) async throws -> SipgateProvisioningPlan {
         let existingID = normalizedText(arguments.deviceID)
         guard (existingID != nil) != arguments.createDevice else {
             throw SipgateProvisioningError.invalidArguments
@@ -172,10 +182,7 @@ struct SipgateProvisioningService: Sendable {
             throw SipgateProvisioningError.invalidArguments
         }
 
-        if arguments.rotatePassword {
-            try await client.rotatePassword(deviceID: selected.id)
-        }
-        let details = try await deviceDetails(deviceID: selected.id)
+        var details = try await deviceDetails(deviceID: selected.id)
         guard details.device.id == selected.id else {
             throw SipgateProvisioningError.invalidResponse("device credentials")
         }
@@ -190,17 +197,51 @@ struct SipgateProvisioningService: Sendable {
             throw SipgateProvisioningError.credentialsMissing
         }
 
-        let defaults = SIPProviderPreset.sipgate.defaults
-        let account = ManagedSIPAccount(
-            provider: .sipgate,
-            username: username,
-            domain: sipServer,
-            outboundProxy: outboundProxy,
-            stunServer: defaults.stunServer,
-            mediaEncryption: defaults.mediaEncryption,
-            label: normalizedText(arguments.label)
-        )
-        return SipgateProvisioningPlan(account: account, password: password, device: details.device)
+        func account(username: String, sipServer: String, outboundProxy: String) -> ManagedSIPAccount {
+            let defaults = SIPProviderPreset.sipgate.defaults
+            return ManagedSIPAccount(
+                provider: .sipgate,
+                username: username,
+                domain: sipServer,
+                outboundProxy: outboundProxy,
+                stunServer: defaults.stunServer,
+                mediaEncryption: defaults.mediaEncryption,
+                label: normalizedText(arguments.label)
+            )
+        }
+
+        var candidate = account(username: username, sipServer: sipServer, outboundProxy: outboundProxy)
+        try preflight(candidate)
+
+        var effectivePassword = password
+        if arguments.rotatePassword {
+            try await client.rotatePassword(deviceID: selected.id)
+            // From here on the old password is dead. Any failure must say so,
+            // otherwise the device is left unusable with no explanation.
+            do {
+                details = try await deviceDetails(deviceID: selected.id)
+                guard let rotated = details.credentials,
+                      let rotatedUsername = normalizedText(rotated.username),
+                      let newPassword = rotated.password, !newPassword.isEmpty,
+                      let rotatedServer = normalizedText(rotated.sipServer),
+                      let rotatedProxy = normalizedText(rotated.outboundProxy) else {
+                    throw SipgateProvisioningError.credentialsMissing
+                }
+                effectivePassword = newPassword
+                candidate = account(
+                    username: rotatedUsername,
+                    sipServer: rotatedServer,
+                    outboundProxy: rotatedProxy
+                )
+            } catch {
+                throw SipgateProvisioningError.rotatedWithoutProvisioning(
+                    deviceID: selected.id,
+                    reason: (error as? SipgateProvisioningError)?.errorDescription
+                        ?? "the new credentials could not be read"
+                )
+            }
+        }
+        return SipgateProvisioningPlan(account: candidate, password: effectivePassword, device: details.device)
     }
 
     private func deviceDetails(deviceID: String) async throws -> SipgateDeviceDetails {
@@ -265,7 +306,8 @@ final class SipgateAPIClient: SipgateClientProtocol, @unchecked Sendable {
             path: [userID, "devices", "register"],
             method: "POST",
             body: body,
-            subject: "new register device"
+            subject: "new register device",
+            echoesErrorBody: false
         )
         return try device(from: response, subject: "new register device")
     }
@@ -276,7 +318,8 @@ final class SipgateAPIClient: SipgateClientProtocol, @unchecked Sendable {
         }
         let response: DeviceDetailsResponse = try await decodedRequest(
             path: ["devices", deviceID],
-            subject: "device credentials"
+            subject: "device credentials",
+            echoesErrorBody: false
         )
         let device = try device(from: response.deviceResponse, subject: "device credentials")
         let credentials = response.credentials.map {
@@ -305,9 +348,16 @@ final class SipgateAPIClient: SipgateClientProtocol, @unchecked Sendable {
         queryItems: [URLQueryItem] = [],
         method: String = "GET",
         body: Data? = nil,
-        subject: String
+        subject: String,
+        echoesErrorBody: Bool = true
     ) async throws -> Response {
-        let data = try await request(path: path, queryItems: queryItems, method: method, body: body)
+        let data = try await request(
+            path: path,
+            queryItems: queryItems,
+            method: method,
+            body: body,
+            echoesErrorBody: echoesErrorBody
+        )
         guard !data.isEmpty else { throw SipgateProvisioningError.invalidResponse(subject) }
         do {
             return try JSONDecoder().decode(Response.self, from: data)
@@ -320,7 +370,8 @@ final class SipgateAPIClient: SipgateClientProtocol, @unchecked Sendable {
         path: [String],
         queryItems: [URLQueryItem] = [],
         method: String = "GET",
-        body: Data? = nil
+        body: Data? = nil,
+        echoesErrorBody: Bool = true
     ) async throws -> Data {
         var url = baseURL
         for component in path { url.appendPathComponent(component) }
@@ -354,11 +405,15 @@ final class SipgateAPIClient: SipgateClientProtocol, @unchecked Sendable {
             throw SipgateProvisioningError.invalidResponse("HTTP response")
         }
         guard (200..<300).contains(http.statusCode) else {
-            let safeMessage = safeSipgateAPIMessage(
-                body: data,
-                contentType: http.value(forHTTPHeaderField: "Content-Type"),
-                sensitiveValues: [credentials.tokenID, credentials.token, basicValue]
-            )
+            // A credential endpoint can name the very password being fetched,
+            // which is not yet known to any scrubber. Never quote those bodies.
+            let safeMessage = echoesErrorBody
+                ? safeSipgateAPIMessage(
+                    body: data,
+                    contentType: http.value(forHTTPHeaderField: "Content-Type"),
+                    sensitiveValues: [credentials.tokenID, credentials.token, basicValue]
+                )
+                : nil
             throw SipgateProvisioningError.requestDenied(status: http.statusCode, message: safeMessage)
         }
         return data

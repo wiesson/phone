@@ -2058,6 +2058,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 sensitiveValues = [credentials.tokenID, credentials.token]
                 invalidateAccountSecretCache()
                 let service = SipgateProvisioningService(client: SipgateAPIClient(credentials: credentials))
+                // Refuse locally before a rotation makes the device's old password
+                // worthless: the save would fail afterwards and nobody would hold
+                // the new one.
+                guard currentCallInstanceID == nil else { throw SIPAccountError.activeCall }
                 let plan = try await service.provisioningPlan(for: arguments)
                 sensitiveValues.append(plan.password)
                 // Keep the create-line persistence ordering: validate, save the
