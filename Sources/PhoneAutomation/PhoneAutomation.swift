@@ -368,15 +368,16 @@ public enum MCPProtocol {
     public static let protocolVersion = "2025-06-18"
 
     public static let tools: [JSONValue] = [
-        tool("dial", "Dial a phone number or SIP address. Optionally select the outgoing line first via account (label, username, or SIP address of a configured account).", properties: ["number": schema("string"), "account": schema("string")], required: ["number"]),
-        tool("assistant_call", "Place an outbound call handled by the AI voice assistant. The task describes what the assistant should accomplish on the call (goal, tone, key details); it navigates IVR menus itself and hands over to the user when a human answers.", properties: ["number": schema("string"), "task": schema("string"), "account": schema("string")], required: ["number", "task"]),
-        tool("answer", "Answer the incoming call."),
-        tool("hangup", "Hang up the active call. The call is archived a moment later, so a get_history immediately afterwards may not list it yet."),
-        tool("send_dtmf", "Send a DTMF digit during the active call.", properties: ["digit": .object(["type": .string("string"), "pattern": .string("^[0-9*#]$")])], required: ["digit"]),
-        tool("get_state", "Get the current registration and call state."),
+        tool("dial", "Dial a phone number or SIP address. Optionally select the outgoing line first via account (label, username, or SIP address of a configured account).", access: .action, properties: ["number": schema("string"), "account": schema("string")], required: ["number"]),
+        tool("assistant_call", "Place an outbound call handled by the AI voice assistant. The task describes what the assistant should accomplish on the call (goal, tone, key details); it navigates IVR menus itself and hands over to the user when a human answers.", access: .action, properties: ["number": schema("string"), "task": schema("string"), "account": schema("string")], required: ["number", "task"]),
+        tool("answer", "Answer the incoming call.", access: .action),
+        tool("hangup", "Hang up the active call. The call is archived a moment later, so a get_history immediately afterwards may not list it yet.", access: .action),
+        tool("send_dtmf", "Send a DTMF digit during the active call.", access: .action, properties: ["digit": .object(["type": .string("string"), "pattern": .string("^[0-9*#]$")])], required: ["digit"]),
+        tool("get_state", "Get the current registration and call state.", access: .read),
         tool(
             "get_history",
             "Get recent calls from the on-device call archive, newest first: call_id, direction, peer, caller name, timestamp, duration, whether it was missed, and whether a summary exists. With query, search names, numbers, summaries and transcript text instead of returning the newest calls.",
+            access: .read,
             properties: [
                 "limit": .object(["type": .string("integer"), "minimum": .integer(1), "maximum": .integer(50), "default": .integer(20)]),
                 "query": schema("string")
@@ -385,33 +386,39 @@ public enum MCPProtocol {
         tool(
             "get_last_summary",
             "Get the most recent call summary, including its structured fields (caller, request, callbackNumber, nextSteps, outcome, details) when the summary is in the labelled format.",
+            access: .read,
             properties: [:]
         ),
         tool(
             "list_lines",
-            "List the configured SIP lines: label, SIP address, provider, whether the line is online, its registration state, its assistant profile, and which line outgoing calls use. Call this before dial or set_line_* so you know the exact line names."
+            "List the configured SIP lines: label, SIP address, provider, whether the line is online, its registration state, its assistant profile, and which line outgoing calls use. Call this before dial or set_line_* so you know the exact line names.",
+            access: .read
         ),
         tool(
             "set_line_enabled",
             "Take one SIP line online or offline. An offline line keeps its configuration but does not register, so it receives no calls and cannot place any. Other lines keep their registration. Refuses while that line is on a call.",
+            access: .write,
             properties: ["line": schema("string"), "enabled": .object(["type": .string("boolean")])],
             required: ["line", "enabled"]
         ),
         tool(
             "set_line_profile",
             "Switch the assistant profile of one SIP line. The profile decides what the assistant says when it answers that number. Use list_lines for the available line names and the profile each line currently uses.",
+            access: .write,
             properties: ["line": schema("string"), "profile": schema("string")],
             required: ["line", "profile"]
         ),
         tool(
             "find_contact",
             "Look up numbers for a contact by name, so a call can be placed to the right number instead of guessing. Returns display name, number, and label per match.",
+            access: .read,
             properties: ["name": schema("string")],
             required: ["name"]
         ),
         tool(
             "get_transcript",
             "Get the transcript of a call as an ordered list of utterances with speaker and text, oldest first. Without call_id this returns the most recent call. Use get_history to find a call_id. The reply reports utterance_count and truncated; if truncated is true, ask again with a larger limit or work from get_last_summary instead.",
+            access: .read,
             properties: [
                 "call_id": schema("string"),
                 "limit": .object(["type": .string("integer"), "minimum": .integer(1), "maximum": .integer(500), "default": .integer(200)])
@@ -476,9 +483,33 @@ public enum MCPProtocol {
         .object(["type": .string(type)])
     }
 
+    /// How a client should treat a tool when it decides what to run without
+    /// asking. Without these a caller cannot tell `dial`, which rings a real
+    /// phone, apart from `get_history`, which reads a local database.
+    enum ToolAccess {
+        /// Reads local state and changes nothing.
+        case read
+        /// Changes configuration; running it twice lands in the same place.
+        case write
+        /// Reaches the telephone network. Not idempotent: twice means two calls.
+        case action
+
+        var annotations: [String: JSONValue] {
+            switch self {
+            case .read:
+                ["readOnlyHint": .bool(true), "destructiveHint": .bool(false), "idempotentHint": .bool(true), "openWorldHint": .bool(false)]
+            case .write:
+                ["readOnlyHint": .bool(false), "destructiveHint": .bool(true), "idempotentHint": .bool(true), "openWorldHint": .bool(false)]
+            case .action:
+                ["readOnlyHint": .bool(false), "destructiveHint": .bool(true), "idempotentHint": .bool(false), "openWorldHint": .bool(true)]
+            }
+        }
+    }
+
     private static func tool(
         _ name: String,
         _ description: String,
+        access: ToolAccess,
         properties: [String: JSONValue] = [:],
         required: [String] = []
     ) -> JSONValue {
@@ -491,7 +522,8 @@ public enum MCPProtocol {
         return .object([
             "name": .string(name),
             "description": .string(description),
-            "inputSchema": .object(inputSchema)
+            "inputSchema": .object(inputSchema),
+            "annotations": .object(access.annotations)
         ])
     }
 

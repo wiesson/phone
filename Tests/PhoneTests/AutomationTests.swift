@@ -191,3 +191,32 @@ import Testing
         }
     }
 }
+
+@Test func everyToolDeclaresHowDangerousItIs() throws {
+    // A client decides from these hints what to run without asking. dial rings
+    // a real phone; get_history reads a local database.
+    var byName: [String: [String: JSONValue]] = [:]
+    for tool in MCPProtocol.tools {
+        guard case .object(let object) = tool,
+              case .string(let name)? = object["name"],
+              case .object(let annotations)? = object["annotations"] else {
+            Issue.record("a tool is missing its annotations")
+            return
+        }
+        byName[name] = annotations
+    }
+
+    for name in ["dial", "assistant_call", "answer", "hangup", "send_dtmf"] {
+        #expect(byName[name]?["readOnlyHint"] == .bool(false), "\(name) is not read-only")
+        #expect(byName[name]?["idempotentHint"] == .bool(false), "\(name) twice means twice")
+        #expect(byName[name]?["openWorldHint"] == .bool(true), "\(name) reaches the network")
+    }
+    for name in ["get_state", "get_history", "get_last_summary", "get_transcript", "list_lines", "find_contact"] {
+        #expect(byName[name]?["readOnlyHint"] == .bool(true), "\(name) must be read-only")
+        #expect(byName[name]?["destructiveHint"] == .bool(false), "\(name) must not be destructive")
+    }
+    for name in ["set_line_enabled", "set_line_profile"] {
+        #expect(byName[name]?["readOnlyHint"] == .bool(false), "\(name) changes configuration")
+        #expect(byName[name]?["idempotentHint"] == .bool(true), "\(name) settles on the same state")
+    }
+}
