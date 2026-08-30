@@ -4,7 +4,7 @@ import Testing
 
 @Test func buildsPTAIAudioInjectionPacket() {
     let samples = Data([0x01, 0x02, 0x03, 0x04])
-    let packet = AudioInjectionProtocol.packet(samples: samples, sampleRate: 8_000)
+    let packet = AudioInjectionProtocol.packet(samples: samples, sampleRate: 8_000, channels: 1)
 
     #expect(Array(packet.prefix(4)) == [0x50, 0x54, 0x41, 0x49])
     #expect(Array(packet[4..<8]) == [1, Speaker.me.rawValue, 1, 1])
@@ -254,7 +254,7 @@ import Testing
 
 @Test func builds20ms16kAudioInjectionPacket() {
     let samples = Data(repeating: 0, count: 16_000 / 50 * MemoryLayout<Int16>.size)
-    let packet = AudioInjectionProtocol.packet(samples: samples, sampleRate: 16_000)
+    let packet = AudioInjectionProtocol.packet(samples: samples, sampleRate: 16_000, channels: 1)
 
     #expect(samples.count == 640)
     #expect(Array(packet[8..<12]) == [0x80, 0x3e, 0x00, 0x00])
@@ -373,4 +373,25 @@ private func pcmSamples(_ data: Data) -> [Int16] {
     """)
 
     #expect(sections.last?.value == "Fragt nach Vorgang AB__CD, Menge 2 * 3 Paletten")
+}
+
+@Test func aStereoCallGetsAStereoInjectionPacket() {
+    // Opus is offered first, so sipgate answers with stereo. A packet that
+    // claims mono is dropped by the tap and the assistant stays silent.
+    let samples = Data(repeating: 0, count: 48_000 / 50 * 2 * MemoryLayout<Int16>.size)
+    let packet = AudioInjectionProtocol.packet(samples: samples, sampleRate: 48_000, channels: 2)
+
+    #expect(Array(packet[4..<8]) == [1, Speaker.me.rawValue, 1, 2])
+    #expect(Array(packet[8..<12]) == [0x80, 0xbb, 0x00, 0x00])
+    #expect(packet.dropFirst(16).count == samples.count)
+}
+
+@Test func theModelVoiceIsCentredWhenTheCallIsStereo() {
+    let mono = pcmData([100, -200, 300])
+
+    #expect(interleavedMonoAudio(mono, channels: 1) == mono)
+    // Same sample on both channels: centred, and nothing is lost, because a
+    // mono voice carries no stereo information to begin with.
+    #expect(interleavedMonoAudio(mono, channels: 2) == pcmData([100, 100, -200, -200, 300, 300]))
+    #expect(interleavedMonoAudio(Data(), channels: 2).isEmpty)
 }

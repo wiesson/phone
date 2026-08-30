@@ -142,9 +142,31 @@ enum GeminiAPIKeyStore {
     }
 }
 
+/// The model always speaks mono. A call that negotiated stereo needs the same
+/// voice on both channels — centred, and lossless, because there is no stereo
+/// information to lose.
+func interleavedMonoAudio(_ mono: Data, channels: UInt8) -> Data {
+    guard channels > 1 else { return mono }
+    let sampleCount = mono.count / MemoryLayout<Int16>.size
+    guard sampleCount > 0 else { return mono }
+    var result = Data(capacity: sampleCount * Int(channels) * MemoryLayout<Int16>.size)
+    mono.withUnsafeBytes { bytes in
+        let samples = bytes.bindMemory(to: Int16.self)
+        for index in 0..<sampleCount {
+            var sample = samples[index]
+            let bytes = withUnsafeBytes(of: &sample) { Data($0) }
+            for _ in 0..<channels { result.append(bytes) }
+        }
+    }
+    return result
+}
+
 enum AudioInjectionProtocol {
-    static func packet(samples: Data, sampleRate: UInt32) -> Data {
-        var packet = Data([0x50, 0x54, 0x41, 0x49, 1, Speaker.me.rawValue, 1, 1])
+    /// Injection has to match the transmit format the call negotiated. Since
+    /// Opus is offered first, sipgate answers with stereo, and a packet that
+    /// claims mono is rejected by the tap.
+    static func packet(samples: Data, sampleRate: UInt32, channels: UInt8) -> Data {
+        var packet = Data([0x50, 0x54, 0x41, 0x49, 1, Speaker.me.rawValue, 1, channels])
         appendLittleEndian(sampleRate, to: &packet)
         appendLittleEndian(UInt32(samples.count), to: &packet)
         packet.append(samples)
@@ -578,6 +600,7 @@ private final class AudioInjectionSender {
     let socketPath: String
     private var descriptor: Int32 = -1
     private var lastSampleRate: UInt32?
+    private var lastChannels: UInt8 = 1
 
     init(socketPath: String) throws {
         self.socketPath = socketPath
@@ -585,8 +608,8 @@ private final class AudioInjectionSender {
         guard descriptor >= 0 else { throw GeminiLiveError.socket(errno) }
     }
 
-    func write(samples: Data, sampleRate: UInt32) throws {
-        let packet = AudioInjectionProtocol.packet(samples: samples, sampleRate: sampleRate)
+    func write(samples: Data, sampleRate: UInt32, channels: UInt8) throws {
+        let packet = AudioInjectionProtocol.packet(samples: samples, sampleRate: sampleRate, channels: channels)
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = socketPath.utf8CString
@@ -611,13 +634,17 @@ private final class AudioInjectionSender {
             }
             throw GeminiLiveError.socket(code)
         }
-        if !samples.isEmpty { lastSampleRate = sampleRate }
+        if !samples.isEmpty {
+            lastSampleRate = sampleRate
+            lastChannels = channels
+        }
     }
 
     func finish() throws {
         guard let lastSampleRate else { return }
         self.lastSampleRate = nil
-        try write(samples: Data(), sampleRate: lastSampleRate)
+        // The closing packet has to carry the same format as the audio it ends.
+        try write(samples: Data(), sampleRate: lastSampleRate, channels: lastChannels)
     }
 
     deinit {
@@ -644,6 +671,7 @@ actor GeminiLiveBridge {
     private var modelResampler = PCM16MonoResampler()
     private var injectionSender: AudioInjectionSender?
     private var targetSampleRate: UInt32?
+    private var targetChannels: UInt8 = 1
     private var modelAudio = Data()
     private var outputAudio = Data()
     private var pendingInjectionEnd = false
@@ -707,15 +735,20 @@ actor GeminiLiveBridge {
 
     func append(_ frame: AudioFrame) async {
         if frame.speaker == .me {
-            guard frame.format == .pcmFormatInt16, frame.channels == 1,
+            // The transmit frame decides the injection format. A phone call is
+            // mono or stereo; anything else is not something this bridge can
+            // clock against.
+            guard frame.format == .pcmFormatInt16, frame.channels == 1 || frame.channels == 2,
                   frame.sampleRate > 0, frame.sampleRate <= Double(UInt32.max) else {
                 if state == .connecting || state == .live { fail(GeminiLiveError.invalidAudioFormat.localizedDescription) }
                 return
             }
             let rate = UInt32(frame.sampleRate.rounded())
-            if targetSampleRate != rate {
+            let channels = UInt8(frame.channels)
+            if targetSampleRate != rate || targetChannels != channels {
                 try? injectionSender?.finish()
                 targetSampleRate = rate
+                targetChannels = channels
                 outputAudio.removeAll(keepingCapacity: true)
                 pendingInjectionEnd = false
                 flushModelAudio()
@@ -757,6 +790,7 @@ actor GeminiLiveBridge {
         session = nil
         injectionSender = nil
         targetSampleRate = nil
+        targetChannels = 1
         modelAudio.removeAll(keepingCapacity: false)
         outputAudio.removeAll(keepingCapacity: false)
         callerConverter = GeminiCallerAudioConverter()
@@ -896,9 +930,15 @@ actor GeminiLiveBridge {
         }
     }
 
+    /// One 20 ms packet, in the format the call negotiated.
+    private func injectionPacketSize(sampleRate: UInt32) -> Int {
+        Int(sampleRate / 50) * Int(targetChannels) * MemoryLayout<Int16>.size
+    }
+
     private func flushModelAudio() {
         guard let targetSampleRate, !modelAudio.isEmpty else { return }
-        outputAudio.append(modelResampler.resample(modelAudio, from: 24_000, to: Int(targetSampleRate)))
+        let mono = modelResampler.resample(modelAudio, from: 24_000, to: Int(targetSampleRate))
+        outputAudio.append(interleavedMonoAudio(mono, channels: targetChannels))
         modelAudio.removeAll(keepingCapacity: true)
         startPacingIfNeeded()
     }
@@ -910,7 +950,7 @@ actor GeminiLiveBridge {
             pendingInjectionEnd = false
             return
         }
-        let packetSize = Int(targetSampleRate / 50) * MemoryLayout<Int16>.size
+        let packetSize = injectionPacketSize(sampleRate: targetSampleRate)
         guard packetSize > 0 else { return }
         let remainder = outputAudio.count % packetSize
         if remainder > 0 {
@@ -921,7 +961,7 @@ actor GeminiLiveBridge {
 
     private func startPacingIfNeeded() {
         guard state == .live, pacingTask == nil, let targetSampleRate else { return }
-        let packetSize = Int(targetSampleRate / 50) * MemoryLayout<Int16>.size
+        let packetSize = injectionPacketSize(sampleRate: targetSampleRate)
         guard packetSize > 0, outputAudio.count >= packetSize else { return }
         let requestID = sessionID
         pacingTask = Task { [weak self] in await self?.paceOutput(sessionID: requestID) }
@@ -931,12 +971,12 @@ actor GeminiLiveBridge {
         let clock = ContinuousClock()
         var deadline = clock.now
         while !Task.isCancelled, requestID == sessionID, state == .live, let targetSampleRate, let injectionSender {
-            let packetSize = Int(targetSampleRate / 50) * MemoryLayout<Int16>.size
+            let packetSize = injectionPacketSize(sampleRate: targetSampleRate)
             guard packetSize > 0, outputAudio.count >= packetSize else { break }
             let samples = Data(outputAudio.prefix(packetSize))
             outputAudio.removeFirst(packetSize)
             do {
-                try injectionSender.write(samples: samples, sampleRate: targetSampleRate)
+                try injectionSender.write(samples: samples, sampleRate: targetSampleRate, channels: targetChannels)
                 deadline += .milliseconds(20)
                 try await clock.sleep(until: deadline)
             } catch is CancellationError {
