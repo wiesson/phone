@@ -142,6 +142,11 @@ enum GeminiAPIKeyStore {
     }
 }
 
+/// Mirrors the limits in Modules/phone_tap/phone_tap.c, which both ends of the
+/// injection socket have to agree on.
+let phoneTapMaximumPayload = 60 * 1024
+let phoneTapHeaderSize = 16
+
 /// The format the assistant has to speak in. `phone_tap` drops any injection
 /// packet whose format, rate or channel count differs from the transmit frame
 /// it is clocking against, so this is derived from that frame and never guessed.
@@ -629,6 +634,12 @@ private final class AudioInjectionSender {
         self.socketPath = socketPath
         descriptor = socket(AF_UNIX, SOCK_DGRAM, 0)
         guard descriptor >= 0 else { throw GeminiLiveError.socket(errno) }
+        // macOS caps AF_UNIX datagrams at net.local.dgram.maxdgram, 2048 bytes
+        // by default. One 20 ms packet of Opus at 48 kHz stereo is 3856 bytes
+        // including the header, so every send would fail with EMSGSIZE.
+        // phone_tap.c widens its own sockets the same way and for the same reason.
+        var size = Int32(4 * (phoneTapMaximumPayload + phoneTapHeaderSize))
+        setsockopt(descriptor, SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size))
     }
 
     func write(samples: Data, sampleRate: UInt32, channels: UInt8) throws {
@@ -663,11 +674,20 @@ private final class AudioInjectionSender {
         }
     }
 
-    func finish() throws {
+    /// Ends the injection session. `as` stamps the packet with a format that
+    /// differs from the audio it ends: the tap validates every packet, empty
+    /// ones included, against the frame it is currently clocking against, so
+    /// after a mid-call format change the old format would be dropped and the
+    /// session would never end.
+    func finish(as format: InjectionFormat? = nil) throws {
         guard let lastSampleRate else { return }
+        let channels = lastChannels
         self.lastSampleRate = nil
-        // The closing packet has to carry the same format as the audio it ends.
-        try write(samples: Data(), sampleRate: lastSampleRate, channels: lastChannels)
+        try write(
+            samples: Data(),
+            sampleRate: format?.sampleRate ?? lastSampleRate,
+            channels: format?.channels ?? channels
+        )
     }
 
     deinit {
@@ -763,7 +783,7 @@ actor GeminiLiveBridge {
                 return
             }
             if targetSampleRate != format.sampleRate || targetChannels != format.channels {
-                try? injectionSender?.finish()
+                try? injectionSender?.finish(as: format)
                 targetSampleRate = format.sampleRate
                 targetChannels = format.channels
                 outputAudio.removeAll(keepingCapacity: true)

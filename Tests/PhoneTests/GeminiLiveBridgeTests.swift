@@ -447,3 +447,20 @@ private func transmitFrame(
         #expect(packet.count == 16 + twentyMilliseconds)
     }
 }
+
+@Test func aStereoPacketExceedsTheDefaultDatagramLimit() {
+    // net.local.dgram.maxdgram is 2048 by default on macOS. This is why both
+    // ends of the injection socket widen their buffers; without it every send
+    // fails with EMSGSIZE and the assistant is silent.
+    let twentyMilliseconds = 48_000 / 50 * 2 * MemoryLayout<Int16>.size
+    let packet = AudioInjectionProtocol.packet(
+        samples: Data(repeating: 0, count: twentyMilliseconds),
+        sampleRate: 48_000,
+        channels: 2
+    )
+
+    #expect(packet.count == 3_856)
+    #expect(packet.count > 2_048)
+    // The widened buffer has to clear the largest packet the contract allows.
+    #expect(4 * (phoneTapMaximumPayload + phoneTapHeaderSize) > packet.count)
+}
