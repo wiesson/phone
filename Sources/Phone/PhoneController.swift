@@ -134,7 +134,17 @@ func phoneDiagnosticLog(_ text: String) {
     }
 }
 
-func redactSensitiveValues(in text: String) -> String {
+func redactSensitiveValues(in text: String, secrets: [String] = []) -> String {
+    var result = redactKnownPatterns(in: text)
+    // A provider can reflect the password back in its own error text, where no
+    // pattern matches it. The log is the one place that keeps it forever.
+    for secret in secrets where secret.count >= 4 {
+        result = result.replacingOccurrences(of: secret, with: "••••")
+    }
+    return result
+}
+
+private func redactKnownPatterns(in text: String) -> String {
     text.replacingOccurrences(
         of: #"([?&]key=)[A-Za-z0-9._-]+"#,
         with: "$1••••",
@@ -485,10 +495,20 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         guard !managedAccounts.contains(where: { $0.sipAddress == account.sipAddress }) else {
             throw SIPAccountError.duplicateAccount
         }
+        let hadStoredPassword = (try? SIPPasswordStore.password(account: account.sipAddress)) != nil
         try SIPPasswordStore.save(password, account: account.sipAddress)
+        invalidateAccountSecretCache()
         var state = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
         state.add(account)
-        try saveManagedAccountsState(state)
+        do {
+            try saveManagedAccountsState(state)
+        } catch {
+            // Persisting failed, so the secret belongs to nothing. Leaving it
+            // behind would keep a password for a line that does not exist.
+            if !hadStoredPassword { try? SIPPasswordStore.remove(account: account.sipAddress) }
+            invalidateAccountSecretCache()
+            throw error
+        }
         unmanagedAccountAOR = nil
         restartBaresip()
     }
@@ -683,8 +703,11 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         guard managedAccounts.contains(where: { $0.sipAddress == account.sipAddress }) else { return }
         var accountsState = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
         accountsState.remove(account)
-        try SIPPasswordStore.remove(account: account.sipAddress)
+        // Persist first: a removed password with a still-configured line would
+        // leave a line that can never register again.
         try saveManagedAccountsState(accountsState)
+        try SIPPasswordStore.remove(account: account.sipAddress)
+        invalidateAccountSecretCache()
         let removedDirectory = instancesDirectory.appendingPathComponent(
             sanitizedBaresipInstanceAOR(account.sipAddress),
             isDirectory: true
@@ -1439,6 +1462,18 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         return migrateSavedAssistantProfiles(in: file)
     }
 
+    private var cachedAccountSecrets: [String]?
+    /// Provisioning suspends while registration settles; a second change during
+    /// that window would report a state that never existed.
+    private var isProvisioningLine = false
+
+    private var provisioningBusyError: ControlError {
+        ControlError(
+            code: "busy",
+            message: "Another line change is still settling. Retry once it reports its registration."
+        )
+    }
+
     private func appendDiagnostic(_ text: String) {
         let filtered = filteringAudioStatistics(from: text)
         guard !filtered.isEmpty, let data = filtered.data(using: .utf8) else { return }
@@ -1461,7 +1496,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             let line = String(buffer[..<newline])
             buffer.removeSubrange(...newline)
             if !line.isEmpty {
-                appendDiagnostic(redactSensitiveValues(in: "baresip[\(instance.id)]: \(line)\n"))
+                appendDiagnostic(redactSensitiveValues(
+                    in: "baresip[\(instance.id)]: \(line)\n",
+                    secrets: knownAccountSecrets()
+                ))
             }
             consumeLine(line, from: instance)
         }
@@ -1809,6 +1847,23 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         )
     }
 
+    /// Every password currently configured, so provider output that reflects one
+    /// back never reaches the on-disk log.
+    private func knownAccountSecrets() -> [String] {
+        if let cached = cachedAccountSecrets { return cached }
+        let secrets = managedAccounts.compactMap { account -> String? in
+            guard let password = try? SIPPasswordStore.password(account: account.sipAddress),
+                  !password.isEmpty else { return nil }
+            return password
+        }
+        cachedAccountSecrets = secrets
+        return secrets
+    }
+
+    func invalidateAccountSecretCache() {
+        cachedAccountSecrets = nil
+    }
+
     private func controlSensitiveValues(for account: ManagedSIPAccount) -> [String] {
         guard let password = try? SIPPasswordStore.password(account: account.sipAddress),
               !password.isEmpty else { return [] }
@@ -1966,13 +2021,23 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         case .listLines:
             return .success(.array(managedAccounts.map(linePayload)))
         case .createLine(let arguments):
+            guard !isProvisioningLine else { return .failure(provisioningBusyError) }
+            isProvisioningLine = true
+            defer { isProvisioningLine = false }
             do {
                 let account = try managedSIPAccount(from: arguments)
                 // Validate before either Keychain or account persistence changes.
                 try account.validate(password: arguments.password)
                 try saveManagedAccountAndTest(account, password: arguments.password)
                 let status = await settledRegistrationStatus(for: account)
-                let saved = managedAccounts.first { $0.sipAddress == account.sipAddress } ?? account
+                // The wait suspends, so the line can be gone by now. Reporting a
+                // status for an account that no longer exists would be fiction.
+                guard let saved = managedAccounts.first(where: { $0.sipAddress == account.sipAddress }) else {
+                    return .failure(ControlError(
+                        code: "unknown_line",
+                        message: "The line was removed while its registration was still settling."
+                    ))
+                }
                 return .success(controlLinePayload(
                     for: saved,
                     status: status,
@@ -1984,6 +2049,9 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 return .failure(controlError(for: error))
             }
         case .updateLine(let arguments):
+            guard !isProvisioningLine else { return .failure(provisioningBusyError) }
+            isProvisioningLine = true
+            defer { isProvisioningLine = false }
             guard let original = managedAccount(matching: arguments.line) else {
                 return .failure(ControlError(code: "unknown_line", message: "No configured line matches '\(arguments.line)'."))
             }

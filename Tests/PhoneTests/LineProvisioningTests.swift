@@ -209,3 +209,30 @@ private func provisioningTestAccount(
     #expect(weekdays["end_minute"] == .integer(1080))
     #expect(weekend["open"] == .bool(false))
 }
+
+@Test func diagnosticLogRedactsAReflectedSIPPassword() {
+    let line = "baresip[1]: registration failed: rejected password hunter2-super-secret\n"
+
+    let redacted = redactSensitiveValues(in: line, secrets: ["hunter2-super-secret"])
+
+    #expect(!redacted.contains("hunter2-super-secret"))
+    #expect(redacted.contains("••••"))
+}
+
+@Test func diagnosticLogStillRedactsTheKnownPatterns() {
+    let line = "baresip[1]: auth_pass=\"secret\" https://api.example.com/v1?key=abc123\n"
+
+    let redacted = redactSensitiveValues(in: line)
+
+    #expect(!redacted.contains("secret"))
+    #expect(!redacted.contains("abc123"))
+}
+
+@Test func diagnosticLogIgnoresVeryShortSecrets() {
+    // A two-character password would blank out unrelated text everywhere.
+    let line = "baresip[1]: registered ok\n"
+
+    let redacted = redactSensitiveValues(in: line, secrets: ["ok"])
+
+    #expect(redacted.contains("registered ok"))
+}
