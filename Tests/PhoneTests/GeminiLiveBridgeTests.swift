@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import Phone
@@ -394,4 +395,55 @@ private func pcmSamples(_ data: Data) -> [Int16] {
     // mono voice carries no stereo information to begin with.
     #expect(interleavedMonoAudio(mono, channels: 2) == pcmData([100, 100, -200, -200, 300, 300]))
     #expect(interleavedMonoAudio(Data(), channels: 2).isEmpty)
+}
+
+private func transmitFrame(
+    rate: Double,
+    channels: AVAudioChannelCount,
+    format: AVAudioCommonFormat = .pcmFormatInt16,
+    speaker: Speaker = .me
+) -> AudioFrame {
+    AudioFrame(speaker: speaker, sampleRate: rate, channels: channels, format: format, samples: Data([0, 0]))
+}
+
+@Test func theInjectionFormatFollowsWhateverTheCallNegotiated() {
+    // The codecs a phone call actually negotiates. Opus at the top of the list
+    // answers stereo, and rejecting that left the assistant silent on every
+    // call for a day.
+    #expect(injectionFormat(for: transmitFrame(rate: 8_000, channels: 1))
+        == InjectionFormat(sampleRate: 8_000, channels: 1))   // G.711
+    #expect(injectionFormat(for: transmitFrame(rate: 16_000, channels: 1))
+        == InjectionFormat(sampleRate: 16_000, channels: 1))  // G.722
+    #expect(injectionFormat(for: transmitFrame(rate: 48_000, channels: 2))
+        == InjectionFormat(sampleRate: 48_000, channels: 2))  // Opus stereo
+    #expect(injectionFormat(for: transmitFrame(rate: 48_000, channels: 1))
+        == InjectionFormat(sampleRate: 48_000, channels: 1))  // Opus mono
+}
+
+@Test func aFormatTheBridgeCannotClockAgainstIsRefused() {
+    #expect(injectionFormat(for: transmitFrame(rate: 48_000, channels: 3)) == nil)
+    #expect(injectionFormat(for: transmitFrame(rate: 0, channels: 1)) == nil)
+    #expect(injectionFormat(for: transmitFrame(rate: 48_000, channels: 2, format: .pcmFormatFloat32)) == nil)
+    // Only the transmit direction clocks the injection; caller audio does not.
+    #expect(injectionFormat(for: transmitFrame(rate: 8_000, channels: 1, speaker: .caller)) == nil)
+}
+
+@Test func everyNegotiableFormatProducesAPacketTheTapAccepts() {
+    // phone_tap.c drops a packet whose format does not match the frame it is
+    // clocking against, so the packet has to be built from that same decision.
+    for frame in [
+        transmitFrame(rate: 8_000, channels: 1),
+        transmitFrame(rate: 16_000, channels: 1),
+        transmitFrame(rate: 48_000, channels: 2)
+    ] {
+        let format = try! #require(injectionFormat(for: frame))
+        let twentyMilliseconds = Int(format.sampleRate / 50) * Int(format.channels) * MemoryLayout<Int16>.size
+        let packet = AudioInjectionProtocol.packet(
+            samples: Data(repeating: 0, count: twentyMilliseconds),
+            sampleRate: format.sampleRate,
+            channels: format.channels
+        )
+        #expect(packet[7] == format.channels, "channel count in the header")
+        #expect(packet.count == 16 + twentyMilliseconds)
+    }
 }

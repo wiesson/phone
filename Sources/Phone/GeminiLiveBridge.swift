@@ -142,6 +142,29 @@ enum GeminiAPIKeyStore {
     }
 }
 
+/// The format the assistant has to speak in. `phone_tap` drops any injection
+/// packet whose format, rate or channel count differs from the transmit frame
+/// it is clocking against, so this is derived from that frame and never guessed.
+struct InjectionFormat: Equatable, Sendable {
+    let sampleRate: UInt32
+    let channels: UInt8
+}
+
+/// Returns the injection format a transmit frame implies, or nil when the call
+/// negotiated something the bridge cannot clock against. A phone call is
+/// PCM16, mono or stereo — G.711 and G.722 are mono, Opus is commonly stereo.
+func injectionFormat(for frame: AudioFrame) -> InjectionFormat? {
+    guard frame.speaker == .me,
+          frame.format == .pcmFormatInt16,
+          frame.channels == 1 || frame.channels == 2,
+          frame.sampleRate > 0,
+          frame.sampleRate <= Double(UInt32.max) else { return nil }
+    return InjectionFormat(
+        sampleRate: UInt32(frame.sampleRate.rounded()),
+        channels: UInt8(frame.channels)
+    )
+}
+
 /// The model always speaks mono. A call that negotiated stereo needs the same
 /// voice on both channels — centred, and lossless, because there is no stereo
 /// information to lose.
@@ -735,20 +758,14 @@ actor GeminiLiveBridge {
 
     func append(_ frame: AudioFrame) async {
         if frame.speaker == .me {
-            // The transmit frame decides the injection format. A phone call is
-            // mono or stereo; anything else is not something this bridge can
-            // clock against.
-            guard frame.format == .pcmFormatInt16, frame.channels == 1 || frame.channels == 2,
-                  frame.sampleRate > 0, frame.sampleRate <= Double(UInt32.max) else {
+            guard let format = injectionFormat(for: frame) else {
                 if state == .connecting || state == .live { fail(GeminiLiveError.invalidAudioFormat.localizedDescription) }
                 return
             }
-            let rate = UInt32(frame.sampleRate.rounded())
-            let channels = UInt8(frame.channels)
-            if targetSampleRate != rate || targetChannels != channels {
+            if targetSampleRate != format.sampleRate || targetChannels != format.channels {
                 try? injectionSender?.finish()
-                targetSampleRate = rate
-                targetChannels = channels
+                targetSampleRate = format.sampleRate
+                targetChannels = format.channels
                 outputAudio.removeAll(keepingCapacity: true)
                 pendingInjectionEnd = false
                 flushModelAudio()
