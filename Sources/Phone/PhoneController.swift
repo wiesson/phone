@@ -1847,14 +1847,17 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         )
     }
 
-    /// Every password currently configured, so provider output that reflects one
-    /// back never reaches the on-disk log.
+    /// Every password and provider token currently configured, so provider
+    /// output that reflects one back never reaches the on-disk log.
     private func knownAccountSecrets() -> [String] {
         if let cached = cachedAccountSecrets { return cached }
-        let secrets = managedAccounts.compactMap { account -> String? in
+        var secrets = managedAccounts.compactMap { account -> String? in
             guard let password = try? SIPPasswordStore.password(account: account.sipAddress),
                   !password.isEmpty else { return nil }
             return password
+        }
+        if let credentials = SipgateCredentialStore.credentials() {
+            secrets.append(contentsOf: [credentials.tokenID, credentials.token])
         }
         cachedAccountSecrets = secrets
         return secrets
@@ -2020,6 +2023,73 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             }
         case .listLines:
             return .success(.array(managedAccounts.map(linePayload)))
+        case .listSipgateDevices:
+            var sensitiveValues: [String] = []
+            do {
+                guard let credentials = SipgateCredentialStore.credentials() else {
+                    throw SipgateProvisioningError.missingPAT
+                }
+                sensitiveValues = [credentials.tokenID, credentials.token]
+                invalidateAccountSecretCache()
+                let service = SipgateProvisioningService(client: SipgateAPIClient(credentials: credentials))
+                let devices = try await service.listDevices()
+                return .success(controlSipgateDevicesPayload(
+                    devices,
+                    sensitiveValues: sensitiveValues
+                ))
+            } catch {
+                return .failure(controlError(
+                    for: error,
+                    fallbackCode: "sipgate_unavailable",
+                    sensitiveValues: sensitiveValues
+                ))
+            }
+        case .sipgateCredentialsStatus:
+            return .success(controlSipgateCredentialsStatusPayload(SipgateCredentialStore.status()))
+        case .provisionFromSipgate(let arguments):
+            guard !isProvisioningLine else { return .failure(provisioningBusyError) }
+            isProvisioningLine = true
+            defer { isProvisioningLine = false }
+            var sensitiveValues: [String] = []
+            do {
+                guard let credentials = SipgateCredentialStore.credentials() else {
+                    throw SipgateProvisioningError.missingPAT
+                }
+                sensitiveValues = [credentials.tokenID, credentials.token]
+                invalidateAccountSecretCache()
+                let service = SipgateProvisioningService(client: SipgateAPIClient(credentials: credentials))
+                let plan = try await service.provisioningPlan(for: arguments)
+                sensitiveValues.append(plan.password)
+                // Keep the create-line persistence ordering: validate, save the
+                // Keychain secret, invalidate redaction, then persist/restart.
+                try plan.account.validate(password: plan.password)
+                try saveManagedAccountAndTest(plan.account, password: plan.password)
+                let status = await settledRegistrationStatus(for: plan.account)
+                guard let saved = managedAccounts.first(where: { $0.sipAddress == plan.account.sipAddress }) else {
+                    return .failure(ControlError(
+                        code: "unknown_line",
+                        message: "The line was removed while its registration was still settling."
+                    ))
+                }
+                let line = controlLinePayload(
+                    for: saved,
+                    status: status,
+                    activeSIPAddress: activeManagedSIPAddress,
+                    assistantProfileDisplay: assistantProfileDisplay(for: saved),
+                    sensitiveValues: sensitiveValues
+                )
+                return .success(controlSipgateProvisioningPayload(
+                    linePayload: line,
+                    device: plan.device,
+                    sensitiveValues: sensitiveValues
+                ))
+            } catch {
+                return .failure(controlError(
+                    for: error,
+                    fallbackCode: "sipgate_provisioning_failed",
+                    sensitiveValues: sensitiveValues
+                ))
+            }
         case .createLine(let arguments):
             guard !isProvisioningLine else { return .failure(provisioningBusyError) }
             isProvisioningLine = true

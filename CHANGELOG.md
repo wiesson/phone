@@ -7,6 +7,12 @@ commits on `main`.
 ## August 30
 
 ### Added
+- **Secret-free sipgate line provisioning over MCP**: list the authenticated
+  user's register devices, inspect whether the `sipgate-mcp` PAT exists in
+  Keychain, and provision an existing or new device without sending any PAT or
+  SIP password through MCP. Optional pre-read password rotation invalidates an
+  older exposed credential; secrets are scrubbed from results, errors, and the
+  diagnostic log path.
 - **Headless line provisioning over MCP**: agents can create, validate, register,
   update, select, inspect, and delete SIP lines without opening the setup wizard.
   Provider presets and advanced registrar/proxy/STUN/media settings are supported;

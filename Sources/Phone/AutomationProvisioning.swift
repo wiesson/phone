@@ -145,9 +145,43 @@ func controlError(for error: SIPAccountError) -> ControlError {
     return ControlError(code: code, message: error.localizedDescription)
 }
 
-func controlError(for error: Error, fallbackCode: String = "invalid_state") -> ControlError {
-    if let accountError = error as? SIPAccountError { return controlError(for: accountError) }
-    return ControlError(code: fallbackCode, message: error.localizedDescription)
+func controlError(for error: SipgateProvisioningError) -> ControlError {
+    let code: String
+    switch error {
+    case .missingPAT: code = "sipgate_credentials_missing"
+    case .invalidArguments: code = "invalid_arguments"
+    case .invalidResponse: code = "sipgate_invalid_response"
+    case .networkUnavailable: code = "sipgate_unavailable"
+    case .requestDenied(let status, _):
+        switch status {
+        case 401: code = "sipgate_authentication_failed"
+        case 429: code = "sipgate_rate_limited"
+        default: code = "sipgate_denied"
+        }
+    case .deviceNotFound: code = "sipgate_device_not_found"
+    case .notRegisterDevice: code = "sipgate_device_not_register"
+    case .credentialsMissing: code = "sipgate_device_credentials_missing"
+    }
+    return ControlError(code: code, message: error.localizedDescription)
+}
+
+func controlError(
+    for error: Error,
+    fallbackCode: String = "invalid_state",
+    sensitiveValues: [String] = []
+) -> ControlError {
+    let mapped: ControlError
+    if let accountError = error as? SIPAccountError {
+        mapped = controlError(for: accountError)
+    } else if let sipgateError = error as? SipgateProvisioningError {
+        mapped = controlError(for: sipgateError)
+    } else {
+        mapped = ControlError(code: fallbackCode, message: error.localizedDescription)
+    }
+    return ControlError(
+        code: mapped.code,
+        message: redactedControlMessage(mapped.message, sensitiveValues: sensitiveValues)
+    )
 }
 
 func controlRegistrationPayload(

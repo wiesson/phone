@@ -236,6 +236,28 @@ public struct ControlUpdateLine: Equatable, Sendable {
     }
 }
 
+public struct ControlProvisionFromSipgate: Equatable, Sendable {
+    public let deviceID: String?
+    public let createDevice: Bool
+    public let alias: String?
+    public let label: String?
+    public let rotatePassword: Bool
+
+    public init(
+        deviceID: String?,
+        createDevice: Bool,
+        alias: String?,
+        label: String?,
+        rotatePassword: Bool
+    ) {
+        self.deviceID = deviceID
+        self.createDevice = createDevice
+        self.alias = alias
+        self.label = label
+        self.rotatePassword = rotatePassword
+    }
+}
+
 public enum ControlAssistantAnswerMode: String, Equatable, Sendable {
     case never
     case always
@@ -265,6 +287,9 @@ public enum ControlCommand: Equatable, Sendable {
     case getLastSummary
     case getTranscript(callID: String?, limit: Int)
     case listLines
+    case listSipgateDevices
+    case provisionFromSipgate(ControlProvisionFromSipgate)
+    case sipgateCredentialsStatus
     case createLine(ControlCreateLine)
     case updateLine(ControlUpdateLine)
     case deleteLine(line: String)
@@ -363,6 +388,50 @@ public enum ControlRequestParser {
             return noArguments(args, command: .getState)
         case "list_lines":
             return noArguments(args, command: .listLines)
+        case "list_sipgate_devices":
+            return noArguments(args, command: .listSipgateDevices)
+        case "sipgate_credentials_status":
+            return noArguments(args, command: .sipgateCredentialsStatus)
+        case "provision_from_sipgate":
+            let allowed = Set(["device_id", "create_device", "alias", "label", "rotate_password"])
+            guard Set(args.keys).isSubset(of: allowed),
+                  optionalStrings(in: args, keys: ["device_id", "alias", "label"]),
+                  optionalBooleans(in: args, keys: ["create_device", "rotate_password"]) else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "provision_from_sipgate accepts string device_id, alias, and label arguments plus boolean create_device and rotate_password arguments."
+                ))
+            }
+            let deviceID = trimmedString(args["device_id"])
+            let createDevice = boolean(args["create_device"]) ?? false
+            let hasDeviceID = args["device_id"] != nil
+            let hasCreateDevice = args["create_device"] != nil
+            guard hasDeviceID != hasCreateDevice else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "Give exactly one of device_id or create_device."
+                ))
+            }
+            guard !hasDeviceID || deviceID?.isEmpty == false else {
+                return .failure(ControlError(code: "invalid_arguments", message: "device_id must be a non-empty string."))
+            }
+            guard !hasCreateDevice || createDevice else {
+                return .failure(ControlError(code: "invalid_arguments", message: "create_device must be true when provided."))
+            }
+            let alias = trimmedString(args["alias"])
+            guard createDevice || args["alias"] == nil else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "alias is only valid when create_device is true."
+                ))
+            }
+            return .success(.provisionFromSipgate(ControlProvisionFromSipgate(
+                deviceID: deviceID,
+                createDevice: createDevice,
+                alias: alias?.isEmpty == false ? alias : nil,
+                label: trimmedString(args["label"]),
+                rotatePassword: boolean(args["rotate_password"]) ?? false
+            )))
         case "create_line":
             let allowed = Set([
                 "provider", "username", "password", "domain", "outbound_proxy", "stun_server",
@@ -670,6 +739,10 @@ public enum ControlRequestParser {
         keys.allSatisfy { key in args[key] == nil || string(args[key]) != nil }
     }
 
+    private static func optionalBooleans(in args: [String: JSONValue], keys: Set<String>) -> Bool {
+        keys.allSatisfy { key in args[key] == nil || boolean(args[key]) != nil }
+    }
+
     private static func string(_ value: JSONValue?) -> String? {
         guard case .string(let value) = value else { return nil }
         return value
@@ -681,6 +754,11 @@ public enum ControlRequestParser {
 
     private static func integer(_ value: JSONValue?) -> Int? {
         guard case .integer(let value) = value else { return nil }
+        return value
+    }
+
+    private static func boolean(_ value: JSONValue?) -> Bool? {
+        guard case .bool(let value) = value else { return nil }
         return value
     }
 
@@ -745,6 +823,28 @@ public enum MCPProtocol {
             "list_lines",
             "List the configured SIP lines: label, SIP address, provider, whether the line is online, its registration state, its assistant profile, and which line outgoing calls use. Call this before dial or set_line_* so you know the exact line names.",
             access: .read
+        ),
+        tool(
+            "list_sipgate_devices",
+            "List the authenticated sipgate user's register devices with device ID, alias, and online state. Credentials are never returned.",
+            access: .externalRead
+        ),
+        tool(
+            "sipgate_credentials_status",
+            "Report whether both sipgate PAT values are available in macOS Keychain. Returns no credential content.",
+            access: .read
+        ),
+        tool(
+            "provision_from_sipgate",
+            "Provision a Phone SIP line directly from an existing or newly created sipgate register device. Phone reads the sipgate PAT and SIP credentials from Keychain/API itself, stores the SIP password directly in Keychain, waits for registration, and never returns either secret. Give exactly one of device_id or create_device (which must be true).",
+            access: .externalWrite,
+            properties: [
+                "device_id": schema("string"),
+                "create_device": .object(["type": .string("boolean")]),
+                "alias": schema("string"),
+                "label": schema("string"),
+                "rotate_password": .object(["type": .string("boolean"), "default": .bool(false)])
+            ]
         ),
         tool(
             "create_line",
@@ -996,8 +1096,12 @@ public enum MCPProtocol {
     enum ToolAccess {
         /// Reads local state and changes nothing.
         case read
+        /// Reads provider state over the network and changes nothing.
+        case externalRead
         /// Changes configuration; running it twice lands in the same place.
         case write
+        /// Changes provider state over the network and may create or rotate twice.
+        case externalWrite
         /// Reaches the telephone network. Not idempotent: twice means two calls.
         case action
 
@@ -1005,9 +1109,11 @@ public enum MCPProtocol {
             switch self {
             case .read:
                 ["readOnlyHint": .bool(true), "destructiveHint": .bool(false), "idempotentHint": .bool(true), "openWorldHint": .bool(false)]
+            case .externalRead:
+                ["readOnlyHint": .bool(true), "destructiveHint": .bool(false), "idempotentHint": .bool(true), "openWorldHint": .bool(true)]
             case .write:
                 ["readOnlyHint": .bool(false), "destructiveHint": .bool(true), "idempotentHint": .bool(true), "openWorldHint": .bool(false)]
-            case .action:
+            case .externalWrite, .action:
                 ["readOnlyHint": .bool(false), "destructiveHint": .bool(true), "idempotentHint": .bool(false), "openWorldHint": .bool(true)]
             }
         }

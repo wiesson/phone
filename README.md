@@ -46,7 +46,8 @@ Transcription and archive:
 Automation:
 
 - built-in MCP server for calls, history, end-to-end SIP line provisioning,
-  registration status, and per-line assistant prompts, profiles, and answering rules
+  including secret-free provisioning straight from sipgate, registration status,
+  and per-line assistant prompts, profiles, and answering rules
 - HMAC-signed webhooks for call events, optionally with transcript and summary
 
 Testing:
@@ -208,6 +209,9 @@ configuration, and `action` tools reach the telephone network.
 | `get_last_summary` | none | read |
 | `get_transcript` | optional `call_id`, `limit` (1–500) | read |
 | `list_lines` | none | read |
+| `list_sipgate_devices` | none | read |
+| `sipgate_credentials_status` | none | read |
+| `provision_from_sipgate` | exactly one of `device_id` or `create_device: true`; optional `alias`, `label`, `rotate_password` | write |
 | `create_line` | `username`, `password`; optional provider and SIP/display settings | write |
 | `update_line` | `line`; optional password, provider, SIP/display settings | write |
 | `delete_line` | `line` | write |
@@ -226,12 +230,36 @@ configuration, and `action` tools reach the telephone network.
 
 Provider identifiers are `telekom`, `fritzBox`, `sipgate`, `easybell`, and
 `custom`. Explicit `domain`, `outbound_proxy`, `stun_server`, and
-`media_encryption` values override preset defaults. Passwords are accepted only
-by `create_line` and `update_line`, stored in Keychain, and never returned. A
-failed `create_line` registration returns `registered: false` and the provider's
-`last_error`; the saved line remains available for correction with `update_line`.
-Business-hours windows use `open`, `start_minute`, and `end_minute`, where the
-minute values are 0–1439 and a window may cross midnight.
+`media_encryption` values override preset defaults. Passwords manually supplied
+to `create_line` and `update_line` are input-only, stored in Keychain, and never
+returned. A failed `create_line` registration returns `registered: false` and
+the provider's `last_error`; the saved line remains available for correction
+with `update_line`. Business-hours windows use `open`, `start_minute`, and
+`end_minute`, where the minute values are 0–1439 and a window may cross midnight.
+
+For sipgate, Phone can provision without putting either the PAT or SIP password
+in MCP arguments. First run the separate credential setup locally:
+
+```sh
+sipgate-mcp setup
+```
+
+That command stores the PAT ID as service `sipgate-mcp`, account `pat-token-id`,
+and the PAT as account `pat-token` in macOS Keychain. The PAT needs sipgate
+device read access; creating devices or rotating passwords additionally needs
+device write access. `sipgate_credentials_status` reports only whether both
+entries exist and the PAT ID's character count. `list_sipgate_devices` returns
+only register-device ID, alias, and online state.
+
+`provision_from_sipgate` either uses `device_id` from that list or creates a new
+register device with `create_device: true`; `alias` applies only to creation and
+`label` names the local Phone line. `rotate_password` defaults to `false`. When
+enabled, Phone rotates before its credential read, invalidating a SIP password
+that may have been exposed previously. Phone fetches the SIP credentials itself,
+writes the password through the normal line-provisioning Keychain path, waits
+for registration, and returns the line plus `sipgate_device_id` and
+`sipgate_device_alias`. Neither credential is returned or written to the
+diagnostic log.
 
 The helper connects only to
 `~/Library/Application Support/Phone/control.sock`. The app creates that Unix
@@ -343,10 +371,13 @@ to Google; review the Google data and privacy terms before enabling this mode.
 
 ## Privacy
 
-- SIP credentials for managed accounts stay in protected per-number `accounts`
-  files below `~/Library/Application Support/Phone/instances`; manual
-  setups continue to use `~/Library/Application Support/Phone/baresip/accounts`.
-  The optional development source at `runtime/baresip/accounts` is ignored by Git.
+- SIP passwords for managed accounts are stored in macOS Keychain and are
+  materialized only into protected per-number `accounts` files below
+  `~/Library/Application Support/Phone/instances` for baresip. Manual setups
+  continue to use `~/Library/Application Support/Phone/baresip/accounts`. The
+  optional development source at `runtime/baresip/accounts` is ignored by Git.
+- The sipgate PAT stays in the `sipgate-mcp` Keychain entries. Phone uses it only
+  to authenticate the requested sipgate API calls and never returns or logs it.
 - Call audio is not persistently recorded.
 - Transcription and summarization run locally.
 - Diagnostic logs are written to
