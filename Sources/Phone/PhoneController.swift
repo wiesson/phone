@@ -134,7 +134,17 @@ func phoneDiagnosticLog(_ text: String) {
     }
 }
 
-func redactSensitiveValues(in text: String) -> String {
+func redactSensitiveValues(in text: String, secrets: [String] = []) -> String {
+    var result = redactKnownPatterns(in: text)
+    // A provider can reflect the password back in its own error text, where no
+    // pattern matches it. The log is the one place that keeps it forever.
+    for secret in secrets where secret.count >= 4 {
+        result = result.replacingOccurrences(of: secret, with: "••••")
+    }
+    return result
+}
+
+private func redactKnownPatterns(in text: String) -> String {
     text.replacingOccurrences(
         of: #"([?&]key=)[A-Za-z0-9._-]+"#,
         with: "$1••••",
@@ -482,10 +492,23 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     func saveManagedAccountAndTest(_ account: ManagedSIPAccount, password: String) throws {
         guard currentCallInstanceID == nil else { throw SIPAccountError.activeCall }
         try account.validate(password: password)
+        guard !managedAccounts.contains(where: { $0.sipAddress == account.sipAddress }) else {
+            throw SIPAccountError.duplicateAccount
+        }
+        let hadStoredPassword = (try? SIPPasswordStore.password(account: account.sipAddress)) != nil
         try SIPPasswordStore.save(password, account: account.sipAddress)
+        invalidateAccountSecretCache()
         var state = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
         state.add(account)
-        try saveManagedAccountsState(state)
+        do {
+            try saveManagedAccountsState(state)
+        } catch {
+            // Persisting failed, so the secret belongs to nothing. Leaving it
+            // behind would keep a password for a line that does not exist.
+            if !hadStoredPassword { try? SIPPasswordStore.remove(account: account.sipAddress) }
+            invalidateAccountSecretCache()
+            throw error
+        }
         unmanagedAccountAOR = nil
         restartBaresip()
     }
@@ -604,6 +627,28 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     @discardableResult
+    func createSavedAssistantProfile(
+        name: String,
+        instructions: String,
+        contextData: String?
+    ) throws -> SavedAssistantProfile {
+        let trimmedContext = contextData?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let profile = SavedAssistantProfile(
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            instructions: instructions.trimmingCharacters(in: .whitespacesAndNewlines),
+            contextData: trimmedContext?.isEmpty == false ? trimmedContext : nil
+        )
+        var profiles = savedAssistantProfiles
+        profiles.append(profile)
+        let state = ManagedSIPAccountsState(
+            accounts: managedAccounts,
+            activeSIPAddress: activeManagedSIPAddress
+        )
+        try saveManagedAccountsState(state, savedProfiles: profiles)
+        return profile
+    }
+
+    @discardableResult
     func saveNewAssistantProfile(
         name: String,
         instructions: String,
@@ -658,8 +703,11 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         guard managedAccounts.contains(where: { $0.sipAddress == account.sipAddress }) else { return }
         var accountsState = ManagedSIPAccountsState(accounts: managedAccounts, activeSIPAddress: activeManagedSIPAddress)
         accountsState.remove(account)
-        try SIPPasswordStore.remove(account: account.sipAddress)
+        // Persist first: a removed password with a still-configured line would
+        // leave a line that can never register again.
         try saveManagedAccountsState(accountsState)
+        try SIPPasswordStore.remove(account: account.sipAddress)
+        invalidateAccountSecretCache()
         let removedDirectory = instancesDirectory.appendingPathComponent(
             sanitizedBaresipInstanceAOR(account.sipAddress),
             isDirectory: true
@@ -1414,6 +1462,18 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         return migrateSavedAssistantProfiles(in: file)
     }
 
+    private var cachedAccountSecrets: [String]?
+    /// Provisioning suspends while registration settles; a second change during
+    /// that window would report a state that never existed.
+    private var isProvisioningLine = false
+
+    private var provisioningBusyError: ControlError {
+        ControlError(
+            code: "busy",
+            message: "Another line change is still settling. Retry once it reports its registration."
+        )
+    }
+
     private func appendDiagnostic(_ text: String) {
         let filtered = filteringAudioStatistics(from: text)
         guard !filtered.isEmpty, let data = filtered.data(using: .utf8) else { return }
@@ -1436,7 +1496,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             let line = String(buffer[..<newline])
             buffer.removeSubrange(...newline)
             if !line.isEmpty {
-                appendDiagnostic(redactSensitiveValues(in: "baresip[\(instance.id)]: \(line)\n"))
+                appendDiagnostic(redactSensitiveValues(
+                    in: "baresip[\(instance.id)]: \(line)\n",
+                    secrets: knownAccountSecrets()
+                ))
             }
             consumeLine(line, from: instance)
         }
@@ -1775,23 +1838,65 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func linePayload(_ account: ManagedSIPAccount) -> JSONValue {
-        let status: String
-        switch registrationStatus(for: account) {
-        case .registered: status = "registered"
-        case .registering: status = "registering"
-        case .failed(let message): status = "failed: \(message)"
-        case .idle: status = account.isEnabled ? "idle" : "offline"
+        controlLinePayload(
+            for: account,
+            status: registrationStatus(for: account),
+            activeSIPAddress: activeManagedSIPAddress,
+            assistantProfileDisplay: assistantProfileDisplay(for: account),
+            sensitiveValues: controlSensitiveValues(for: account)
+        )
+    }
+
+    /// Every password and provider token currently configured, so provider
+    /// output that reflects one back never reaches the on-disk log.
+    private func knownAccountSecrets() -> [String] {
+        if let cached = cachedAccountSecrets { return cached }
+        var secrets = managedAccounts.compactMap { account -> String? in
+            guard let password = try? SIPPasswordStore.password(account: account.sipAddress),
+                  !password.isEmpty else { return nil }
+            return password
         }
-        return .object([
-            "line": .string(account.displayName),
-            "sip_address": .string(account.sipAddress),
-            "provider": .string(account.provider.shortName),
-            "enabled": .bool(account.isEnabled),
-            "registration": .string(status),
-            "assistant_profile": .string(assistantProfileDisplay(for: account)),
-            "answers_incoming": .string(account.assistantAnswerMode.rawValue),
-            "is_outgoing_line": .bool(account.sipAddress == activeManagedSIPAddress)
-        ])
+        if let credentials = SipgateCredentialStore.credentials() {
+            secrets.append(contentsOf: [credentials.tokenID, credentials.token])
+        }
+        cachedAccountSecrets = secrets
+        return secrets
+    }
+
+    func invalidateAccountSecretCache() {
+        cachedAccountSecrets = nil
+    }
+
+    private func controlSensitiveValues(for account: ManagedSIPAccount) -> [String] {
+        guard let password = try? SIPPasswordStore.password(account: account.sipAddress),
+              !password.isEmpty else { return [] }
+        return [password]
+    }
+
+    private func assistantConfigurationPayload(_ account: ManagedSIPAccount) -> JSONValue {
+        controlAssistantConfigurationPayload(
+            for: account,
+            savedProfile: savedAssistantProfile(id: account.savedProfileID)
+        )
+    }
+
+    private func settledRegistrationStatus(
+        for account: ManagedSIPAccount,
+        timeout: Duration = .seconds(20)
+    ) async -> RegistrationStatus {
+        guard account.isEnabled else { return .idle }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            let status = registrationStatus(for: account)
+            switch status {
+            case .registered, .failed:
+                return status
+            case .idle, .registering:
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        return .failed("Registration did not complete within 20 seconds.")
     }
 
     /// Matches the name an agent is most likely to use: the label from
@@ -1918,6 +2023,183 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             }
         case .listLines:
             return .success(.array(managedAccounts.map(linePayload)))
+        case .listProvisioningEndpoints:
+            var sensitiveValues: [String] = []
+            do {
+                guard let credentials = SipgateCredentialStore.credentials() else {
+                    throw SipgateProvisioningError.missingPAT
+                }
+                sensitiveValues = [credentials.tokenID, credentials.token]
+                invalidateAccountSecretCache()
+                let service = SipgateProvisioningService(client: SipgateAPIClient(credentials: credentials))
+                let devices = try await service.listDevices()
+                return .success(controlProvisioningEndpointsPayload(
+                    devices,
+                    sensitiveValues: sensitiveValues
+                ))
+            } catch {
+                return .failure(controlError(
+                    for: error,
+                    fallbackCode: "sipgate_unavailable",
+                    sensitiveValues: sensitiveValues
+                ))
+            }
+        case .provisioningStatus:
+            return .success(controlSipgateCredentialsStatusPayload(SipgateCredentialStore.status()))
+        case .provisionLine(let arguments):
+            guard !isProvisioningLine else { return .failure(provisioningBusyError) }
+            isProvisioningLine = true
+            defer { isProvisioningLine = false }
+            var sensitiveValues: [String] = []
+            do {
+                guard let credentials = SipgateCredentialStore.credentials() else {
+                    throw SipgateProvisioningError.missingPAT
+                }
+                sensitiveValues = [credentials.tokenID, credentials.token]
+                invalidateAccountSecretCache()
+                let service = SipgateProvisioningService(client: SipgateAPIClient(credentials: credentials))
+                // Refuse locally before a rotation makes the device's old password
+                // worthless: the save would fail afterwards and nobody would hold
+                // the new one.
+                guard currentCallInstanceID == nil else { throw SIPAccountError.activeCall }
+                let plan = try await service.provisioningPlan(for: arguments)
+                sensitiveValues.append(plan.password)
+                // Keep the create-line persistence ordering: validate, save the
+                // Keychain secret, invalidate redaction, then persist/restart.
+                try plan.account.validate(password: plan.password)
+                try saveManagedAccountAndTest(plan.account, password: plan.password)
+                let status = await settledRegistrationStatus(for: plan.account)
+                guard let saved = managedAccounts.first(where: { $0.sipAddress == plan.account.sipAddress }) else {
+                    return .failure(ControlError(
+                        code: "unknown_line",
+                        message: "The line was removed while its registration was still settling."
+                    ))
+                }
+                let line = controlLinePayload(
+                    for: saved,
+                    status: status,
+                    activeSIPAddress: activeManagedSIPAddress,
+                    assistantProfileDisplay: assistantProfileDisplay(for: saved),
+                    sensitiveValues: sensitiveValues
+                )
+                return .success(controlSipgateProvisioningPayload(
+                    linePayload: line,
+                    device: plan.device,
+                    sensitiveValues: sensitiveValues
+                ))
+            } catch {
+                return .failure(controlError(
+                    for: error,
+                    fallbackCode: "sipgate_provisioning_failed",
+                    sensitiveValues: sensitiveValues
+                ))
+            }
+        case .createLine(let arguments):
+            guard !isProvisioningLine else { return .failure(provisioningBusyError) }
+            isProvisioningLine = true
+            defer { isProvisioningLine = false }
+            do {
+                let account = try managedSIPAccount(from: arguments)
+                // Validate before either Keychain or account persistence changes.
+                try account.validate(password: arguments.password)
+                try saveManagedAccountAndTest(account, password: arguments.password)
+                let status = await settledRegistrationStatus(for: account)
+                // The wait suspends, so the line can be gone by now. Reporting a
+                // status for an account that no longer exists would be fiction.
+                guard let saved = managedAccounts.first(where: { $0.sipAddress == account.sipAddress }) else {
+                    return .failure(ControlError(
+                        code: "unknown_line",
+                        message: "The line was removed while its registration was still settling."
+                    ))
+                }
+                return .success(controlLinePayload(
+                    for: saved,
+                    status: status,
+                    activeSIPAddress: activeManagedSIPAddress,
+                    assistantProfileDisplay: assistantProfileDisplay(for: saved),
+                    sensitiveValues: [arguments.password]
+                ))
+            } catch {
+                return .failure(controlError(for: error))
+            }
+        case .updateLine(let arguments):
+            guard !isProvisioningLine else { return .failure(provisioningBusyError) }
+            isProvisioningLine = true
+            defer { isProvisioningLine = false }
+            guard let original = managedAccount(matching: arguments.line) else {
+                return .failure(ControlError(code: "unknown_line", message: "No configured line matches '\(arguments.line)'."))
+            }
+            do {
+                let updated = try managedSIPAccount(applying: arguments, to: original)
+                let replacementPassword = arguments.password ?? ""
+                let validationPassword = replacementPassword.isEmpty
+                    ? try SIPPasswordStore.password(account: original.sipAddress)
+                    : replacementPassword
+                // Metadata-only edits also validate the complete stored account.
+                try updated.validate(password: validationPassword)
+                let plan = try editManagedAccount(
+                    updated,
+                    replacing: original.sipAddress,
+                    password: replacementPassword
+                )
+                let saved = managedAccounts.first { $0.sipAddress == updated.sipAddress } ?? updated
+                let status = plan.requiresRegistrationTest
+                    ? await settledRegistrationStatus(for: saved)
+                    : registrationStatus(for: saved)
+                return .success(controlLinePayload(
+                    for: saved,
+                    status: status,
+                    activeSIPAddress: activeManagedSIPAddress,
+                    assistantProfileDisplay: assistantProfileDisplay(for: saved),
+                    sensitiveValues: [validationPassword]
+                ))
+            } catch {
+                return .failure(controlError(for: error))
+            }
+        case .deleteLine(let line):
+            guard let account = managedAccount(matching: line) else {
+                return .failure(ControlError(code: "unknown_line", message: "No configured line matches '\(line)'."))
+            }
+            do {
+                try removeManagedAccount(account)
+                return .success(.object([
+                    "deleted": .bool(true),
+                    "line": .string(account.displayName),
+                    "sip_address": .string(account.sipAddress),
+                    "active_line": activeManagedAccount.map { .string($0.displayName) } ?? .null
+                ]))
+            } catch {
+                return .failure(controlError(for: error))
+            }
+        case .selectActiveLine(let line):
+            guard let account = managedAccount(matching: line) else {
+                return .failure(ControlError(code: "unknown_line", message: "No configured line matches '\(line)'."))
+            }
+            do {
+                try selectManagedAccount(account)
+                let selected = activeManagedAccount ?? account
+                return .success(linePayload(selected))
+            } catch {
+                return .failure(controlError(for: error))
+            }
+        case .getRegistrationStatus(let line):
+            if let line {
+                guard let account = managedAccount(matching: line) else {
+                    return .failure(ControlError(code: "unknown_line", message: "No configured line matches '\(line)'."))
+                }
+                return .success(controlRegistrationPayload(
+                    for: account,
+                    status: registrationStatus(for: account),
+                    sensitiveValues: controlSensitiveValues(for: account)
+                ))
+            }
+            return .success(.array(managedAccounts.map {
+                controlRegistrationPayload(
+                    for: $0,
+                    status: registrationStatus(for: $0),
+                    sensitiveValues: controlSensitiveValues(for: $0)
+                )
+            }))
         case .setLineEnabled(let line, let enabled):
             guard let account = managedAccount(matching: line) else {
                 return .failure(ControlError(code: "unknown_line", message: "No configured line matches '\(line)'."))
@@ -1927,7 +2209,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 let updated = managedAccounts.first { $0.sipAddress == account.sipAddress } ?? account
                 return .success(linePayload(updated))
             } catch {
-                return .failure(ControlError(code: "invalid_state", message: error.localizedDescription))
+                return .failure(controlError(for: error))
             }
         case .setLineProfile(let line, let profileName):
             guard var account = managedAccount(matching: line) else {
@@ -1956,7 +2238,104 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 let updated = managedAccounts.first { $0.sipAddress == account.sipAddress } ?? account
                 return .success(linePayload(updated))
             } catch {
-                return .failure(ControlError(code: "invalid_state", message: error.localizedDescription))
+                return .failure(controlError(for: error))
+            }
+        case .setLinePrompt(let line, let instructions, let contextData):
+            guard let account = managedAccount(matching: line) else {
+                return .failure(ControlError(code: "unknown_line", message: "No configured line matches '\(line)'."))
+            }
+            let updated = accountSettingCustomPrompt(
+                account,
+                instructions: instructions,
+                contextData: contextData
+            )
+            do {
+                try updateManagedAccountMetadata(updated)
+                let saved = managedAccounts.first { $0.sipAddress == account.sipAddress } ?? updated
+                return .success(assistantConfigurationPayload(saved))
+            } catch {
+                return .failure(controlError(for: error))
+            }
+        case .createAssistantProfile(let name, let instructions, let contextData):
+            do {
+                let profile = try createSavedAssistantProfile(
+                    name: name,
+                    instructions: instructions,
+                    contextData: contextData
+                )
+                return .success(controlAssistantProfilePayload(profile))
+            } catch {
+                return .failure(controlError(for: error, fallbackCode: "unavailable"))
+            }
+        case .updateAssistantProfile(let profileID, let name, let instructions, let contextData):
+            guard let id = UUID(uuidString: profileID) else {
+                return .failure(ControlError(code: "invalid_arguments", message: "profile_id must be a UUID from list_assistant_profiles."))
+            }
+            do {
+                try updateSavedAssistantProfile(id: id) { profile in
+                    if let name { profile.name = name }
+                    if let instructions { profile.instructions = instructions }
+                    if let contextData {
+                        profile.contextData = contextData.isEmpty ? nil : contextData
+                    }
+                }
+                guard let updated = savedAssistantProfile(id: id) else {
+                    throw SIPAccountError.missingSavedAssistantProfile
+                }
+                return .success(controlAssistantProfilePayload(updated))
+            } catch {
+                return .failure(controlError(for: error))
+            }
+        case .deleteAssistantProfile(let profileID):
+            guard let id = UUID(uuidString: profileID) else {
+                return .failure(ControlError(code: "invalid_arguments", message: "profile_id must be a UUID from list_assistant_profiles."))
+            }
+            do {
+                guard let profile = savedAssistantProfile(id: id) else {
+                    throw SIPAccountError.missingSavedAssistantProfile
+                }
+                try deleteSavedAssistantProfile(id: id)
+                return .success(.object([
+                    "deleted": .bool(true),
+                    "profile_id": .string(profile.id.uuidString),
+                    "name": .string(profile.name)
+                ]))
+            } catch {
+                return .failure(controlError(for: error))
+            }
+        case .listAssistantProfiles:
+            return .success(.array(savedAssistantProfiles.map(controlAssistantProfilePayload)))
+        case .setLineAnswerMode(let line, let mode, let answerDelaySeconds):
+            guard let account = managedAccount(matching: line) else {
+                return .failure(ControlError(code: "unknown_line", message: "No configured line matches '\(line)'."))
+            }
+            let updated = accountSettingAnswerMode(
+                account,
+                mode: mode,
+                answerDelaySeconds: answerDelaySeconds
+            )
+            do {
+                try updateManagedAccountMetadata(updated)
+                let saved = managedAccounts.first { $0.sipAddress == account.sipAddress } ?? updated
+                return .success(assistantConfigurationPayload(saved))
+            } catch {
+                return .failure(controlError(for: error))
+            }
+        case .setLineBusinessHours(let line, let weekdays, let weekend):
+            guard let account = managedAccount(matching: line) else {
+                return .failure(ControlError(code: "unknown_line", message: "No configured line matches '\(line)'."))
+            }
+            let updated = accountSettingBusinessHours(
+                account,
+                weekdays: weekdays,
+                weekend: weekend
+            )
+            do {
+                try updateManagedAccountMetadata(updated)
+                let saved = managedAccounts.first { $0.sipAddress == account.sipAddress } ?? updated
+                return .success(assistantConfigurationPayload(saved))
+            } catch {
+                return .failure(controlError(for: error))
             }
         case .findContact(let name):
             let matches = contactSuggestions(matching: name, limit: 10).map { entry in

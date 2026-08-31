@@ -4,6 +4,27 @@ All notable changes to Phone. Dates are 2026. This project went from empty
 repository to everything below in roughly 48 hours — every entry links to real
 commits on `main`.
 
+## August 30
+
+### Added
+- **Secret-free sipgate line provisioning over MCP**: list the authenticated
+  user's register devices, inspect whether the `sipgate-mcp` PAT exists in
+  Keychain, and provision an existing or new device without sending any PAT or
+  SIP password through MCP. Optional pre-read password rotation invalidates an
+  older exposed credential; secrets are scrubbed from results, errors, and the
+  diagnostic log path.
+- **Headless line provisioning over MCP**: agents can create, validate, register,
+  update, select, inspect, and delete SIP lines without opening the setup wizard.
+  Provider presets and advanced registrar/proxy/STUN/media settings are supported;
+  passwords remain input-only in Keychain, and creation reports the actual
+  registration result while retaining failed lines for correction.
+- **Complete per-line assistant configuration over MCP**: agents can write a
+  one-off custom prompt, manage reusable saved profiles, set answer mode and
+  clamped delay, and replace weekday/weekend business-hours windows.
+- Specific MCP error codes for every managed SIP account failure, including
+  active-call refusal, duplicate lines, invalid credentials/settings, missing
+  Keychain credentials, offline/busy lines, and missing profiles.
+
 ## August 28 — evening
 
 ### Added

@@ -162,6 +162,120 @@ public func validatedDialTarget(_ value: String) -> String? {
     return target
 }
 
+public struct ControlCreateLine: Equatable, Sendable {
+    public let provider: String?
+    public let username: String
+    public let password: String
+    public let domain: String?
+    public let outboundProxy: String?
+    public let stunServer: String?
+    public let mediaEncryption: String?
+    public let label: String?
+    public let sipDisplayName: String?
+    public let outboundCallerID: String?
+
+    public init(
+        provider: String?,
+        username: String,
+        password: String,
+        domain: String?,
+        outboundProxy: String?,
+        stunServer: String?,
+        mediaEncryption: String?,
+        label: String?,
+        sipDisplayName: String?,
+        outboundCallerID: String?
+    ) {
+        self.provider = provider
+        self.username = username
+        self.password = password
+        self.domain = domain
+        self.outboundProxy = outboundProxy
+        self.stunServer = stunServer
+        self.mediaEncryption = mediaEncryption
+        self.label = label
+        self.sipDisplayName = sipDisplayName
+        self.outboundCallerID = outboundCallerID
+    }
+}
+
+public struct ControlUpdateLine: Equatable, Sendable {
+    public let line: String
+    public let provider: String?
+    public let password: String?
+    public let domain: String?
+    public let outboundProxy: String?
+    public let stunServer: String?
+    public let mediaEncryption: String?
+    public let label: String?
+    public let sipDisplayName: String?
+    public let outboundCallerID: String?
+
+    public init(
+        line: String,
+        provider: String?,
+        password: String?,
+        domain: String?,
+        outboundProxy: String?,
+        stunServer: String?,
+        mediaEncryption: String?,
+        label: String?,
+        sipDisplayName: String?,
+        outboundCallerID: String?
+    ) {
+        self.line = line
+        self.provider = provider
+        self.password = password
+        self.domain = domain
+        self.outboundProxy = outboundProxy
+        self.stunServer = stunServer
+        self.mediaEncryption = mediaEncryption
+        self.label = label
+        self.sipDisplayName = sipDisplayName
+        self.outboundCallerID = outboundCallerID
+    }
+}
+
+public struct ControlProvisionLine: Equatable, Sendable {
+    public let deviceID: String?
+    public let createDevice: Bool
+    public let alias: String?
+    public let label: String?
+    public let rotatePassword: Bool
+
+    public init(
+        deviceID: String?,
+        createDevice: Bool,
+        alias: String?,
+        label: String?,
+        rotatePassword: Bool
+    ) {
+        self.deviceID = deviceID
+        self.createDevice = createDevice
+        self.alias = alias
+        self.label = label
+        self.rotatePassword = rotatePassword
+    }
+}
+
+public enum ControlAssistantAnswerMode: String, Equatable, Sendable {
+    case never
+    case always
+    case outsideBusinessHours = "outside_business_hours"
+}
+
+public struct ControlBusinessHoursDayGroup: Equatable, Sendable {
+    public let open: Bool
+    public let startMinute: Int
+    public let endMinute: Int
+
+    public init(open: Bool, startMinute: Int, endMinute: Int) {
+        self.open = open
+        self.startMinute = startMinute
+        self.endMinute = endMinute
+    }
+}
+
 public enum ControlCommand: Equatable, Sendable {
     case dial(String, account: String?)
     case assistantCall(String, task: String, account: String?)
@@ -173,8 +287,27 @@ public enum ControlCommand: Equatable, Sendable {
     case getLastSummary
     case getTranscript(callID: String?, limit: Int)
     case listLines
+    case listProvisioningEndpoints
+    case provisionLine(ControlProvisionLine)
+    case provisioningStatus
+    case createLine(ControlCreateLine)
+    case updateLine(ControlUpdateLine)
+    case deleteLine(line: String)
+    case selectActiveLine(line: String)
+    case getRegistrationStatus(line: String?)
     case setLineEnabled(line: String, enabled: Bool)
     case setLineProfile(line: String, profile: String)
+    case setLinePrompt(line: String, instructions: String, contextData: String?)
+    case createAssistantProfile(name: String, instructions: String, contextData: String?)
+    case updateAssistantProfile(profileID: String, name: String?, instructions: String?, contextData: String?)
+    case deleteAssistantProfile(profileID: String)
+    case listAssistantProfiles
+    case setLineAnswerMode(line: String, mode: ControlAssistantAnswerMode, answerDelaySeconds: Int?)
+    case setLineBusinessHours(
+        line: String,
+        weekdays: ControlBusinessHoursDayGroup,
+        weekend: ControlBusinessHoursDayGroup
+    )
     case findContact(String)
 }
 
@@ -255,6 +388,129 @@ public enum ControlRequestParser {
             return noArguments(args, command: .getState)
         case "list_lines":
             return noArguments(args, command: .listLines)
+        case "list_provisioning_endpoints":
+            return noArguments(args, command: .listProvisioningEndpoints)
+        case "provisioning_status":
+            return noArguments(args, command: .provisioningStatus)
+        case "provision_line":
+            let allowed = Set(["device_id", "create_device", "alias", "label", "rotate_password"])
+            guard Set(args.keys).isSubset(of: allowed),
+                  optionalStrings(in: args, keys: ["device_id", "alias", "label"]),
+                  optionalBooleans(in: args, keys: ["create_device", "rotate_password"]) else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "provision_line accepts string device_id, alias, and label arguments plus boolean create_device and rotate_password arguments."
+                ))
+            }
+            let deviceID = trimmedString(args["device_id"])
+            let createDevice = boolean(args["create_device"]) ?? false
+            let hasDeviceID = args["device_id"] != nil
+            let hasCreateDevice = args["create_device"] != nil
+            guard hasDeviceID != hasCreateDevice else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "Give exactly one of device_id or create_device."
+                ))
+            }
+            guard !hasDeviceID || deviceID?.isEmpty == false else {
+                return .failure(ControlError(code: "invalid_arguments", message: "device_id must be a non-empty string."))
+            }
+            guard !hasCreateDevice || createDevice else {
+                return .failure(ControlError(code: "invalid_arguments", message: "create_device must be true when provided."))
+            }
+            let alias = trimmedString(args["alias"])
+            guard createDevice || args["alias"] == nil else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "alias is only valid when create_device is true."
+                ))
+            }
+            return .success(.provisionLine(ControlProvisionLine(
+                deviceID: deviceID,
+                createDevice: createDevice,
+                alias: alias?.isEmpty == false ? alias : nil,
+                label: trimmedString(args["label"]),
+                rotatePassword: boolean(args["rotate_password"]) ?? false
+            )))
+        case "create_line":
+            let allowed = Set([
+                "provider", "username", "password", "domain", "outbound_proxy", "stun_server",
+                "media_encryption", "label", "sip_display_name", "outbound_caller_id"
+            ])
+            guard Set(args.keys).isSubset(of: allowed),
+                  optionalStrings(in: args, keys: allowed.subtracting(["username", "password"])),
+                  case .string(let rawUsername)? = args["username"],
+                  case .string(let password)? = args["password"] else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "create_line requires string username and password arguments; all provider and display settings must also be strings."
+                ))
+            }
+            let username = rawUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !username.isEmpty else {
+                return .failure(ControlError(code: "invalid_arguments", message: "username must be a non-empty string."))
+            }
+            if let error = validateProviderArgument(args["provider"]) { return .failure(error) }
+            return .success(.createLine(ControlCreateLine(
+                provider: trimmedString(args["provider"]),
+                username: username,
+                password: password,
+                domain: trimmedString(args["domain"]),
+                outboundProxy: trimmedString(args["outbound_proxy"]),
+                stunServer: trimmedString(args["stun_server"]),
+                mediaEncryption: trimmedString(args["media_encryption"]),
+                label: trimmedString(args["label"]),
+                sipDisplayName: trimmedString(args["sip_display_name"]),
+                outboundCallerID: trimmedString(args["outbound_caller_id"])
+            )))
+        case "update_line":
+            let mutable = Set([
+                "provider", "password", "domain", "outbound_proxy", "stun_server", "media_encryption",
+                "label", "sip_display_name", "outbound_caller_id"
+            ])
+            let allowed = mutable.union(["line"])
+            guard Set(args.keys).isSubset(of: allowed),
+                  !Set(args.keys).intersection(mutable).isEmpty,
+                  optionalStrings(in: args, keys: mutable),
+                  case .string(let rawLine)? = args["line"] else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "update_line requires line and at least one string setting to change."
+                ))
+            }
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else {
+                return .failure(ControlError(code: "invalid_arguments", message: "line must be a non-empty string."))
+            }
+            if let error = validateProviderArgument(args["provider"]) { return .failure(error) }
+            return .success(.updateLine(ControlUpdateLine(
+                line: line,
+                provider: trimmedString(args["provider"]),
+                password: string(args["password"]),
+                domain: trimmedString(args["domain"]),
+                outboundProxy: trimmedString(args["outbound_proxy"]),
+                stunServer: trimmedString(args["stun_server"]),
+                mediaEncryption: trimmedString(args["media_encryption"]),
+                label: trimmedString(args["label"]),
+                sipDisplayName: trimmedString(args["sip_display_name"]),
+                outboundCallerID: trimmedString(args["outbound_caller_id"])
+            )))
+        case "delete_line":
+            return singleLineArgument(args) { .deleteLine(line: $0) }
+        case "select_active_line":
+            return singleLineArgument(args) { .selectActiveLine(line: $0) }
+        case "get_registration_status":
+            guard Set(args.keys).isSubset(of: ["line"]), optionalStrings(in: args, keys: ["line"]) else {
+                return .failure(ControlError(code: "invalid_arguments", message: "get_registration_status accepts only an optional string line."))
+            }
+            if let rawLine = string(args["line"]) {
+                let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !line.isEmpty else {
+                    return .failure(ControlError(code: "invalid_arguments", message: "line must be a non-empty string."))
+                }
+                return .success(.getRegistrationStatus(line: line))
+            }
+            return .success(.getRegistrationStatus(line: nil))
         case "set_line_enabled":
             guard Set(args.keys).isSubset(of: ["line", "enabled"]),
                   case .string(let line)? = args["line"],
@@ -281,6 +537,118 @@ public enum ControlRequestParser {
                 line: line.trimmingCharacters(in: .whitespaces),
                 profile: profile.trimmingCharacters(in: .whitespaces)
             ))
+        case "set_line_prompt":
+            guard Set(args.keys).isSubset(of: ["line", "instructions", "context_data"]),
+                  optionalStrings(in: args, keys: ["context_data"]),
+                  case .string(let rawLine)? = args["line"],
+                  case .string(let rawInstructions)? = args["instructions"] else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "set_line_prompt requires string line and instructions arguments and optionally context_data."
+                ))
+            }
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            let instructions = rawInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty, !instructions.isEmpty else {
+                return .failure(ControlError(code: "invalid_arguments", message: "line and instructions must be non-empty strings."))
+            }
+            return .success(.setLinePrompt(
+                line: line,
+                instructions: instructions,
+                contextData: trimmedString(args["context_data"])
+            ))
+        case "create_assistant_profile":
+            guard Set(args.keys).isSubset(of: ["name", "instructions", "context_data"]),
+                  optionalStrings(in: args, keys: ["context_data"]),
+                  case .string(let rawName)? = args["name"],
+                  case .string(let rawInstructions)? = args["instructions"] else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "create_assistant_profile requires string name and instructions arguments and optionally context_data."
+                ))
+            }
+            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let instructions = rawInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !instructions.isEmpty else {
+                return .failure(ControlError(code: "invalid_arguments", message: "name and instructions must be non-empty strings."))
+            }
+            return .success(.createAssistantProfile(
+                name: name,
+                instructions: instructions,
+                contextData: trimmedString(args["context_data"])
+            ))
+        case "update_assistant_profile":
+            let mutable = Set(["name", "instructions", "context_data"])
+            guard Set(args.keys).isSubset(of: mutable.union(["profile_id"])),
+                  !Set(args.keys).intersection(mutable).isEmpty,
+                  optionalStrings(in: args, keys: mutable),
+                  case .string(let rawID)? = args["profile_id"] else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "update_assistant_profile requires profile_id and at least one string setting to change."
+                ))
+            }
+            let profileID = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = trimmedString(args["name"])
+            let instructions = trimmedString(args["instructions"])
+            guard !profileID.isEmpty,
+                  args["name"] == nil || !(name ?? "").isEmpty,
+                  args["instructions"] == nil || !(instructions ?? "").isEmpty else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "profile_id, name, and instructions must be non-empty when provided."
+                ))
+            }
+            return .success(.updateAssistantProfile(
+                profileID: profileID,
+                name: name,
+                instructions: instructions,
+                contextData: trimmedString(args["context_data"])
+            ))
+        case "delete_assistant_profile":
+            guard Set(args.keys) == ["profile_id"],
+                  case .string(let rawID)? = args["profile_id"],
+                  !rawID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .failure(ControlError(code: "invalid_arguments", message: "delete_assistant_profile requires a non-empty string profile_id."))
+            }
+            return .success(.deleteAssistantProfile(profileID: rawID.trimmingCharacters(in: .whitespacesAndNewlines)))
+        case "list_assistant_profiles":
+            return noArguments(args, command: .listAssistantProfiles)
+        case "set_line_answer_mode":
+            guard Set(args.keys).isSubset(of: ["line", "mode", "answer_delay_seconds"]),
+                  case .string(let rawLine)? = args["line"],
+                  case .string(let rawMode)? = args["mode"],
+                  let mode = ControlAssistantAnswerMode(rawValue: rawMode),
+                  args["answer_delay_seconds"] == nil || integer(args["answer_delay_seconds"]) != nil else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "set_line_answer_mode requires line, mode (never, always, or outside_business_hours), and optionally an integer answer_delay_seconds."
+                ))
+            }
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else {
+                return .failure(ControlError(code: "invalid_arguments", message: "line must be a non-empty string."))
+            }
+            return .success(.setLineAnswerMode(
+                line: line,
+                mode: mode,
+                answerDelaySeconds: integer(args["answer_delay_seconds"])
+            ))
+        case "set_line_business_hours":
+            guard Set(args.keys) == ["line", "weekdays", "weekend"],
+                  case .string(let rawLine)? = args["line"],
+                  let weekdays = businessHoursDayGroup(args["weekdays"]),
+                  let weekend = businessHoursDayGroup(args["weekend"]) else {
+                return .failure(ControlError(
+                    code: "invalid_arguments",
+                    message: "set_line_business_hours requires line plus weekdays and weekend objects containing open, start_minute, and end_minute (0 through 1439)."
+                ))
+            }
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else {
+                return .failure(ControlError(code: "invalid_arguments", message: "line must be a non-empty string."))
+            }
+            return .success(.setLineBusinessHours(line: line, weekdays: weekdays, weekend: weekend))
         case "find_contact":
             guard Set(args.keys).isSubset(of: ["name"]),
                   case .string(let name)? = args["name"],
@@ -342,6 +710,68 @@ public enum ControlRequestParser {
         }
         return .success(command)
     }
+
+    private static func singleLineArgument(
+        _ args: [String: JSONValue],
+        command: (String) -> ControlCommand
+    ) -> Result<ControlCommand, ControlError> {
+        guard Set(args.keys) == ["line"],
+              case .string(let rawLine)? = args["line"],
+              !rawLine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .failure(ControlError(code: "invalid_arguments", message: "This command requires a non-empty string line."))
+        }
+        return .success(command(rawLine.trimmingCharacters(in: .whitespacesAndNewlines)))
+    }
+
+    private static func validateProviderArgument(_ value: JSONValue?) -> ControlError? {
+        guard let value else { return nil }
+        guard case .string(let provider) = value,
+              ["telekom", "fritzBox", "sipgate", "easybell", "custom"].contains(provider) else {
+            return ControlError(
+                code: "invalid_arguments",
+                message: "provider must be telekom, fritzBox, sipgate, easybell, or custom."
+            )
+        }
+        return nil
+    }
+
+    private static func optionalStrings(in args: [String: JSONValue], keys: Set<String>) -> Bool {
+        keys.allSatisfy { key in args[key] == nil || string(args[key]) != nil }
+    }
+
+    private static func optionalBooleans(in args: [String: JSONValue], keys: Set<String>) -> Bool {
+        keys.allSatisfy { key in args[key] == nil || boolean(args[key]) != nil }
+    }
+
+    private static func string(_ value: JSONValue?) -> String? {
+        guard case .string(let value) = value else { return nil }
+        return value
+    }
+
+    private static func trimmedString(_ value: JSONValue?) -> String? {
+        string(value)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func integer(_ value: JSONValue?) -> Int? {
+        guard case .integer(let value) = value else { return nil }
+        return value
+    }
+
+    private static func boolean(_ value: JSONValue?) -> Bool? {
+        guard case .bool(let value) = value else { return nil }
+        return value
+    }
+
+    private static func businessHoursDayGroup(_ value: JSONValue?) -> ControlBusinessHoursDayGroup? {
+        guard case .object(let object) = value,
+              Set(object.keys) == ["open", "start_minute", "end_minute"],
+              case .bool(let open)? = object["open"],
+              case .integer(let start)? = object["start_minute"],
+              case .integer(let end)? = object["end_minute"],
+              (0...1439).contains(start),
+              (0...1439).contains(end) else { return nil }
+        return ControlBusinessHoursDayGroup(open: open, startMinute: start, endMinute: end)
+    }
 }
 
 public struct ControlResponse: Codable, Equatable, Sendable {
@@ -395,6 +825,88 @@ public enum MCPProtocol {
             access: .read
         ),
         tool(
+            "list_provisioning_endpoints",
+            "List the SIP endpoints the telephony provider can hand out, each with endpoint_id, alias and online state, plus which provider answered. Credentials are never returned. An endpoint reported as online is already in use. Only sipgate can provision today; a line at any other provider is entered by hand with create_line.",
+            access: .externalRead
+        ),
+        tool(
+            "provisioning_status",
+            "Report which telephony provider can provision lines and whether its API credentials are present in the macOS Keychain. Returns no credential content. Call this before provision_line: without credentials nothing can be provisioned, and a line then has to be entered by hand with create_line.",
+            access: .read
+        ),
+        tool(
+            "provision_line",
+            "Create a Phone SIP line from an endpoint at the telephony provider. Phone fetches the credentials from the provider itself, stores the SIP password in the Keychain, waits for the line to register, and never returns a secret. Give exactly one of device_id (an existing endpoint from list_provisioning_endpoints) or create_device: true. WHAT THIS CHANGES AT THE PROVIDER: create_device creates a real endpoint on the account, and rotate_password immediately invalidates the password of every other client already using that endpoint — a desk phone or softphone on it stops working at once. An endpoint reported as online is in use by someone; do not take it over or rotate it without being asked to. alias is the name at the provider, label is the name this line gets in Phone.",
+            access: .externalWrite,
+            properties: [
+                "device_id": schema("string"),
+                "create_device": .object(["type": .string("boolean")]),
+                "alias": schema("string"),
+                "label": schema("string"),
+                "rotate_password": .object(["type": .string("boolean"), "default": .bool(false)])
+            ],
+            oneOf: [
+                .object(["required": .array([.string("device_id")]), "not": .object(["required": .array([.string("create_device")])])]),
+                .object(["required": .array([.string("create_device")])])
+            ]
+        ),
+        tool(
+            "create_line",
+            "Create and save a SIP line, store its password in Keychain, restart registration, and report whether it registered plus any provider error. Choose a provider preset or omit provider and supply an explicit domain. The password is input-only and is never returned.",
+            access: .write,
+            properties: [
+                "provider": enumSchema(["telekom", "fritzBox", "sipgate", "easybell", "custom"]),
+                "username": schema("string"),
+                "password": secretSchema,
+                "domain": schema("string"),
+                "outbound_proxy": schema("string"),
+                "stun_server": schema("string"),
+                "media_encryption": schema("string"),
+                "label": schema("string"),
+                "sip_display_name": schema("string"),
+                "outbound_caller_id": schema("string")
+            ],
+            required: ["username", "password"]
+        ),
+        tool(
+            "update_line",
+            "Change an existing SIP line's label, display name, caller ID, password, provider, registrar, proxy, STUN server, or media encryption. Omitted fields, including password, are kept; empty optional display or server fields are cleared. Registration-relevant changes restart and report registration.",
+            access: .write,
+            properties: [
+                "line": schema("string"),
+                "provider": enumSchema(["telekom", "fritzBox", "sipgate", "easybell", "custom"]),
+                "password": secretSchema,
+                "domain": schema("string"),
+                "outbound_proxy": schema("string"),
+                "stun_server": schema("string"),
+                "media_encryption": schema("string"),
+                "label": schema("string"),
+                "sip_display_name": schema("string"),
+                "outbound_caller_id": schema("string")
+            ],
+            required: ["line"]
+        ),
+        tool(
+            "delete_line",
+            "Permanently remove a configured SIP line and its Keychain password. Refuses while a call is active.",
+            access: .write,
+            properties: ["line": schema("string")],
+            required: ["line"]
+        ),
+        tool(
+            "select_active_line",
+            "Choose which configured online SIP line outgoing calls use.",
+            access: .write,
+            properties: ["line": schema("string")],
+            required: ["line"]
+        ),
+        tool(
+            "get_registration_status",
+            "Get enabled, registered, registration state, and last provider error for every SIP line or for one matching line.",
+            access: .read,
+            properties: ["line": schema("string")]
+        ),
+        tool(
             "set_line_enabled",
             "Take one SIP line online or offline. An offline line keeps its configuration but does not register, so it receives no calls and cannot place any. Other lines keep their registration. Refuses while that line is on a call.",
             access: .write,
@@ -407,6 +919,74 @@ public enum MCPProtocol {
             access: .write,
             properties: ["line": schema("string"), "profile": schema("string")],
             required: ["line", "profile"]
+        ),
+        tool(
+            "set_line_prompt",
+            "Replace one SIP line's assistant prompt with free-text instructions and optional context data. The line switches to a custom per-line override and no saved profile is required.",
+            access: .write,
+            properties: [
+                "line": schema("string"),
+                "instructions": schema("string"),
+                "context_data": schema("string")
+            ],
+            required: ["line", "instructions"]
+        ),
+        tool(
+            "create_assistant_profile",
+            "Create a reusable saved assistant profile with a name, prompt instructions, and optional context data.",
+            access: .write,
+            properties: [
+                "name": schema("string"),
+                "instructions": schema("string"),
+                "context_data": schema("string")
+            ],
+            required: ["name", "instructions"]
+        ),
+        tool(
+            "update_assistant_profile",
+            "Change the name, instructions, or context data of a reusable saved assistant profile. Lines using it see the updated prompt.",
+            access: .write,
+            properties: [
+                "profile_id": schema("string"),
+                "name": schema("string"),
+                "instructions": schema("string"),
+                "context_data": schema("string")
+            ],
+            required: ["profile_id"]
+        ),
+        tool(
+            "delete_assistant_profile",
+            "Delete a reusable saved assistant profile. Lines using it retain a custom copy of its prompt and context.",
+            access: .write,
+            properties: ["profile_id": schema("string")],
+            required: ["profile_id"]
+        ),
+        tool(
+            "list_assistant_profiles",
+            "List reusable saved assistant profiles with their IDs, names, instructions, and context data.",
+            access: .read
+        ),
+        tool(
+            "set_line_answer_mode",
+            "Set whether one line's assistant answers never, always, or only outside business hours, and optionally set its answer delay. The delay is clamped to 0 through 30 seconds.",
+            access: .write,
+            properties: [
+                "line": schema("string"),
+                "mode": enumSchema(["never", "always", "outside_business_hours"]),
+                "answer_delay_seconds": schema("integer")
+            ],
+            required: ["line", "mode"]
+        ),
+        tool(
+            "set_line_business_hours",
+            "Replace one line's weekday and weekend business-hours windows. Times are minutes after midnight (0 through 1439); an open window may cross midnight.",
+            access: .write,
+            properties: [
+                "line": schema("string"),
+                "weekdays": businessHoursDayGroupSchema,
+                "weekend": businessHoursDayGroupSchema
+            ],
+            required: ["line", "weekdays", "weekend"]
         ),
         tool(
             "find_contact",
@@ -483,14 +1063,49 @@ public enum MCPProtocol {
         .object(["type": .string(type)])
     }
 
+    private static func enumSchema(_ values: [String]) -> JSONValue {
+        .object([
+            "type": .string("string"),
+            "enum": .array(values.map(JSONValue.string))
+        ])
+    }
+
+    private static let secretSchema = JSONValue.object([
+        "type": .string("string"),
+        "writeOnly": .bool(true)
+    ])
+
+    private static let businessHoursDayGroupSchema = JSONValue.object([
+        "type": .string("object"),
+        "properties": .object([
+            "open": .object(["type": .string("boolean")]),
+            "start_minute": .object([
+                "type": .string("integer"),
+                "minimum": .integer(0),
+                "maximum": .integer(1439)
+            ]),
+            "end_minute": .object([
+                "type": .string("integer"),
+                "minimum": .integer(0),
+                "maximum": .integer(1439)
+            ])
+        ]),
+        "required": .array(["open", "start_minute", "end_minute"].map(JSONValue.string)),
+        "additionalProperties": .bool(false)
+    ])
+
     /// How a client should treat a tool when it decides what to run without
     /// asking. Without these a caller cannot tell `dial`, which rings a real
     /// phone, apart from `get_history`, which reads a local database.
     enum ToolAccess {
         /// Reads local state and changes nothing.
         case read
+        /// Reads provider state over the network and changes nothing.
+        case externalRead
         /// Changes configuration; running it twice lands in the same place.
         case write
+        /// Changes provider state over the network and may create or rotate twice.
+        case externalWrite
         /// Reaches the telephone network. Not idempotent: twice means two calls.
         case action
 
@@ -498,9 +1113,11 @@ public enum MCPProtocol {
             switch self {
             case .read:
                 ["readOnlyHint": .bool(true), "destructiveHint": .bool(false), "idempotentHint": .bool(true), "openWorldHint": .bool(false)]
+            case .externalRead:
+                ["readOnlyHint": .bool(true), "destructiveHint": .bool(false), "idempotentHint": .bool(true), "openWorldHint": .bool(true)]
             case .write:
                 ["readOnlyHint": .bool(false), "destructiveHint": .bool(true), "idempotentHint": .bool(true), "openWorldHint": .bool(false)]
-            case .action:
+            case .externalWrite, .action:
                 ["readOnlyHint": .bool(false), "destructiveHint": .bool(true), "idempotentHint": .bool(false), "openWorldHint": .bool(true)]
             }
         }
@@ -511,7 +1128,10 @@ public enum MCPProtocol {
         _ description: String,
         access: ToolAccess,
         properties: [String: JSONValue] = [:],
-        required: [String] = []
+        required: [String] = [],
+        // An either-or between arguments belongs in the schema, where a client
+        // can enforce it, not only in a sentence it may or may not read.
+        oneOf: [JSONValue] = []
     ) -> JSONValue {
         var inputSchema: [String: JSONValue] = [
             "type": .string("object"),
@@ -519,6 +1139,7 @@ public enum MCPProtocol {
             "additionalProperties": .bool(false)
         ]
         if !required.isEmpty { inputSchema["required"] = .array(required.map(JSONValue.string)) }
+        if !oneOf.isEmpty { inputSchema["oneOf"] = .array(oneOf) }
         return .object([
             "name": .string(name),
             "description": .string(description),
