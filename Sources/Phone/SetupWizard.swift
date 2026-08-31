@@ -102,6 +102,37 @@ struct SavedAssistantProfile: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// Adds a saved profile, or replaces the one that already carries that name.
+/// The name is a profile's handle everywhere a line is pointed at one — the
+/// lookup here is the same one `set_line_profile` uses — so a second profile
+/// under a taken name is a copy nobody can select. Replacing instead of
+/// appending is what lets the same call be repeated: it lands in the same
+/// place rather than piling up duplicates behind one name.
+func upsertSavedAssistantProfile(
+    named name: String,
+    instructions: String,
+    contextData: String?,
+    in profiles: [SavedAssistantProfile]
+) -> (profiles: [SavedAssistantProfile], profile: SavedAssistantProfile) {
+    let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedContext = contextData?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let contextData = trimmedContext?.isEmpty == false ? trimmedContext : nil
+    var profiles = profiles
+    if let index = profiles.firstIndex(where: { $0.name.lowercased() == name.lowercased() }) {
+        // Every field is replaced, including the one that was left out: the
+        // result has to be the profile the arguments describe, not a mixture of
+        // this call and the last one.
+        profiles[index].name = name
+        profiles[index].instructions = instructions
+        profiles[index].contextData = contextData
+        return (profiles, profiles[index])
+    }
+    let profile = SavedAssistantProfile(name: name, instructions: instructions, contextData: contextData)
+    profiles.append(profile)
+    return (profiles, profile)
+}
+
 func travelDemoBookings(startingAt date: Date, calendar: Calendar = .current) -> String {
     var calendar = calendar
     let start = calendar.startOfDay(for: date)

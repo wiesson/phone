@@ -290,3 +290,42 @@ private func profileAccount(
         assistantContextData: context
     )
 }
+
+@Test func creatingAProfileTwiceUnderOneNameUpdatesItInsteadOfDuplicatingIt() {
+    let created = upsertSavedAssistantProfile(
+        named: "  Reception  ",
+        instructions: "  Answer professionally  ",
+        contextData: "  Open weekdays  ",
+        in: []
+    )
+
+    #expect(created.profile.name == "Reception")
+    #expect(created.profile.instructions == "Answer professionally")
+    #expect(created.profile.contextData == "Open weekdays")
+
+    // The same call again: one profile, the same identifier, and the prompt the
+    // arguments describe — including the context data this call leaves out.
+    let repeated = upsertSavedAssistantProfile(
+        named: "reception",
+        instructions: "Answer warmly",
+        contextData: nil,
+        in: created.profiles
+    )
+
+    #expect(repeated.profiles.count == 1)
+    #expect(repeated.profile.id == created.profile.id)
+    #expect(repeated.profile.name == "reception")
+    #expect(repeated.profile.instructions == "Answer warmly")
+    #expect(repeated.profile.contextData == nil)
+
+    let other = upsertSavedAssistantProfile(
+        named: "Workshop",
+        instructions: "Take repair requests",
+        contextData: "",
+        in: repeated.profiles
+    )
+
+    #expect(other.profiles.count == 2)
+    #expect(other.profile.id != repeated.profile.id)
+    #expect(other.profile.contextData == nil)
+}

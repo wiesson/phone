@@ -933,7 +933,7 @@ public enum MCPProtocol {
         ),
         tool(
             "create_assistant_profile",
-            "Create a reusable saved assistant profile with a name, prompt instructions, and optional context data.",
+            "Create a reusable saved assistant profile with a name, prompt instructions, and optional context data. A name that is already taken updates that profile instead of adding a second one under the same name, so the call can be repeated safely.",
             access: .write,
             properties: [
                 "name": schema("string"),

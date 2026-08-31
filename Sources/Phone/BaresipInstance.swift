@@ -119,6 +119,59 @@ func aggregateRegistrationState(_ statuses: [RegistrationStatus], total: Int) ->
     return RegistrationAggregate(status: .failed(failure), registered: registered, total: total)
 }
 
+/// Waits for one line to reach a state it will not leave on its own. `nil` means
+/// the deadline passed without baresip answering either way: the caller has to
+/// record that as a failure rather than only report it, because the line
+/// otherwise keeps the `registering` entry it was polled on for as long as the
+/// app runs.
+@MainActor
+func registrationStatusOnceSettled(
+    timeout: Duration,
+    now: () -> ContinuousClock.Instant,
+    status: () -> RegistrationStatus,
+    sleep: () async -> Void
+) async -> RegistrationStatus? {
+    let deadline = now().advanced(by: timeout)
+    while now() < deadline {
+        let current = status()
+        switch current {
+        case .registered, .failed: return current
+        case .idle, .registering: await sleep()
+        }
+    }
+    // The deadline can pass during the last wait, after the answer arrived. One
+    // more look before giving up keeps a registration that did complete from
+    // being reported — and written back — as a timeout.
+    let last = status()
+    switch last {
+    case .registered, .failed: return last
+    case .idle, .registering: return nil
+    }
+}
+
+/// Names the duration that was actually waited: the timeout is a parameter, and
+/// a hard-coded number turns into a lie the moment a caller passes another one.
+func registrationTimeoutMessage(_ timeout: Duration) -> String {
+    let seconds = Double(timeout.components.seconds)
+        + Double(timeout.components.attoseconds) / 1e18
+    let value = seconds == seconds.rounded() ? "\(Int(seconds))" : String(format: "%.1f", seconds)
+    return "Registration did not complete within \(value) seconds."
+}
+
+/// The per-line entries for a failure that happened before any baresip process
+/// existed. The interface reads the entry per line, not the aggregate, so a
+/// startup failure recorded only in the aggregate leaves every line reading
+/// `idle` — no registration attempted, nothing wrong.
+func failedRegistrationStatuses(
+    for accounts: [ManagedSIPAccount],
+    message: String
+) -> [String: RegistrationStatus] {
+    Dictionary(
+        accounts.map { (sanitizedBaresipInstanceAOR($0.sipAddress), RegistrationStatus.failed(message)) },
+        uniquingKeysWith: { first, _ in first }
+    )
+}
+
 /// Whether the pid file still belongs to this process, rather than to a
 /// successor that reused the same path.
 func pidFileNamesProcess(pid: Int32, at url: URL) -> Bool {

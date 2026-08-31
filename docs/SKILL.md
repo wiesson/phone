@@ -199,9 +199,12 @@ is warm and unhurried; a trade is calm and to the point.
 `create_assistant_profile` with `name`, `instructions`, and optional
 `context_data`.
 
-Note: repeat calls are **not** idempotent — calling it twice with the same name
-creates two profiles. Call `list_assistant_profiles` first, and use
-`update_assistant_profile` with the `profile_id` to change one you already made.
+The name is the identity: calling it again with a name that already exists
+updates that profile — every field, so a `context_data` you leave out is
+cleared — and returns the same `profile_id`. Repeating the call is therefore
+safe, and it never leaves two profiles behind one name. To rename a profile, or
+to change one whose name you no longer know, use `update_assistant_profile` with
+the `profile_id` from `list_assistant_profiles`.
 
 ---
 

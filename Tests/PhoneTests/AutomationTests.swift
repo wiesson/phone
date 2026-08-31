@@ -126,6 +126,20 @@ import Testing
         #expect(password["writeOnly"] == .bool(true))
     }
 
+    // The annotation is a promise a client acts on: it may repeat an idempotent
+    // call without asking. `create_assistant_profile` keeps it only because a
+    // repeat updates the profile of that name instead of adding another one.
+    let createProfile = try #require(tools.first { tool in
+        guard case .object(let object) = tool else { return false }
+        return object["name"] == .string("create_assistant_profile")
+    })
+    guard case .object(let createProfileObject) = createProfile,
+          case .object(let createProfileAnnotations) = createProfileObject["annotations"] else {
+        Issue.record("create_assistant_profile must declare annotations")
+        return
+    }
+    #expect(createProfileAnnotations["idempotentHint"] == .bool(true))
+
     let sipgateProvision = try #require(tools.first { tool in
         guard case .object(let object) = tool else { return false }
         return object["name"] == .string("provision_line")

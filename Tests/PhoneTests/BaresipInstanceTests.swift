@@ -107,3 +107,86 @@ import Testing
     try FileManager.default.removeItem(at: url)
     #expect(!pidFileNamesProcess(pid: 4711, at: url))
 }
+
+@Test @MainActor func waitingForARegistrationReportsATimeoutInsteadOfAStatus() async {
+    let clock = ContinuousClock()
+    var elapsed = Duration.zero
+    var polls = 0
+    // A line baresip never answers for: the wait has to end with `nil` so the
+    // caller records the timeout, instead of handing back the `registering` it
+    // last saw as if that were an answer.
+    let timedOut = await registrationStatusOnceSettled(
+        timeout: .seconds(20),
+        now: { clock.now.advanced(by: elapsed) },
+        status: {
+            polls += 1
+            return .registering
+        },
+        sleep: { elapsed += .seconds(1) }
+    )
+
+    #expect(timedOut == nil)
+    // Twenty polls inside the window, and one more once it has passed.
+    #expect(polls == 21)
+
+    // A registration that lands during the last wait is not a timeout: the look
+    // after the deadline still reports it, so it is not written back as failed.
+    var lateCalls = 0
+    let late = await registrationStatusOnceSettled(
+        timeout: .seconds(2),
+        now: { clock.now.advanced(by: elapsed) },
+        status: {
+            lateCalls += 1
+            return lateCalls > 2 ? .registered : .registering
+        },
+        sleep: { elapsed += .seconds(1) }
+    )
+
+    #expect(late == .registered)
+
+    elapsed = .zero
+    var settledAfter = 0
+    let settled = await registrationStatusOnceSettled(
+        timeout: .seconds(20),
+        now: { clock.now.advanced(by: elapsed) },
+        status: {
+            settledAfter += 1
+            return settledAfter < 3 ? .registering : .failed("401 Unauthorized")
+        },
+        sleep: { elapsed += .seconds(1) }
+    )
+
+    #expect(settled == .failed("401 Unauthorized"))
+    #expect(settledAfter == 3)
+}
+
+@Test func aRegistrationTimeoutNamesTheDurationItActuallyWaited() {
+    #expect(registrationTimeoutMessage(.seconds(20)) == "Registration did not complete within 20 seconds.")
+    #expect(registrationTimeoutMessage(.milliseconds(1500)) == "Registration did not complete within 1.5 seconds.")
+}
+
+@Test func aStartupFailureIsRecordedForEveryEnabledLine() {
+    let first = ManagedSIPAccount(
+        provider: .custom,
+        username: "First",
+        domain: "Example.com",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: ""
+    )
+    let second = ManagedSIPAccount(
+        provider: .custom,
+        username: "second",
+        domain: "example.net",
+        outboundProxy: "",
+        stunServer: "",
+        mediaEncryption: ""
+    )
+    let statuses = failedRegistrationStatuses(for: [first, second], message: "baresip was not found")
+
+    // The keys are the instance ids the interface looks a line up by, so the
+    // failure reaches the line and not only the aggregate.
+    #expect(statuses[sanitizedBaresipInstanceAOR(first.sipAddress)] == .failed("baresip was not found"))
+    #expect(statuses[sanitizedBaresipInstanceAOR(second.sipAddress)] == .failed("baresip was not found"))
+    #expect(aggregateRegistrationState(Array(statuses.values), total: 2).status == .failed("baresip was not found"))
+}

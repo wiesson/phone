@@ -633,26 +633,28 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         try saveManagedAccountsState(state, savedProfiles: profiles)
     }
 
+    /// Creates the named profile, or brings the existing one under that name up
+    /// to the given prompt. An agent that repeats the call — after a dropped
+    /// answer, or simply on a second run of the same setup — must not end up
+    /// with two profiles sharing a name.
     @discardableResult
     func createSavedAssistantProfile(
         name: String,
         instructions: String,
         contextData: String?
     ) throws -> SavedAssistantProfile {
-        let trimmedContext = contextData?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let profile = SavedAssistantProfile(
-            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-            instructions: instructions.trimmingCharacters(in: .whitespacesAndNewlines),
-            contextData: trimmedContext?.isEmpty == false ? trimmedContext : nil
+        let result = upsertSavedAssistantProfile(
+            named: name,
+            instructions: instructions,
+            contextData: contextData,
+            in: savedAssistantProfiles
         )
-        var profiles = savedAssistantProfiles
-        profiles.append(profile)
         let state = ManagedSIPAccountsState(
             accounts: managedAccounts,
             activeSIPAddress: activeManagedSIPAddress
         )
-        try saveManagedAccountsState(state, savedProfiles: profiles)
-        return profile
+        try saveManagedAccountsState(state, savedProfiles: result.profiles)
+        return result.profile
     }
 
     @discardableResult
@@ -1120,8 +1122,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         cleanupOrphanedBaresip()
 
         guard let executable = baresipExecutable else {
-            registrationStatus = .failed("baresip was not found")
-            state = .error("baresip was not found")
+            recordStartupFailure("baresip was not found")
             return
         }
 
@@ -1129,8 +1130,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             try prepareRuntime()
             instances = try makeBaresipInstances()
         } catch {
-            registrationStatus = .failed(error.localizedDescription)
-            state = .error(error.localizedDescription)
+            recordStartupFailure(error.localizedDescription)
             return
         }
 
@@ -1147,6 +1147,17 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             }
         }
         refreshIdleState()
+    }
+
+    /// A start that fails before any instance exists still has to reach the
+    /// lines: the setup screen and the line bar read the entry per line, and a
+    /// failure recorded only in the aggregate leaves them showing an idle line.
+    /// The aggregate is set directly rather than derived — with no enabled line
+    /// there is nothing to derive it from, and the message would be lost.
+    private func recordStartupFailure(_ message: String) {
+        registrationStatuses = failedRegistrationStatuses(for: enabledManagedAccounts, message: message)
+        registrationStatus = .failed(message)
+        state = .error(message)
     }
 
     private func makeBaresipInstances() throws -> [String: BaresipInstance] {
@@ -1401,6 +1412,18 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private func updateRegistrationStatus(_ status: RegistrationStatus, for instance: BaresipInstance) {
         instance.setRegistrationStatus(status)
         registrationStatuses[instance.id] = status
+        refreshAggregateRegistrationStatus()
+        refreshIdleState()
+    }
+
+    /// Records a status for a line by id instead of through a live instance, for
+    /// callers that suspended while waiting: the line may have been taken
+    /// offline meanwhile, and writing an entry back for a line that is gone
+    /// would make it reappear in every status listing.
+    private func updateRegistrationStatus(_ status: RegistrationStatus, forInstanceID id: String) {
+        guard registrationStatuses[id] != nil || instances[id] != nil else { return }
+        instances[id]?.setRegistrationStatus(status)
+        registrationStatuses[id] = status
         refreshAggregateRegistrationStatus()
         refreshIdleState()
     }
@@ -1894,18 +1917,28 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         timeout: Duration = .seconds(20)
     ) async -> RegistrationStatus {
         guard account.isEnabled else { return .idle }
+        let instanceID = sanitizedBaresipInstanceAOR(account.sipAddress)
+        let instance = instances[instanceID]
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: timeout)
-        while clock.now < deadline {
-            let status = registrationStatus(for: account)
-            switch status {
-            case .registered, .failed:
-                return status
-            case .idle, .registering:
-                try? await Task.sleep(for: .milliseconds(100))
-            }
+        let settled = await registrationStatusOnceSettled(
+            timeout: timeout,
+            now: { clock.now },
+            status: { self.registrationStatus(for: account) },
+            sleep: { try? await Task.sleep(for: .milliseconds(100)) }
+        )
+        if let settled { return settled }
+        // baresip answered neither way. The timeout has to be written back, not
+        // just returned: the line would otherwise keep the `registering` entry
+        // it was polled on and the interface would show a registration that
+        // never finishes.
+        let timedOut = RegistrationStatus.failed(registrationTimeoutMessage(timeout))
+        // Only for the process this wait was started for: a restart during the
+        // wait puts a new one behind the same id, and its registration has had
+        // less than the full timeout to arrive.
+        if instances[instanceID] === instance {
+            updateRegistrationStatus(timedOut, forInstanceID: instanceID)
         }
-        return .failed("Registration did not complete within 20 seconds.")
+        return timedOut
     }
 
     /// Matches the name an agent is most likely to use: the label from
