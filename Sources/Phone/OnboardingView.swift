@@ -20,23 +20,27 @@ struct OnboardingView: View {
     @State private var copyResetTask: Task<Void, Never>?
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                Spacer(minLength: 40)
-                header
-                    .padding(.bottom, 30)
-                commandCard
-                    .padding(.bottom, 26)
-                progress
-                    .padding(.bottom, 22)
-                manualRoute
-                Spacer(minLength: 40)
+        // The minHeight is the container's own height, so the column sits in
+        // the middle of a roomy window but still scrolls rather than clips
+        // when the window is short or the text is large. A Spacer would not
+        // do this: inside a ScrollView it has nothing to expand into.
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(spacing: 0) {
+                    header
+                        .padding(.bottom, 30)
+                    commandCard
+                        .padding(.bottom, 26)
+                    progress
+                        .padding(.bottom, 22)
+                    manualRoute
+                }
+                .frame(maxWidth: 460)
+                .padding(.horizontal, 32)
+                .padding(.vertical, 40)
+                .frame(maxWidth: .infinity, minHeight: proxy.size.height)
             }
-            .frame(maxWidth: 460)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 32)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onDisappear { copyResetTask?.cancel() }
     }
 
