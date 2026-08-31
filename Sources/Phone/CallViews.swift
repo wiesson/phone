@@ -96,7 +96,11 @@ struct PhoneAccountPicker: View {
         if phone.state.isInCall || phone.state.isRinging {
             return phone.currentCallAccountDisplay.map { "for \($0)" }
         }
-        return phone.accountDisplay
+        // One line gets the same "number · profile" the picker shows for
+        // several: which profile answers is worth knowing whether or not
+        // there is another line to switch to.
+        guard phone.accountDisplay != nil else { return nil }
+        return activeAccountText
     }
 
     private var activeAccountText: String {

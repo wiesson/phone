@@ -130,6 +130,54 @@ struct LibraryView: View {
             }
         }
         .navigationTitle("Recents")
+        .safeAreaInset(edge: .bottom, spacing: 0) { activeLineBar }
+    }
+
+    /// Which line is answering, and as whom.
+    ///
+    /// The rest of the main window is about calls that already happened, so
+    /// nothing in it moves when a line or a profile is added — that only
+    /// showed in Settings, behind a window nobody has open. This strip is the
+    /// one place the resting window says what the phone currently is, which
+    /// also makes it the place a change becomes visible while it happens.
+    @ViewBuilder
+    private var activeLineBar: some View {
+        if let account = phone.managedAccounts.first(where: { $0.sipAddress == phone.activeManagedSIPAddress })
+            ?? phone.managedAccounts.first {
+            let status = phone.registrationStatus(for: account)
+            VStack(spacing: 0) {
+                Divider()
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(registrationTint(status))
+                        .frame(width: 6, height: 6)
+                    Text(account.displayName)
+                        .lineLimit(1)
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                    Text(phone.assistantProfileDisplay(for: account))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+            }
+            .background(.bar)
+            .animation(.easeInOut(duration: 0.25), value: account)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func registrationTint(_ status: RegistrationStatus) -> Color {
+        switch status {
+        case .registered: .green
+        case .registering: .orange
+        case .failed: .red
+        case .idle: .secondary
+        }
     }
 
     private func callBack(_ call: ArchivedCall) {
