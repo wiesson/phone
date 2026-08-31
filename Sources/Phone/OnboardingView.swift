@@ -12,9 +12,18 @@ struct OnboardingView: View {
     @ObservedObject var phone: PhoneController
     var openSetupWizard: () -> Void
 
-    /// Where the agent-readable instructions live. Kept in one place because
-    /// it is spoken aloud in the demo and printed on the screen.
-    static let setupCommand = "set up https://nordwerk.studio/phone/SKILL.md"
+    /// Where the agent-readable instructions live. Overridable without a
+    /// rebuild, because the address is a publishing decision rather than a
+    /// code one, and a demo may want to point at a draft:
+    ///
+    ///     defaults write local.phone.mini setupSkillURL https://example.com/SKILL.md
+    static let defaultSkillURL = "https://nordwerk.studio/phone/SKILL.md"
+    @AppStorage("setupSkillURL") private var skillURL = OnboardingView.defaultSkillURL
+
+    private var setupCommand: String {
+        let url = skillURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "set up \(url.isEmpty ? Self.defaultSkillURL : url)"
+    }
 
     @State private var didCopy = false
     @State private var copyResetTask: Task<Void, Never>?
@@ -70,7 +79,7 @@ struct OnboardingView: View {
         HStack(spacing: 10) {
             Text("$")
                 .foregroundStyle(.tertiary)
-            Text(Self.setupCommand)
+            Text(setupCommand)
                 .textSelection(.enabled)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
@@ -187,7 +196,7 @@ struct OnboardingView: View {
 
     private func copyCommand() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(Self.setupCommand, forType: .string)
+        NSPasteboard.general.setString(setupCommand, forType: .string)
         didCopy = true
         copyResetTask?.cancel()
         copyResetTask = Task { @MainActor in
