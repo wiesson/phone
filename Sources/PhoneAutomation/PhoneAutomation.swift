@@ -826,7 +826,7 @@ public enum MCPProtocol {
         ),
         tool(
             "list_provisioning_endpoints",
-            "List the SIP endpoints the telephony provider can hand out, each with endpoint_id, alias and online state, plus which provider answered. Credentials are never returned. An endpoint reported as online is already in use. Only sipgate can provision today; a line at any other provider is entered by hand with create_line.",
+            "List the SIP endpoints the telephony provider can hand out, each with id, alias and online state, plus which provider answered. Pass an entry's id to provision_line as device_id. Credentials are never returned. An endpoint reported as online is already in use. Only sipgate can provision today; a line at any other provider is entered by hand with create_line.",
             access: .externalRead
         ),
         tool(

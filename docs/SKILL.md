@@ -66,7 +66,8 @@ If it reports credentials are **present**, you can provision without ever
 handling a password:
 
 1. `list_provisioning_endpoints` — endpoints the provider can hand out, each
-   with `endpoint_id`, `alias`, and an online flag.
+   with `id`, `alias`, and `online`. The `id` is what `provision_line` takes as
+   its `device_id`.
 2. `provision_line` — Phone fetches the SIP credentials itself, stores the
    password in the Keychain, waits for the line to register, and returns the
    line. No secret is returned or logged.

@@ -9,6 +9,10 @@ set -eu
 
 STATE_DIR="$HOME/Library/Application Support/Phone"
 STATE="$STATE_DIR/accounts.json"
+# The older, hand-written baresip account file. Phone treats its presence as
+# "there is a line", so leaving it behind would make a reset look empty while
+# the app still registers an unmanaged line.
+LEGACY="$STATE_DIR/accounts"
 BACKUP_DIR="$STATE_DIR/demo-backups"
 
 usage() {
@@ -70,11 +74,24 @@ make_backup() {
   describe "$STATE" >/dev/null || { echo "Refusing to back up a broken accounts.json." >&2; return 1; }
   mkdir -p "$BACKUP_DIR"
   suffix=$(printf '%s' "${label:+-$label}" | tr -c 'A-Za-z0-9-' '-')
-  target="$BACKUP_DIR/accounts-$(date +%Y%m%d-%H%M%S)$suffix.json"
+  stamp="$(date +%Y%m%d-%H%M%S)$suffix"
+  target="$BACKUP_DIR/accounts-$stamp.json"
   [ -e "$target" ] && { echo "Backup $target already exists." >&2; return 1; }
   cp "$STATE" "$target"
   echo "Backed up to $target"
   describe "$target"
+  # The legacy file travels with the snapshot under a matching name, so a
+  # restore can put back exactly the pair that was taken away.
+  if [ -f "$LEGACY" ]; then
+    cp "$LEGACY" "$BACKUP_DIR/legacy-$stamp"
+    echo "  also saved the hand-written baresip account file"
+  fi
+}
+
+# The legacy file saved alongside a given accounts backup, if there was one.
+legacy_partner() {
+  base=$(basename "$1" .json)
+  echo "$BACKUP_DIR/legacy-${base#accounts-}"
 }
 
 # Backups newest first, one full path per line. Sorted by name rather than by
@@ -94,6 +111,7 @@ case "$command" in
   status)
     echo "$STATE"
     describe "$STATE"
+    [ -f "$LEGACY" ] && echo "  + a hand-written baresip account file at $LEGACY"
     ;;
 
   backup)
@@ -119,11 +137,17 @@ case "$command" in
     require_closed
     if [ -f "$STATE" ]; then
       make_backup "before-reset"
-    else
+    elif [ ! -f "$LEGACY" ]; then
       echo "$STATE does not exist — Phone is already empty."
       exit 0
     fi
     rm -f "$STATE"
+    # Both files have to go. Phone reads the legacy one as a line of its own,
+    # so removing only accounts.json would leave a phone that still registers.
+    if [ -f "$LEGACY" ]; then
+      rm -f "$LEGACY"
+      echo "Removed the hand-written baresip account file as well."
+    fi
     echo
     echo "Phone now starts with no lines and no profiles."
     echo "Restore with: sh scripts/demo-state.sh restore"
@@ -148,9 +172,16 @@ case "$command" in
     describe "$source" >/dev/null || { echo "Refusing to restore a broken backup." >&2; exit 1; }
     # The current file may itself be worth keeping — a profile written during
     # the demo is real work too.
-    [ -f "$STATE" ] && make_backup "before-restore"
+    if [ -f "$STATE" ] || [ -f "$LEGACY" ]; then
+      [ -f "$STATE" ] && make_backup "before-restore" || true
+    fi
     cp "$source" "$STATE"
     echo "Restored $(basename "$source")"
+    partner=$(legacy_partner "$source")
+    if [ -f "$partner" ]; then
+      cp "$partner" "$LEGACY"
+      echo "  and the hand-written baresip account file that went with it"
+    fi
     describe "$STATE"
     ;;
 

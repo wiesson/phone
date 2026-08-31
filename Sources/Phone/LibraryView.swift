@@ -15,6 +15,17 @@ struct LibraryView: View {
     @State private var onboardingHandoff: Task<Void, Never>?
     @FocusState private var numberFieldFocused: Bool
 
+    /// Decided here rather than in `onAppear` so an unconfigured phone never
+    /// renders one frame of "no archived calls" before the empty state
+    /// replaces it.
+    init(phone: PhoneController, store: PhoneStore) {
+        self.phone = phone
+        self.store = store
+        _showsOnboarding = State(
+            initialValue: phone.managedAccounts.isEmpty && phone.unmanagedAccountAOR == nil
+        )
+    }
+
     var body: some View {
         NavigationSplitView {
             sidebar
