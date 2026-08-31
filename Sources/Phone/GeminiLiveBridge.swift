@@ -174,9 +174,10 @@ func injectionFormat(for frame: AudioFrame) -> InjectionFormat? {
 /// voice on both channels — centred, and lossless, because a mono voice carries
 /// no stereo information to lose.
 ///
-/// Written straight into one allocation: at 48 kHz stereo this runs 2400 times
-/// a second, and allocating per sample was enough to starve the injection ring
-/// buffer and make the assistant sound chopped.
+/// Written straight into one allocation. The previous version created a Data
+/// per sample — 48,000 of them a second at 48 kHz, and twice as many appends in
+/// stereo. Whether that alone starved the injection ring was never measured;
+/// this is simply the shape this loop should have had.
 func interleavedMonoAudio(_ mono: Data, channels: UInt8) -> Data {
     guard channels > 1 else { return mono }
     let sampleCount = mono.count / MemoryLayout<Int16>.size
@@ -1004,12 +1005,14 @@ actor GeminiLiveBridge {
         startPacingIfNeeded()
     }
 
-    /// How much model audio has to be queued before injection starts. Gemini
-    /// delivers in bursts; starting on the first packet means the ring buffer
-    /// runs dry on the next network hiccup, which the tap fills with silence
-    /// and the caller hears as chopped speech. Ten packets is 200 ms of cushion
-    /// against 200 ms of added delay before the assistant's first word.
-    private static let injectionPrebufferPackets = 10
+    /// Packets sent back to back when injection starts, before settling into
+    /// the 20 ms cadence. baresip consumes one packet per transmit callback, so
+    /// feeding it one packet every 20 ms leaves its ring at zero and any late
+    /// wake-up on this side becomes an underrun the caller hears as a gap.
+    /// These give the ring a real lead; the cost is the same amount of delay
+    /// before the assistant's first word.
+    private static let injectionPrimePackets = 10
+    private var primedPacketsSent = 0
 
     private func startPacingIfNeeded() {
         guard state == .live, pacingTask == nil, let targetSampleRate else { return }
@@ -1017,7 +1020,7 @@ actor GeminiLiveBridge {
         guard packetSize > 0 else { return }
         // Once the turn is over the tail is played out whatever its length,
         // otherwise the last words would be held back forever.
-        let required = pendingInjectionEnd ? packetSize : packetSize * Self.injectionPrebufferPackets
+        let required = pendingInjectionEnd ? packetSize : packetSize * Self.injectionPrimePackets
         guard outputAudio.count >= required else { return }
         let requestID = sessionID
         pacingTask = Task { [weak self] in await self?.paceOutput(sessionID: requestID) }
@@ -1026,6 +1029,7 @@ actor GeminiLiveBridge {
     private func paceOutput(sessionID requestID: Int) async {
         let clock = ContinuousClock()
         var deadline = clock.now
+        var primed = false
         while !Task.isCancelled, requestID == sessionID, state == .live, let targetSampleRate, let injectionSender {
             let packetSize = injectionPacketSize(sampleRate: targetSampleRate)
             guard packetSize > 0, outputAudio.count >= packetSize else { break }
@@ -1034,7 +1038,15 @@ actor GeminiLiveBridge {
             do {
                 try injectionSender.write(samples: samples, sampleRate: targetSampleRate, channels: targetChannels)
                 deadline += .milliseconds(20)
-                try await clock.sleep(until: deadline)
+                // Fill the ring first, then hand it one packet per interval. The
+                // lead is what survives a late wake-up on this side.
+                if primed || primedPacketsSent >= Self.injectionPrimePackets {
+                    primed = true
+                    primedPacketsSent = 0
+                    try await clock.sleep(until: deadline)
+                } else {
+                    primedPacketsSent += 1
+                }
             } catch is CancellationError {
                 break
             } catch {

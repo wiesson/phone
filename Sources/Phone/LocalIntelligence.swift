@@ -460,29 +460,42 @@ func parseCallSummary(_ text: String) -> [CallSummarySection] {
     return parsed.count >= 2 ? parsed : []
 }
 
-/// Every digit that was actually spoken or dialled, with everything else
-/// stripped, so a number can be checked no matter how it was written down.
+/// Digits only, so a number can be compared however it was written down.
 func spokenDigits(_ text: String) -> String {
     String(text.filter(\.isNumber))
 }
 
 /// A callback number the model invented is worse than an empty field: nobody
-/// notices, and the call is simply never returned. Any number-shaped run in the
-/// callback line has to be traceable to the transcript or to the caller's own
-/// number; what is not, is replaced rather than passed on.
+/// notices, and the call is simply never returned. A number in the callback
+/// line is only kept when the same number was actually spoken, or is the line
+/// the call came from. Anything unverifiable is replaced — including a summary
+/// whose callback line cannot be read at all.
 func summaryWithVerifiedCallbackNumber(
     _ summary: String,
     transcript: String,
     callerNumber: String?
 ) -> String {
+    // Each spoken number stays a separate candidate. Concatenating every digit
+    // in the transcript would let a postcode and a house number vouch for an
+    // invented phone number.
+    var permitted = Set(numberRuns(in: transcript).map(spokenDigits))
+    if let callerNumber { permitted.insert(spokenDigits(callerNumber)) }
+    permitted = permitted.filter { $0.count >= 5 }
+
     let sections = parseCallSummary(summary)
-    guard let callback = sections.first(where: { $0.field == .callbackNumber }) else { return summary }
-    let supported = spokenDigits(transcript) + " " + spokenDigits(callerNumber ?? "")
+    let callbackValue = sections.first { $0.field == .callbackNumber }?.value
+    // Without a readable callback line every number in the summary is suspect;
+    // failing open here is what let an invented number through in the first place.
+    let scope = callbackValue ?? summary
 
     var result = summary
-    for run in numberRuns(in: callback.value) {
+    for run in numberRuns(in: scope) {
         let digits = spokenDigits(run)
-        guard digits.count >= 5, !supported.contains(digits) else { continue }
+        guard digits.count >= 5 else { continue }
+        // Exact match, or the tail of a number given with a prefix the caller
+        // left off — "980303" for 04482980303 is the same line.
+        let vouched = permitted.contains { $0 == digits || $0.hasSuffix(digits) || digits.hasSuffix($0) }
+        guard !vouched else { continue }
         result = result.replacingOccurrences(of: run, with: "nicht eindeutig genannt")
     }
     return result
@@ -492,8 +505,9 @@ func summaryWithVerifiedCallbackNumber(
 func numberRuns(in text: String) -> [String] {
     var runs: [String] = []
     var current = ""
+    let separators: Set<Character> = [" ", "-", "/", "(", ")", "+"]
     for character in text {
-        if character.isNumber || (!current.isEmpty && (character == " " || character == "-" || character == "/" || character == "(" || character == ")" || character == "+")) {
+        if character.isNumber || (!current.isEmpty && separators.contains(character)) {
             current.append(character)
         } else {
             if current.filter(\.isNumber).count >= 5 { runs.append(current.trimmingCharacters(in: .whitespaces)) }

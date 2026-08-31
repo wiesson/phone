@@ -2236,6 +2236,16 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         let bridgeStopTask = geminiBridgeTask
         isMuted = false
         let peer = state.peer
+        // Only an incoming call tells us where to call back. On an outgoing one
+        // the peer is the number we dialled, and a SIP address is not a number
+        // anybody can ring.
+        let callbackNumberForSummary: String? = {
+            guard currentDirection == .incoming, let peer else { return nil }
+            let presentable = presentablePeer(peer)
+            let digits = presentable.filter(\.isNumber)
+            guard digits.count >= 6, !presentable.contains("@") else { return nil }
+            return presentable
+        }()
         let archiveRecord = pendingArchiveRecord
         pendingArchiveRecord = nil
         let includesContent = archiveConversations
@@ -2276,7 +2286,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 let text = try await intelligence.summarize(
                     entries: entries,
                     assistantTask: finishedAssistantTask,
-                    callerNumber: peer.map(presentablePeer)
+                    callerNumber: callbackNumberForSummary
                 )
                 if includesContent, let archiveRecord {
                     try? await store.attachSummary(text, to: archiveRecord.id)

@@ -521,3 +521,37 @@ private func transmitFrame(
     #expect(summaryWithVerifiedCallbackNumber(summary, transcript: "Caller: eintausendfünfhundert Euro", callerNumber: nil)
         == summary)
 }
+
+@Test func aPostcodeAndAHouseNumberDoNotVouchForAPhoneNumber() {
+    // Concatenating every digit in the transcript would have let "26122" and
+    // "44" together approve an invented 2612244.
+    let transcript = "Caller: Wir sind in 26122 Oldenburg, Hausnummer 44."
+    let summary = """
+    Anrufer: Herr Meier.
+    Anliegen: Wartung.
+    Rückrufnummer: 2612244
+    Nächste Schritte: keine.
+    """
+    #expect(summaryWithVerifiedCallbackNumber(summary, transcript: transcript, callerNumber: nil)
+        .contains("nicht eindeutig genannt"))
+}
+
+@Test func aNumberGivenWithoutItsPrefixStillCounts() {
+    // She said the tail of her own line; that is the same number, not a new one.
+    let summary = """
+    Anrufer: Frau Wiese.
+    Anliegen: Störung.
+    Rückrufnummer: 980303
+    Nächste Schritte: keine.
+    """
+    #expect(summaryWithVerifiedCallbackNumber(summary, transcript: "Caller: 9 8 0 3 0 3", callerNumber: "04482980303")
+        .contains("980303"))
+}
+
+@Test func anUnreadableSummaryIsCheckedRatherThanTrusted() {
+    // No labelled callback line: every number in the text is suspect, because
+    // failing open here is exactly how the invented number got through.
+    let freeform = "Der Anrufer bittet um Rückruf unter 0177 255 91 91."
+    #expect(summaryWithVerifiedCallbackNumber(freeform, transcript: "Caller: Bitte rufen Sie zurück.", callerNumber: nil)
+        .contains("nicht eindeutig genannt"))
+}
