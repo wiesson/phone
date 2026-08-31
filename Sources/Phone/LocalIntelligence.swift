@@ -317,20 +317,30 @@ actor LocalIntelligence {
     }
 
 
-    func summarize(entries: [TranscriptEntry], assistantTask: String? = nil) async throws -> String {
+    func summarize(
+        entries: [TranscriptEntry],
+        assistantTask: String? = nil,
+        callerNumber: String? = nil
+    ) async throws -> String {
         let transcript = entries
             .filter { $0.isFinal && !$0.text.isEmpty }
             .map { "\($0.speakerTitle): \($0.text)" }
             .joined(separator: "\n")
         guard !transcript.isEmpty else { return "There is no transcript for this call yet." }
         let prompt = assistantTask.map { assistantCallSummaryPrompt(task: $0, transcript: transcript) }
-            ?? callSummaryPrompt(transcript: transcript)
+            ?? callSummaryPrompt(transcript: transcript, callerNumber: callerNumber)
+        // The prompt asks the model not to invent a number; this checks it did not.
+        let verified = { (summary: String) in
+            assistantTask == nil
+                ? summaryWithVerifiedCallbackNumber(summary, transcript: transcript, callerNumber: callerNumber)
+                : summary
+        }
 
         let model = SystemLanguageModel.default
         if model.isAvailable {
             let session = LanguageModelSession(instructions: callSummaryInstructions)
             do {
-                return try await session.respond(to: prompt).content
+                return verified(try await session.respond(to: prompt).content)
             } catch {
                 phoneDiagnosticLog("phone-app: local summary failed, trying Gemini — Foundation Models error: \(String(describing: error))\n")
             }
@@ -339,7 +349,7 @@ actor LocalIntelligence {
         }
         if let apiKey = GeminiAPIKeyStore.apiKey() {
             do {
-                return try await geminiSummary(prompt: prompt, apiKey: apiKey)
+                return verified(try await geminiSummary(prompt: prompt, apiKey: apiKey))
             } catch {
                 phoneDiagnosticLog("phone-app: using fallback summary — Gemini summary error: \(redactSensitiveValues(in: String(describing: error)))\n")
             }
@@ -450,14 +460,67 @@ func parseCallSummary(_ text: String) -> [CallSummarySection] {
     return parsed.count >= 2 ? parsed : []
 }
 
-func callSummaryPrompt(transcript: String) -> String {
-    """
+/// Every digit that was actually spoken or dialled, with everything else
+/// stripped, so a number can be checked no matter how it was written down.
+func spokenDigits(_ text: String) -> String {
+    String(text.filter(\.isNumber))
+}
+
+/// A callback number the model invented is worse than an empty field: nobody
+/// notices, and the call is simply never returned. Any number-shaped run in the
+/// callback line has to be traceable to the transcript or to the caller's own
+/// number; what is not, is replaced rather than passed on.
+func summaryWithVerifiedCallbackNumber(
+    _ summary: String,
+    transcript: String,
+    callerNumber: String?
+) -> String {
+    let sections = parseCallSummary(summary)
+    guard let callback = sections.first(where: { $0.field == .callbackNumber }) else { return summary }
+    let supported = spokenDigits(transcript) + " " + spokenDigits(callerNumber ?? "")
+
+    var result = summary
+    for run in numberRuns(in: callback.value) {
+        let digits = spokenDigits(run)
+        guard digits.count >= 5, !supported.contains(digits) else { continue }
+        result = result.replacingOccurrences(of: run, with: "nicht eindeutig genannt")
+    }
+    return result
+}
+
+/// Maximal runs of digits and the separators people write between them.
+func numberRuns(in text: String) -> [String] {
+    var runs: [String] = []
+    var current = ""
+    for character in text {
+        if character.isNumber || (!current.isEmpty && (character == " " || character == "-" || character == "/" || character == "(" || character == ")" || character == "+")) {
+            current.append(character)
+        } else {
+            if current.filter(\.isNumber).count >= 5 { runs.append(current.trimmingCharacters(in: .whitespaces)) }
+            current = ""
+        }
+    }
+    if current.filter(\.isNumber).count >= 5 { runs.append(current.trimmingCharacters(in: .whitespaces)) }
+    return runs
+}
+
+func callSummaryPrompt(transcript: String, callerNumber: String? = nil) -> String {
+    let known = callerNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let callerLine = known.isEmpty
+        ? "Es ist keine Anschlussnummer bekannt."
+        : "Der Anruf kam von \(known). Nutze diese Nummer als Rückrufnummer, solange der Anrufer keine andere nennt."
+
+    return """
     Erstelle eine kurze, sachliche Zusammenfassung auf Deutsch. Antworte in genau diesen vier Zeilen, jede beginnt mit ihrer Beschriftung:
 
     Anrufer: Wer hat angerufen und für wen war der Anruf bestimmt? Falls unbekannt, „nicht genannt“.
     Anliegen: Das konkrete Anliegen, klar und vorrangig. Falls unklar, „nicht eindeutig genannt“.
-    Rückrufnummer: Nur die Nummer und, falls genannt, Termine. Falls nicht genannt, „nicht genannt“.
+    Rückrufnummer: Nur die Nummer. Falls nicht genannt, „nicht genannt“.
     Nächste Schritte: Was wurde vereinbart? Falls nichts, „keine vereinbart“.
+
+    \(callerLine)
+
+    ZAHLEN, NAMEN UND NUMMERN übernimmst du ausschließlich so, wie sie im Transkript stehen. Erfinde niemals eine Telefonnummer, eine Uhrzeit oder einen Betrag, auch nicht als plausible Ergänzung. Wurde eine Nummer nur bruchstückhaft genannt, schreibe „nicht vollständig genannt“. Wurde eine Zeit ungefähr genannt, übernimm die ungefähre Formulierung wörtlich statt sie zu einer Uhrzeit zu machen.
 
     Jede Zeile höchstens ein kurzer Satz. Kein Markdown, keine Sternchen, keine Nummerierung, keine Einleitung, keine Dialognacherzählung und keine Spekulation.
 

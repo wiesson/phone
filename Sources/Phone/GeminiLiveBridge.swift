@@ -171,19 +171,27 @@ func injectionFormat(for frame: AudioFrame) -> InjectionFormat? {
 }
 
 /// The model always speaks mono. A call that negotiated stereo needs the same
-/// voice on both channels — centred, and lossless, because there is no stereo
-/// information to lose.
+/// voice on both channels — centred, and lossless, because a mono voice carries
+/// no stereo information to lose.
+///
+/// Written straight into one allocation: at 48 kHz stereo this runs 2400 times
+/// a second, and allocating per sample was enough to starve the injection ring
+/// buffer and make the assistant sound chopped.
 func interleavedMonoAudio(_ mono: Data, channels: UInt8) -> Data {
     guard channels > 1 else { return mono }
     let sampleCount = mono.count / MemoryLayout<Int16>.size
     guard sampleCount > 0 else { return mono }
-    var result = Data(capacity: sampleCount * Int(channels) * MemoryLayout<Int16>.size)
-    mono.withUnsafeBytes { bytes in
-        let samples = bytes.bindMemory(to: Int16.self)
-        for index in 0..<sampleCount {
-            var sample = samples[index]
-            let bytes = withUnsafeBytes(of: &sample) { Data($0) }
-            for _ in 0..<channels { result.append(bytes) }
+    let fanOut = Int(channels)
+    var result = Data(count: sampleCount * fanOut * MemoryLayout<Int16>.size)
+    mono.withUnsafeBytes { source in
+        let samples = source.bindMemory(to: Int16.self)
+        result.withUnsafeMutableBytes { destination in
+            let output = destination.bindMemory(to: Int16.self)
+            for index in 0..<sampleCount {
+                let sample = samples[index]
+                let base = index * fanOut
+                for channel in 0..<fanOut { output[base + channel] = sample }
+            }
         }
     }
     return result
@@ -996,10 +1004,21 @@ actor GeminiLiveBridge {
         startPacingIfNeeded()
     }
 
+    /// How much model audio has to be queued before injection starts. Gemini
+    /// delivers in bursts; starting on the first packet means the ring buffer
+    /// runs dry on the next network hiccup, which the tap fills with silence
+    /// and the caller hears as chopped speech. Ten packets is 200 ms of cushion
+    /// against 200 ms of added delay before the assistant's first word.
+    private static let injectionPrebufferPackets = 10
+
     private func startPacingIfNeeded() {
         guard state == .live, pacingTask == nil, let targetSampleRate else { return }
         let packetSize = injectionPacketSize(sampleRate: targetSampleRate)
-        guard packetSize > 0, outputAudio.count >= packetSize else { return }
+        guard packetSize > 0 else { return }
+        // Once the turn is over the tail is played out whatever its length,
+        // otherwise the last words would be held back forever.
+        let required = pendingInjectionEnd ? packetSize : packetSize * Self.injectionPrebufferPackets
+        guard outputAudio.count >= required else { return }
         let requestID = sessionID
         pacingTask = Task { [weak self] in await self?.paceOutput(sessionID: requestID) }
     }

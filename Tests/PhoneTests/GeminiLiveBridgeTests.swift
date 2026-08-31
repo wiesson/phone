@@ -464,3 +464,60 @@ private func transmitFrame(
     // The widened buffer has to clear the largest packet the contract allows.
     #expect(4 * (phoneTapMaximumPayload + phoneTapHeaderSize) > packet.count)
 }
+
+@Test func aCallbackNumberNobodyGaveIsNotPassedOn() {
+    // Verbatim from a real call: the caller said a fragment of her number and
+    // the model produced a complete, plausible, wrong one. A wrong callback
+    // number is worse than an empty field — nobody notices it is wrong.
+    let transcript = """
+    Caller: Ja, hallo. Mein Name ist Heike Wiese. Ich habe ein Problem mit meiner Heizung.
+    Caller: und ähm 9 8 0 3 0 3 Südring 4 hier im Ort
+    """
+    let invented = """
+    Anrufer: Heike Wiese, Bestandskunde.
+    Anliegen: Störung der Heizung.
+    Rückrufnummer: 0177 255 91 91
+    Nächste Schritte: Techniker melden sich.
+    """
+
+    let checked = summaryWithVerifiedCallbackNumber(invented, transcript: transcript, callerNumber: "04482980303")
+    #expect(!checked.contains("0177"))
+    #expect(checked.contains("nicht eindeutig genannt"))
+}
+
+@Test func aNumberTheCallerActuallyGaveSurvives() {
+    let transcript = "Caller: Sie erreichen mich unter 0441 9 88 77 66."
+    let summary = """
+    Anrufer: Herr Meier.
+    Anliegen: Wartung.
+    Rückrufnummer: 0441 9 88 77 66
+    Nächste Schritte: keine vereinbart.
+    """
+    #expect(summaryWithVerifiedCallbackNumber(summary, transcript: transcript, callerNumber: nil)
+        .contains("0441 9 88 77 66"))
+}
+
+@Test func theCallersOwnLineCountsAsGiven() {
+    // The app knows who called; a summary naming that number is not invented.
+    let summary = """
+    Anrufer: unbekannt.
+    Anliegen: Rückruf erbeten.
+    Rückrufnummer: 04482980303
+    Nächste Schritte: keine.
+    """
+    #expect(summaryWithVerifiedCallbackNumber(summary, transcript: "Caller: Rufen Sie mich zurück.", callerNumber: "04482980303")
+        .contains("04482980303"))
+}
+
+@Test func amountsAndShortNumbersAreLeftAlone() {
+    // Only the callback line is checked, and only runs long enough to be a
+    // phone number, so "1500 Euro" spoken as words is not touched.
+    let summary = """
+    Anrufer: Frau Wiese.
+    Anliegen: Angebot über 1500 Euro besprochen.
+    Rückrufnummer: nicht genannt
+    Nächste Schritte: keine.
+    """
+    #expect(summaryWithVerifiedCallbackNumber(summary, transcript: "Caller: eintausendfünfhundert Euro", callerNumber: nil)
+        == summary)
+}

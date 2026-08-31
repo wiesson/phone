@@ -2273,7 +2273,11 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
             guard wasIntelligenceRunning else { return }
             do {
-                let text = try await intelligence.summarize(entries: entries, assistantTask: finishedAssistantTask)
+                let text = try await intelligence.summarize(
+                    entries: entries,
+                    assistantTask: finishedAssistantTask,
+                    callerNumber: peer.map(presentablePeer)
+                )
                 if includesContent, let archiveRecord {
                     try? await store.attachSummary(text, to: archiveRecord.id)
                 }
