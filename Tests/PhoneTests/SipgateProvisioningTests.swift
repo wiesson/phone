@@ -131,7 +131,7 @@ private func registerDetails(
     let fake = FakeSipgateClient(devices: [register, mobile])
 
     let devices = try await SipgateProvisioningService(client: fake).listDevices()
-    let payload = controlProviderDevicesPayload(devices, sensitiveValues: [pat])
+    let payload = controlProvisioningEndpointsPayload(devices, sensitiveValues: [pat])
     let encoded = String(decoding: try JSONEncoder().encode(payload), as: UTF8.self)
     let calls = await fake.recordedCalls()
 
@@ -237,8 +237,8 @@ private func registerDetails(
     #expect(!encoded.contains(password))
     #expect(!encoded.lowercased().contains("password"))
     #expect(encoded.contains("••••"))
-    #expect(encoded.contains("sipgate_device_id"))
-    #expect(encoded.contains("sipgate_device_alias"))
+    #expect(encoded.contains("endpoint_id"))
+    #expect(encoded.contains("endpoint_alias"))
 }
 
 @Test func incompleteSipgateCredentialErrorNeverContainsTheReturnedPassword() async throws {
@@ -391,7 +391,7 @@ private func registerDetails(
     let fake = FakeSipgateClient(devices: [registerDevice(alias: "Desk", online: true)])
     let devices = try await SipgateProvisioningService(client: fake).listDevices()
 
-    guard case .object(let payload) = controlProviderDevicesPayload(devices, sensitiveValues: []) else {
+    guard case .object(let payload) = controlProvisioningEndpointsPayload(devices, sensitiveValues: []) else {
         Issue.record("the device list must be an object, not a bare array")
         return
     }

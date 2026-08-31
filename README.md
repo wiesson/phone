@@ -209,9 +209,9 @@ configuration, and `action` tools reach the telephone network.
 | `get_last_summary` | none | read |
 | `get_transcript` | optional `call_id`, `limit` (1–500) | read |
 | `list_lines` | none | read |
-| `list_sipgate_devices` | none | read |
-| `sipgate_credentials_status` | none | read |
-| `provision_from_sipgate` | exactly one of `device_id` or `create_device: true`; optional `alias`, `label`, `rotate_password` | write |
+| `list_provisioning_endpoints` | none | read |
+| `provisioning_status` | none | read |
+| `provision_line` | exactly one of `device_id` or `create_device: true`; optional `alias`, `label`, `rotate_password` | write |
 | `create_line` | `username`, `password`; optional provider and SIP/display settings | write |
 | `update_line` | `line`; optional password, provider, SIP/display settings | write |
 | `delete_line` | `line` | write |
@@ -247,19 +247,26 @@ sipgate-mcp setup
 That command stores the PAT ID as service `sipgate-mcp`, account `pat-token-id`,
 and the PAT as account `pat-token` in macOS Keychain. The PAT needs sipgate
 device read access; creating devices or rotating passwords additionally needs
-device write access. `sipgate_credentials_status` reports only whether both
-entries exist and the PAT ID's character count. `list_sipgate_devices` returns
+device write access. `provisioning_status` reports only whether both
+entries exist and the PAT ID's character count. `list_provisioning_endpoints` returns
 only register-device ID, alias, and online state.
 
-`provision_from_sipgate` either uses `device_id` from that list or creates a new
+`provision_line` either uses `device_id` from that list or creates a new
 register device with `create_device: true`; `alias` applies only to creation and
-`label` names the local Phone line. `rotate_password` defaults to `false`. When
-enabled, Phone rotates before its credential read, invalidating a SIP password
-that may have been exposed previously. Phone fetches the SIP credentials itself,
-writes the password through the normal line-provisioning Keychain path, waits
-for registration, and returns the line plus `sipgate_device_id` and
-`sipgate_device_alias`. Neither credential is returned or written to the
-diagnostic log.
+names the endpoint at the provider, while `label` names the local Phone line.
+
+`rotate_password` defaults to `false`, and it is the one argument worth pausing
+over: rotating invalidates the SIP password of **every** client already using
+that endpoint, so a desk phone or softphone on it stops working immediately.
+Phone reads the endpoint first so it never rotates a password it could not then
+retrieve, rotates, and reads again for the new one; if anything fails after the
+rotation the error says the old password is gone, because otherwise the device
+is left unusable with no explanation.
+
+Phone fetches the SIP credentials itself, writes the password through the normal
+line-provisioning Keychain path, waits for registration, and returns the line
+plus `endpoint_id` and `endpoint_alias`. Neither credential is returned or
+written to the diagnostic log.
 
 The helper connects only to
 `~/Library/Application Support/Phone/control.sock`. The app creates that Unix

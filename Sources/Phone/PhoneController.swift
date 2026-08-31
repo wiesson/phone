@@ -2023,7 +2023,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             }
         case .listLines:
             return .success(.array(managedAccounts.map(linePayload)))
-        case .listProviderDevices:
+        case .listProvisioningEndpoints:
             var sensitiveValues: [String] = []
             do {
                 guard let credentials = SipgateCredentialStore.credentials() else {
@@ -2033,7 +2033,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 invalidateAccountSecretCache()
                 let service = SipgateProvisioningService(client: SipgateAPIClient(credentials: credentials))
                 let devices = try await service.listDevices()
-                return .success(controlProviderDevicesPayload(
+                return .success(controlProvisioningEndpointsPayload(
                     devices,
                     sensitiveValues: sensitiveValues
                 ))
@@ -2044,7 +2044,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                     sensitiveValues: sensitiveValues
                 ))
             }
-        case .providerCredentialsStatus:
+        case .provisioningStatus:
             return .success(controlSipgateCredentialsStatusPayload(SipgateCredentialStore.status()))
         case .provisionLine(let arguments):
             guard !isProvisioningLine else { return .failure(provisioningBusyError) }

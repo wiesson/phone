@@ -92,9 +92,9 @@ enum SipgateProvisioningError: LocalizedError, Equatable, Sendable {
                 "sipgate denied the request (HTTP \(status)). Check that the PAT includes devices:read and, for creation or rotation, devices:write."
             }
         case .deviceNotFound(let deviceID):
-            "No register device named '\(deviceID)' belongs to the authenticated sipgate user. Run list_sipgate_devices and use one of its IDs."
+            "No register device named '\(deviceID)' belongs to the authenticated sipgate user. Run list_provisioning_endpoints and use one of its IDs."
         case .notRegisterDevice(let deviceID):
-            "sipgate device '\(deviceID)' is not a register device. Run list_sipgate_devices and use one of its IDs."
+            "sipgate device '\(deviceID)' is not a register device. Run list_provisioning_endpoints and use one of its IDs."
         case .credentialsMissing:
             "sipgate did not return complete SIP credentials for the register device. Try again or create a new register device."
         }
@@ -501,7 +501,7 @@ func controlSipgateDevicePayload(_ device: SipgateDevice) -> JSONValue {
 /// name it would have to relearn when a second provider arrives.
 let provisioningProviderName = "sipgate"
 
-func controlProviderDevicesPayload(
+func controlProvisioningEndpointsPayload(
     _ devices: [SipgateDevice],
     sensitiveValues: [String]
 ) -> JSONValue {
@@ -528,8 +528,8 @@ func controlSipgateProvisioningPayload(
     sensitiveValues: [String]
 ) -> JSONValue {
     guard case .object(var result) = linePayload else { return .object([:]) }
-    result["sipgate_device_id"] = .string(device.id)
-    result["sipgate_device_alias"] = .string(device.alias)
+    result["endpoint_id"] = .string(device.id)
+    result["endpoint_alias"] = .string(device.alias)
     return redactingJSONValue(.object(result), sensitiveValues: sensitiveValues)
 }
 

@@ -94,7 +94,7 @@ import Testing
     #expect(names == [
         "dial", "assistant_call", "answer", "hangup", "send_dtmf", "get_state",
         "get_history", "get_last_summary", "list_lines",
-        "list_provider_devices", "provider_credentials_status", "provision_line",
+        "list_provisioning_endpoints", "provisioning_status", "provision_line",
         "create_line", "update_line", "delete_line", "select_active_line",
         "get_registration_status", "set_line_enabled", "set_line_profile",
         "set_line_prompt", "create_assistant_profile", "update_assistant_profile",
@@ -133,7 +133,7 @@ import Testing
     guard case .object(let provisionObject) = sipgateProvision,
           case .object(let provisionSchema) = provisionObject["inputSchema"],
           case .object(let provisionProperties) = provisionSchema["properties"] else {
-        Issue.record("provision_from_sipgate must have an input schema")
+        Issue.record("provision_line must have an input schema")
         return
     }
     #expect(provisionProperties["password"] == nil)
@@ -240,8 +240,8 @@ import Testing
         )
     ))
 
-    #expect(try ControlRequestParser.parse(Data(#"{"cmd":"list_provider_devices","args":{}}"#.utf8)).get() == .listProviderDevices)
-    #expect(try ControlRequestParser.parse(Data(#"{"cmd":"provider_credentials_status","args":{}}"#.utf8)).get() == .providerCredentialsStatus)
+    #expect(try ControlRequestParser.parse(Data(#"{"cmd":"list_provisioning_endpoints","args":{}}"#.utf8)).get() == .listProvisioningEndpoints)
+    #expect(try ControlRequestParser.parse(Data(#"{"cmd":"provisioning_status","args":{}}"#.utf8)).get() == .provisioningStatus)
 
     for body in [
         #"{"cmd":"create_line","args":{"provider":"unknown","username":"u","password":"p"}}"#,
@@ -347,7 +347,7 @@ import Testing
     }
     for name in [
         "get_state", "get_history", "get_last_summary", "get_transcript", "list_lines",
-        "provider_credentials_status", "get_registration_status", "list_assistant_profiles", "find_contact"
+        "provisioning_status", "get_registration_status", "list_assistant_profiles", "find_contact"
     ] {
         #expect(byName[name]?["readOnlyHint"] == .bool(true), "\(name) must be read-only")
         #expect(byName[name]?["destructiveHint"] == .bool(false), "\(name) must not be destructive")
@@ -361,10 +361,37 @@ import Testing
         #expect(byName[name]?["readOnlyHint"] == .bool(false), "\(name) changes configuration")
         #expect(byName[name]?["idempotentHint"] == .bool(true), "\(name) settles on the same state")
     }
-    #expect(byName["list_provider_devices"]?["readOnlyHint"] == .bool(true))
-    #expect(byName["list_provider_devices"]?["destructiveHint"] == .bool(false))
-    #expect(byName["list_provider_devices"]?["openWorldHint"] == .bool(true))
+    #expect(byName["list_provisioning_endpoints"]?["readOnlyHint"] == .bool(true))
+    #expect(byName["list_provisioning_endpoints"]?["destructiveHint"] == .bool(false))
+    #expect(byName["list_provisioning_endpoints"]?["openWorldHint"] == .bool(true))
     #expect(byName["provision_line"]?["readOnlyHint"] == .bool(false))
     #expect(byName["provision_line"]?["idempotentHint"] == .bool(false))
     #expect(byName["provision_line"]?["openWorldHint"] == .bool(true))
+}
+
+@Test func provisioningToolsWarnAboutWhatTheyChangeAtTheProvider() throws {
+    var byName: [String: [String: JSONValue]] = [:]
+    for tool in MCPProtocol.tools {
+        guard case .object(let object) = tool, case .string(let name)? = object["name"] else { continue }
+        byName[name] = object
+    }
+
+    guard case .string(let provision)? = byName["provision_line"]?["description"] else {
+        Issue.record("provision_line must describe itself")
+        return
+    }
+    // An agent cannot infer any of these from a schema, and each one has a
+    // consequence at the provider that outlives the call.
+    #expect(provision.contains("rotate_password"))
+    #expect(provision.lowercased().contains("invalidates"))
+    #expect(provision.lowercased().contains("online"))
+    #expect(provision.contains("alias"))
+
+    // The exclusive or is enforceable only if it is in the schema.
+    guard case .object(let schema)? = byName["provision_line"]?["inputSchema"],
+          case .array(let alternatives)? = schema["oneOf"] else {
+        Issue.record("device_id and create_device must exclude each other in the schema")
+        return
+    }
+    #expect(alternatives.count == 2)
 }

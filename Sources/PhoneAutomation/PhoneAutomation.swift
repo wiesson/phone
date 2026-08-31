@@ -287,9 +287,9 @@ public enum ControlCommand: Equatable, Sendable {
     case getLastSummary
     case getTranscript(callID: String?, limit: Int)
     case listLines
-    case listProviderDevices
+    case listProvisioningEndpoints
     case provisionLine(ControlProvisionLine)
-    case providerCredentialsStatus
+    case provisioningStatus
     case createLine(ControlCreateLine)
     case updateLine(ControlUpdateLine)
     case deleteLine(line: String)
@@ -388,10 +388,10 @@ public enum ControlRequestParser {
             return noArguments(args, command: .getState)
         case "list_lines":
             return noArguments(args, command: .listLines)
-        case "list_provider_devices":
-            return noArguments(args, command: .listProviderDevices)
-        case "provider_credentials_status":
-            return noArguments(args, command: .providerCredentialsStatus)
+        case "list_provisioning_endpoints":
+            return noArguments(args, command: .listProvisioningEndpoints)
+        case "provisioning_status":
+            return noArguments(args, command: .provisioningStatus)
         case "provision_line":
             let allowed = Set(["device_id", "create_device", "alias", "label", "rotate_password"])
             guard Set(args.keys).isSubset(of: allowed),
@@ -825,18 +825,18 @@ public enum MCPProtocol {
             access: .read
         ),
         tool(
-            "list_provider_devices",
-            "List the SIP endpoints the configured provisioning provider can hand out, each with id, alias and online state, plus which provider answered. Credentials are never returned. Only sipgate can provision today; a line at another provider is entered by hand with create_line.",
+            "list_provisioning_endpoints",
+            "List the SIP endpoints the telephony provider can hand out, each with endpoint_id, alias and online state, plus which provider answered. Credentials are never returned. An endpoint reported as online is already in use. Only sipgate can provision today; a line at any other provider is entered by hand with create_line.",
             access: .externalRead
         ),
         tool(
-            "provider_credentials_status",
-            "Report which provisioning provider is configured and whether its API credentials are present in the macOS Keychain. Returns no credential content. Call this before provision_line to find out whether provisioning is available at all.",
+            "provisioning_status",
+            "Report which telephony provider can provision lines and whether its API credentials are present in the macOS Keychain. Returns no credential content. Call this before provision_line: without credentials nothing can be provisioned, and a line then has to be entered by hand with create_line.",
             access: .read
         ),
         tool(
             "provision_line",
-            "Create a Phone SIP line from an endpoint at the configured provisioning provider — an existing one, or one created for this purpose. Phone fetches the credentials from the provider itself, stores the SIP password in the Keychain, waits for the line to register, and never returns a secret. Give exactly one of device_id or create_device (which must be true). Use list_provider_devices first to see what exists.",
+            "Create a Phone SIP line from an endpoint at the telephony provider. Phone fetches the credentials from the provider itself, stores the SIP password in the Keychain, waits for the line to register, and never returns a secret. Give exactly one of device_id (an existing endpoint from list_provisioning_endpoints) or create_device: true. WHAT THIS CHANGES AT THE PROVIDER: create_device creates a real endpoint on the account, and rotate_password immediately invalidates the password of every other client already using that endpoint — a desk phone or softphone on it stops working at once. An endpoint reported as online is in use by someone; do not take it over or rotate it without being asked to. alias is the name at the provider, label is the name this line gets in Phone.",
             access: .externalWrite,
             properties: [
                 "device_id": schema("string"),
@@ -844,6 +844,10 @@ public enum MCPProtocol {
                 "alias": schema("string"),
                 "label": schema("string"),
                 "rotate_password": .object(["type": .string("boolean"), "default": .bool(false)])
+            ],
+            oneOf: [
+                .object(["required": .array([.string("device_id")]), "not": .object(["required": .array([.string("create_device")])])]),
+                .object(["required": .array([.string("create_device")])])
             ]
         ),
         tool(
@@ -1124,7 +1128,10 @@ public enum MCPProtocol {
         _ description: String,
         access: ToolAccess,
         properties: [String: JSONValue] = [:],
-        required: [String] = []
+        required: [String] = [],
+        // An either-or between arguments belongs in the schema, where a client
+        // can enforce it, not only in a sentence it may or may not read.
+        oneOf: [JSONValue] = []
     ) -> JSONValue {
         var inputSchema: [String: JSONValue] = [
             "type": .string("object"),
@@ -1132,6 +1139,7 @@ public enum MCPProtocol {
             "additionalProperties": .bool(false)
         ]
         if !required.isEmpty { inputSchema["required"] = .array(required.map(JSONValue.string)) }
+        if !oneOf.isEmpty { inputSchema["oneOf"] = .array(oneOf) }
         return .object([
             "name": .string(name),
             "description": .string(description),
