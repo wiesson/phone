@@ -149,7 +149,7 @@ struct SipgateProvisioningService: Sendable {
     /// because a rotation that is followed by a local refusal would leave the
     /// sipgate device with a password nobody holds.
     func provisioningPlan(
-        for arguments: ControlProvisionFromSipgate,
+        for arguments: ControlProvisionLine,
         preflight: (ManagedSIPAccount) throws -> Void = { _ in }
     ) async throws -> SipgateProvisioningPlan {
         let existingID = normalizedText(arguments.deviceID)
@@ -496,18 +496,27 @@ func controlSipgateDevicePayload(_ device: SipgateDevice) -> JSONValue {
     ])
 }
 
-func controlSipgateDevicesPayload(
+/// The one provider that can hand out SIP endpoints today. Named in every
+/// answer so a caller learns who replied from the data rather than from a tool
+/// name it would have to relearn when a second provider arrives.
+let provisioningProviderName = "sipgate"
+
+func controlProviderDevicesPayload(
     _ devices: [SipgateDevice],
     sensitiveValues: [String]
 ) -> JSONValue {
     redactingJSONValue(
-        .array(devices.map(controlSipgateDevicePayload)),
+        .object([
+            "provider": .string(provisioningProviderName),
+            "devices": .array(devices.map(controlSipgateDevicePayload))
+        ]),
         sensitiveValues: sensitiveValues
     )
 }
 
 func controlSipgateCredentialsStatusPayload(_ status: SipgateCredentialsStatus) -> JSONValue {
     .object([
+        "provider": .string(provisioningProviderName),
         "configured": .bool(status.configured),
         "token_id_length": .integer(status.tokenIDLength)
     ])

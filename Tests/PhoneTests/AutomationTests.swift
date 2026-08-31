@@ -94,7 +94,7 @@ import Testing
     #expect(names == [
         "dial", "assistant_call", "answer", "hangup", "send_dtmf", "get_state",
         "get_history", "get_last_summary", "list_lines",
-        "list_sipgate_devices", "sipgate_credentials_status", "provision_from_sipgate",
+        "list_provider_devices", "provider_credentials_status", "provision_line",
         "create_line", "update_line", "delete_line", "select_active_line",
         "get_registration_status", "set_line_enabled", "set_line_profile",
         "set_line_prompt", "create_assistant_profile", "update_assistant_profile",
@@ -128,7 +128,7 @@ import Testing
 
     let sipgateProvision = try #require(tools.first { tool in
         guard case .object(let object) = tool else { return false }
-        return object["name"] == .string("provision_from_sipgate")
+        return object["name"] == .string("provision_line")
     })
     guard case .object(let provisionObject) = sipgateProvision,
           case .object(let provisionSchema) = provisionObject["inputSchema"],
@@ -218,9 +218,9 @@ import Testing
         outboundCallerID: nil
     )))
 
-    let existingSipgate = Data(#"{"cmd":"provision_from_sipgate","args":{"device_id":" e0 ","label":" Desk ","rotate_password":true}}"#.utf8)
-    #expect(try ControlRequestParser.parse(existingSipgate).get() == .provisionFromSipgate(
-        ControlProvisionFromSipgate(
+    let existingSipgate = Data(#"{"cmd":"provision_line","args":{"device_id":" e0 ","label":" Desk ","rotate_password":true}}"#.utf8)
+    #expect(try ControlRequestParser.parse(existingSipgate).get() == .provisionLine(
+        ControlProvisionLine(
             deviceID: "e0",
             createDevice: false,
             alias: nil,
@@ -229,9 +229,9 @@ import Testing
         )
     ))
 
-    let newSipgate = Data(#"{"cmd":"provision_from_sipgate","args":{"create_device":true,"alias":" Phone Mac "}}"#.utf8)
-    #expect(try ControlRequestParser.parse(newSipgate).get() == .provisionFromSipgate(
-        ControlProvisionFromSipgate(
+    let newSipgate = Data(#"{"cmd":"provision_line","args":{"create_device":true,"alias":" Phone Mac "}}"#.utf8)
+    #expect(try ControlRequestParser.parse(newSipgate).get() == .provisionLine(
+        ControlProvisionLine(
             deviceID: nil,
             createDevice: true,
             alias: "Phone Mac",
@@ -240,19 +240,19 @@ import Testing
         )
     ))
 
-    #expect(try ControlRequestParser.parse(Data(#"{"cmd":"list_sipgate_devices","args":{}}"#.utf8)).get() == .listSipgateDevices)
-    #expect(try ControlRequestParser.parse(Data(#"{"cmd":"sipgate_credentials_status","args":{}}"#.utf8)).get() == .sipgateCredentialsStatus)
+    #expect(try ControlRequestParser.parse(Data(#"{"cmd":"list_provider_devices","args":{}}"#.utf8)).get() == .listProviderDevices)
+    #expect(try ControlRequestParser.parse(Data(#"{"cmd":"provider_credentials_status","args":{}}"#.utf8)).get() == .providerCredentialsStatus)
 
     for body in [
         #"{"cmd":"create_line","args":{"provider":"unknown","username":"u","password":"p"}}"#,
         #"{"cmd":"create_line","args":{"username":"u"}}"#,
         #"{"cmd":"update_line","args":{"line":"Home"}}"#,
-        #"{"cmd":"provision_from_sipgate","args":{}}"#,
-        #"{"cmd":"provision_from_sipgate","args":{"create_device":false}}"#,
-        #"{"cmd":"provision_from_sipgate","args":{"device_id":"e0","create_device":true}}"#,
-        #"{"cmd":"provision_from_sipgate","args":{"device_id":"e0","create_device":false}}"#,
-        #"{"cmd":"provision_from_sipgate","args":{"device_id":"e0","alias":"New"}}"#,
-        #"{"cmd":"provision_from_sipgate","args":{"create_device":"yes"}}"#
+        #"{"cmd":"provision_line","args":{}}"#,
+        #"{"cmd":"provision_line","args":{"create_device":false}}"#,
+        #"{"cmd":"provision_line","args":{"device_id":"e0","create_device":true}}"#,
+        #"{"cmd":"provision_line","args":{"device_id":"e0","create_device":false}}"#,
+        #"{"cmd":"provision_line","args":{"device_id":"e0","alias":"New"}}"#,
+        #"{"cmd":"provision_line","args":{"create_device":"yes"}}"#
     ] {
         guard case .failure = ControlRequestParser.parse(Data(body.utf8)) else {
             Issue.record("must reject: \(body)")
@@ -347,7 +347,7 @@ import Testing
     }
     for name in [
         "get_state", "get_history", "get_last_summary", "get_transcript", "list_lines",
-        "sipgate_credentials_status", "get_registration_status", "list_assistant_profiles", "find_contact"
+        "provider_credentials_status", "get_registration_status", "list_assistant_profiles", "find_contact"
     ] {
         #expect(byName[name]?["readOnlyHint"] == .bool(true), "\(name) must be read-only")
         #expect(byName[name]?["destructiveHint"] == .bool(false), "\(name) must not be destructive")
@@ -361,10 +361,10 @@ import Testing
         #expect(byName[name]?["readOnlyHint"] == .bool(false), "\(name) changes configuration")
         #expect(byName[name]?["idempotentHint"] == .bool(true), "\(name) settles on the same state")
     }
-    #expect(byName["list_sipgate_devices"]?["readOnlyHint"] == .bool(true))
-    #expect(byName["list_sipgate_devices"]?["destructiveHint"] == .bool(false))
-    #expect(byName["list_sipgate_devices"]?["openWorldHint"] == .bool(true))
-    #expect(byName["provision_from_sipgate"]?["readOnlyHint"] == .bool(false))
-    #expect(byName["provision_from_sipgate"]?["idempotentHint"] == .bool(false))
-    #expect(byName["provision_from_sipgate"]?["openWorldHint"] == .bool(true))
+    #expect(byName["list_provider_devices"]?["readOnlyHint"] == .bool(true))
+    #expect(byName["list_provider_devices"]?["destructiveHint"] == .bool(false))
+    #expect(byName["list_provider_devices"]?["openWorldHint"] == .bool(true))
+    #expect(byName["provision_line"]?["readOnlyHint"] == .bool(false))
+    #expect(byName["provision_line"]?["idempotentHint"] == .bool(false))
+    #expect(byName["provision_line"]?["openWorldHint"] == .bool(true))
 }

@@ -131,7 +131,7 @@ private func registerDetails(
     let fake = FakeSipgateClient(devices: [register, mobile])
 
     let devices = try await SipgateProvisioningService(client: fake).listDevices()
-    let payload = controlSipgateDevicesPayload(devices, sensitiveValues: [pat])
+    let payload = controlProviderDevicesPayload(devices, sensitiveValues: [pat])
     let encoded = String(decoding: try JSONEncoder().encode(payload), as: UTF8.self)
     let calls = await fake.recordedCalls()
 
@@ -151,7 +151,7 @@ private func registerDetails(
         devices: [device],
         detailsByID: [device.id: registerDetails(device: device, password: password)]
     )
-    let arguments = ControlProvisionFromSipgate(
+    let arguments = ControlProvisionLine(
         deviceID: device.id,
         createDevice: false,
         alias: nil,
@@ -179,7 +179,7 @@ private func registerDetails(
         createdDevice: created,
         detailsByID: [created.id: registerDetails(device: current, password: "rotated-secret")]
     )
-    let arguments = ControlProvisionFromSipgate(
+    let arguments = ControlProvisionLine(
         deviceID: nil,
         createDevice: true,
         alias: " Phone Mac ",
@@ -230,7 +230,7 @@ private func registerDetails(
         device: plan.device,
         sensitiveValues: [password]
     )
-    let request = Data(#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"provision_from_sipgate","arguments":{"device_id":"e0"}}}"#.utf8)
+    let request = Data(#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"provision_line","arguments":{"device_id":"e0"}}}"#.utf8)
     let response = try #require(MCPProtocol.response(for: request) { _, _ in .success(payload) })
     let encoded = String(decoding: response, as: UTF8.self)
 
@@ -365,7 +365,7 @@ private func registerDetails(
     let service = SipgateProvisioningService(client: fake)
 
     do {
-        _ = try await service.provisioningPlan(for: ControlProvisionFromSipgate(
+        _ = try await service.provisioningPlan(for: ControlProvisionLine(
             deviceID: "e0",
             createDevice: false,
             alias: nil,
@@ -382,4 +382,35 @@ private func registerDetails(
         // The message must warn that the device is now unusable.
         #expect(error.errorDescription?.contains("no longer works") == true)
     }
+}
+
+@Test func theDeviceListNamesWhoAnswered() async throws {
+    // The shape is the MCP contract: an agent reads `provider` from the data
+    // rather than from a tool name it would have to relearn when a second
+    // provider arrives. Nothing asserted this, so a change to it went unnoticed.
+    let fake = FakeSipgateClient(devices: [registerDevice(alias: "Desk", online: true)])
+    let devices = try await SipgateProvisioningService(client: fake).listDevices()
+
+    guard case .object(let payload) = controlProviderDevicesPayload(devices, sensitiveValues: []) else {
+        Issue.record("the device list must be an object, not a bare array")
+        return
+    }
+    #expect(payload["provider"] == .string("sipgate"))
+    guard case .array(let listed)? = payload["devices"] else {
+        Issue.record("the devices must stay a list under their own key")
+        return
+    }
+    #expect(listed.count == 1)
+}
+
+@Test func theCredentialStatusNamesWhoItIsAbout() {
+    guard case .object(let payload) = controlSipgateCredentialsStatusPayload(
+        SipgateCredentialsStatus(configured: false, tokenIDLength: 0)
+    ) else {
+        Issue.record("the status must be an object")
+        return
+    }
+    // Without this an agent cannot tell whose credentials are missing.
+    #expect(payload["provider"] == .string("sipgate"))
+    #expect(payload["configured"] == .bool(false))
 }

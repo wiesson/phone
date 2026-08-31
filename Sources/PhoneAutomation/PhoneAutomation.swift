@@ -236,7 +236,7 @@ public struct ControlUpdateLine: Equatable, Sendable {
     }
 }
 
-public struct ControlProvisionFromSipgate: Equatable, Sendable {
+public struct ControlProvisionLine: Equatable, Sendable {
     public let deviceID: String?
     public let createDevice: Bool
     public let alias: String?
@@ -287,9 +287,9 @@ public enum ControlCommand: Equatable, Sendable {
     case getLastSummary
     case getTranscript(callID: String?, limit: Int)
     case listLines
-    case listSipgateDevices
-    case provisionFromSipgate(ControlProvisionFromSipgate)
-    case sipgateCredentialsStatus
+    case listProviderDevices
+    case provisionLine(ControlProvisionLine)
+    case providerCredentialsStatus
     case createLine(ControlCreateLine)
     case updateLine(ControlUpdateLine)
     case deleteLine(line: String)
@@ -388,18 +388,18 @@ public enum ControlRequestParser {
             return noArguments(args, command: .getState)
         case "list_lines":
             return noArguments(args, command: .listLines)
-        case "list_sipgate_devices":
-            return noArguments(args, command: .listSipgateDevices)
-        case "sipgate_credentials_status":
-            return noArguments(args, command: .sipgateCredentialsStatus)
-        case "provision_from_sipgate":
+        case "list_provider_devices":
+            return noArguments(args, command: .listProviderDevices)
+        case "provider_credentials_status":
+            return noArguments(args, command: .providerCredentialsStatus)
+        case "provision_line":
             let allowed = Set(["device_id", "create_device", "alias", "label", "rotate_password"])
             guard Set(args.keys).isSubset(of: allowed),
                   optionalStrings(in: args, keys: ["device_id", "alias", "label"]),
                   optionalBooleans(in: args, keys: ["create_device", "rotate_password"]) else {
                 return .failure(ControlError(
                     code: "invalid_arguments",
-                    message: "provision_from_sipgate accepts string device_id, alias, and label arguments plus boolean create_device and rotate_password arguments."
+                    message: "provision_line accepts string device_id, alias, and label arguments plus boolean create_device and rotate_password arguments."
                 ))
             }
             let deviceID = trimmedString(args["device_id"])
@@ -425,7 +425,7 @@ public enum ControlRequestParser {
                     message: "alias is only valid when create_device is true."
                 ))
             }
-            return .success(.provisionFromSipgate(ControlProvisionFromSipgate(
+            return .success(.provisionLine(ControlProvisionLine(
                 deviceID: deviceID,
                 createDevice: createDevice,
                 alias: alias?.isEmpty == false ? alias : nil,
@@ -825,18 +825,18 @@ public enum MCPProtocol {
             access: .read
         ),
         tool(
-            "list_sipgate_devices",
-            "List the authenticated sipgate user's register devices with device ID, alias, and online state. Credentials are never returned.",
+            "list_provider_devices",
+            "List the SIP endpoints the configured provisioning provider can hand out, each with id, alias and online state, plus which provider answered. Credentials are never returned. Only sipgate can provision today; a line at another provider is entered by hand with create_line.",
             access: .externalRead
         ),
         tool(
-            "sipgate_credentials_status",
-            "Report whether both sipgate PAT values are available in macOS Keychain. Returns no credential content.",
+            "provider_credentials_status",
+            "Report which provisioning provider is configured and whether its API credentials are present in the macOS Keychain. Returns no credential content. Call this before provision_line to find out whether provisioning is available at all.",
             access: .read
         ),
         tool(
-            "provision_from_sipgate",
-            "Provision a Phone SIP line directly from an existing or newly created sipgate register device. Phone reads the sipgate PAT and SIP credentials from Keychain/API itself, stores the SIP password directly in Keychain, waits for registration, and never returns either secret. Give exactly one of device_id or create_device (which must be true).",
+            "provision_line",
+            "Create a Phone SIP line from an endpoint at the configured provisioning provider — an existing one, or one created for this purpose. Phone fetches the credentials from the provider itself, stores the SIP password in the Keychain, waits for the line to register, and never returns a secret. Give exactly one of device_id or create_device (which must be true). Use list_provider_devices first to see what exists.",
             access: .externalWrite,
             properties: [
                 "device_id": schema("string"),
