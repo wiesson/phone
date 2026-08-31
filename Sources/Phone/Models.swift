@@ -81,6 +81,10 @@ final class MenuBarModel: ObservableObject {
     @Published var state: CallState = .stopped
     @Published var callStartedAt: Date?
     @Published var setupRequest = 0
+    /// Counter rather than a flag, and read on appear rather than only on
+    /// change: the controller starts before the scene exists, so a request
+    /// made at launch has to survive until something is there to act on it.
+    @Published var libraryRequest = 0
 }
 
 enum Speaker: UInt8, Codable, Sendable {

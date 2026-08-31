@@ -83,9 +83,13 @@ private struct MenuBarPhoneLabel: View {
             .accessibilityLabel(model.state.label)
             .task {
                 if model.setupRequest > 0 { openSetup() }
+                if model.libraryRequest > 0 { openLibrary(clearingRequest: true) }
             }
             .onChange(of: model.setupRequest) { _, request in
                 if request > 0 { openSetup() }
+            }
+            .onChange(of: model.libraryRequest) { _, request in
+                if request > 0 { openLibrary(clearingRequest: true) }
             }
             .onReceive(NotificationCenter.default.publisher(for: .phoneOpenLibrary)) { _ in
                 openLibrary()
@@ -97,12 +101,15 @@ private struct MenuBarPhoneLabel: View {
             }
     }
 
-    private func openLibrary() {
+    private func openLibrary(clearingRequest: Bool = false) {
         openWindow(id: "library")
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             NSApp.windows.first { $0.identifier?.rawValue.contains("library") == true }?
                 .orderFrontRegardless()
+        }
+        if clearingRequest {
+            Task { @MainActor in model.libraryRequest = 0 }
         }
     }
 

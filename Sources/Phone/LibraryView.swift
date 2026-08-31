@@ -11,6 +11,8 @@ struct LibraryView: View {
     @State private var loadError: String?
     @State private var isAssistantInspectorPresented = false
     @State private var isKeypadPresented = false
+    @State private var showsOnboarding = false
+    @State private var onboardingHandoff: Task<Void, Never>?
     @FocusState private var numberFieldFocused: Bool
 
     var body: some View {
@@ -71,6 +73,23 @@ struct LibraryView: View {
                 await loadUtterances(for: selection?.callID)
             }
         }
+        .onAppear { showsOnboarding = isUnconfigured }
+        .onChange(of: isUnconfigured) { _, unconfigured in
+            onboardingHandoff?.cancel()
+            guard !unconfigured else {
+                withAnimation(.easeInOut(duration: 0.25)) { showsOnboarding = true }
+                return
+            }
+            // The first line arriving is the moment worth watching, so the
+            // screen stays up long enough to show it tick over before the
+            // call list takes the pane back.
+            onboardingHandoff = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2.5))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeInOut(duration: 0.35)) { showsOnboarding = false }
+            }
+        }
+        .onDisappear { onboardingHandoff?.cancel() }
         .frame(minWidth: 720, idealWidth: 1_100, minHeight: 560, idealHeight: 700)
     }
 
@@ -126,12 +145,25 @@ struct LibraryView: View {
         if phone.state.isRinging || phone.state.isInCall {
             DesktopPhoneView(phone: phone, numberFieldFocused: $numberFieldFocused)
                 .navigationTitle(phone.state.peer.map { displayName(forPeer: $0) } ?? "Call")
+        } else if showsOnboarding {
+            // No status banner here: "every line is offline" is not news on a
+            // phone that has no lines yet, and the onboarding screen already
+            // says what to do about it.
+            OnboardingView(phone: phone, openSetupWizard: phone.requestAccountSetup)
+                .navigationTitle("Phone")
+                .transition(.opacity)
         } else {
             VStack(spacing: 0) {
                 phoneStatusBanner
                 selectionDetail
             }
         }
+    }
+
+    /// True while Phone has nothing to register: no managed line, and no
+    /// hand-written baresip account file either.
+    private var isUnconfigured: Bool {
+        phone.managedAccounts.isEmpty && phone.unmanagedAccountAOR == nil
     }
 
     /// The call list has no room for a phone that is off or unregistered, and

@@ -466,7 +466,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         installNotifications()
         if managedAccounts.isEmpty && !FileManager.default.fileExists(atPath: configDirectory.appendingPathComponent("accounts").path) {
             state = .stopped
-            requestAccountSetup()
+            // A phone with no lines opens the main window, not the wizard: the
+            // empty state offers the setup command and keeps the wizard one
+            // click away, rather than deciding for the user which way to go.
+            requestLibraryWindow()
         } else {
             startBaresip()
         }
@@ -487,6 +490,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     func requestAccountSetup() {
         menuBar.setupRequest &+= 1
+    }
+
+    func requestLibraryWindow() {
+        menuBar.libraryRequest &+= 1
     }
 
     func saveManagedAccountAndTest(_ account: ManagedSIPAccount, password: String) throws {
@@ -718,7 +725,9 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             try? FileManager.default.removeItem(at: configDirectory.appendingPathComponent("accounts"))
             registrationStatus = .idle
             state = .stopped
-            requestAccountSetup()
+            // Removing the last line lands back on the empty state, the same
+            // screen a fresh install shows.
+            requestLibraryWindow()
         } else {
             stopBaresipAndWait()
             try? FileManager.default.removeItem(at: removedDirectory)
