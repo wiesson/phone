@@ -77,12 +77,12 @@ make_backup() {
   describe "$target"
 }
 
-# Backups newest first, one full path per line.
+# Backups newest first, one full path per line. Sorted by name rather than by
+# modification time: the names carry a fixed-width timestamp, so they already
+# sort chronologically, and a copied or touched file cannot reorder them.
 list_backups() {
   [ -d "$BACKUP_DIR" ] || return 0
-  # -t sorts by modification time; the timestamped names sort the same way.
-  find "$BACKUP_DIR" -maxdepth 1 -name 'accounts-*.json' -print0 2>/dev/null \
-    | xargs -0 /bin/ls -t 2>/dev/null
+  find "$BACKUP_DIR" -maxdepth 1 -type f -name 'accounts-*.json' 2>/dev/null | sort -r
 }
 
 newest_backup() {
@@ -101,7 +101,7 @@ case "$command" in
     ;;
 
   list)
-    if [ ! -d "$BACKUP_DIR" ]; then
+    if [ -z "$(list_backups)" ]; then
       echo "No backups yet."
       exit 0
     fi
