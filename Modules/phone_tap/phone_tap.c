@@ -47,6 +47,7 @@ static uint8_t inject_buffer[PHONE_INJECT_BUFFER_SIZE];
 static size_t inject_head;
 static size_t inject_count;
 static bool inject_active;
+static bool inject_ending;
 static uint64_t inject_underruns;
 
 static void widen_datagram_socket(int descriptor, int option)
@@ -134,6 +135,7 @@ static void inject_end_session(void)
     info("phone_tap: injection session ended: %llu ring-buffer underrun events\n",
          (unsigned long long)inject_underruns);
     inject_active = false;
+    inject_ending = false;
     inject_underruns = 0;
     inject_head = 0;
     inject_count = 0;
@@ -168,13 +170,15 @@ static void drain_injected_audio(const struct auframe *frame)
             (size_t)received != sizeof(*header) + payload_size)
             continue;
         if (!payload_size) {
-            inject_end_session();
+            if (inject_active)
+                inject_ending = true;
             continue;
         }
         if (!inject_active) {
             inject_active = true;
             inject_underruns = 0;
         }
+        inject_ending = false;
         inject_append(packet + sizeof(*header), payload_size);
     }
 }
@@ -191,10 +195,15 @@ static void inject_frame(struct auframe *frame)
     payload_size = auframe_size(frame);
     if (!payload_size)
         return;
-    if (inject_count < payload_size)
+    /* A tail shorter than one frame is the end of speech, not a starved ring. */
+    if (inject_count < payload_size && !inject_ending)
         ++inject_underruns;
     memset(frame->sampv, 0, payload_size);
     (void)inject_read(frame->sampv, payload_size);
+    /* The session ends once what was owed has actually been played. Ending on
+     * the end packet itself discarded audio that arrived in the same drain. */
+    if (inject_ending && !inject_count)
+        inject_end_session();
 }
 
 static void state_destructor(void *arg)
