@@ -80,10 +80,16 @@ struct LibraryView: View {
                 withAnimation(.easeInOut(duration: 0.25)) { showsOnboarding = true }
                 return
             }
-            // The first line arriving is the moment worth watching, so the
-            // screen stays up long enough to show it tick over before the
-            // call list takes the pane back.
+            // The first line arriving is the moment worth watching. A new line
+            // is published before it has registered, so wait for it to settle
+            // before starting the beat — otherwise the screen cuts away
+            // mid-spinner and the finished state is never seen. The wait is
+            // capped: a line that never registers must not strand the pane.
             onboardingHandoff = Task { @MainActor in
+                let deadline = Date().addingTimeInterval(15)
+                while !Task.isCancelled, !lineHasSettled, Date() < deadline {
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
                 try? await Task.sleep(for: .seconds(2.5))
                 guard !Task.isCancelled else { return }
                 withAnimation(.easeInOut(duration: 0.35)) { showsOnboarding = false }
@@ -212,6 +218,12 @@ struct LibraryView: View {
     /// hand-written baresip account file either.
     private var isUnconfigured: Bool {
         phone.managedAccounts.isEmpty && phone.unmanagedAccountAOR == nil
+    }
+
+    /// True once the first line has stopped registering, either way.
+    private var lineHasSettled: Bool {
+        guard let account = phone.managedAccounts.first else { return false }
+        return phone.registrationStatus(for: account) != .registering
     }
 
     /// The call list has no room for a phone that is off or unregistered, and
