@@ -248,7 +248,14 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private let intelligence = LocalIntelligence()
     private let geminiLiveBridge = GeminiLiveBridge()
     private var geminiBridgeTask: Task<Void, Never>?
+    /// Counts bridge sessions started from here. A callback that belongs to
+    /// an earlier session — one already stopped or replaced — must not touch
+    /// the state of the one that followed it.
+    private var bridgeGeneration = 0
     private var geminiTranscriptionActive = false
+    /// Counts calls whose transcription was started. A teardown that outlives
+    /// its call must not stop the next call's lanes or archive its words.
+    private var callGeneration = 0
     private var autoAnswerTask: Task<Void, Never>?
     private var startsAssistantWhenConnected = false
     private var incomingCallAttentionRequest: Int?
@@ -914,7 +921,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         let storedModel = defaults.string(forKey: "geminiLiveModel")?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let model = storedModel.flatMap { $0.isEmpty ? nil : $0 } ?? defaultGeminiLiveModel
-        let globalInstructions = defaults.string(forKey: "assistantInstructions") ?? defaultAssistantInstructions
+        let globalInstructions = defaults.string(forKey: "assistantInstructions")
+            ?? assistantInstructionsDefault(for: defaults.string(forKey: "assistantUserDisplayName"))
         let profileInstructions = instructionOverride ?? assistantSystemInstruction(
             calledAOR: currentDirection == .incoming ? currentCallAccountAOR : nil,
             globalInstructions: globalInstructions,
@@ -943,6 +951,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         let bridge = geminiLiveBridge
         geminiLiveState = .connecting
         geminiBridgeTask?.cancel()
+        bridgeGeneration &+= 1
+        let generation = bridgeGeneration
         geminiBridgeTask = Task {
             guard !Task.isCancelled else { return }
             await bridge.start(
@@ -953,31 +963,38 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                 injectionSocketPath: injectionSocketPath,
                 onState: { [weak self] state in
                     Task { @MainActor [weak self] in
-                        self?.geminiLiveState = state
+                        guard let self, self.bridgeGeneration == generation else { return }
+                        self.geminiLiveState = state
                         if case .live = state {
-                            self?.finalizeLocalDrafts()
-                            self?.geminiTranscriptionActive = true
-                            self?.muteForBridgeIfNeeded()
+                            self.finalizeLocalDrafts()
+                            self.geminiTranscriptionActive = true
+                            self.muteForBridgeIfNeeded()
                         }
                         if case .failed(let message) = state {
-                            self?.geminiTranscriptionActive = false
-                            self?.clearAssistantCall()
-                            self?.appendDiagnostic("phone-app: Gemini Live failed: \(redactSensitiveValues(in: message))\n")
+                            self.geminiTranscriptionActive = false
+                            self.unmuteAfterBridgeIfNeeded()
+                            self.clearAssistantCall()
+                            self.appendDiagnostic("phone-app: Gemini Live failed: \(redactSensitiveValues(in: message))\n")
                         }
                     }
                 },
                 onTranscript: { [weak self] speaker, text in
                     Task { @MainActor [weak self] in
-                        self?.receiveGeminiTranscript(speaker: speaker, text: text)
+                        guard let self, self.bridgeGeneration == generation else { return }
+                        self.receiveGeminiTranscript(speaker: speaker, text: text)
                     }
                 },
                 onToolCall: { [weak self] call in
                     await MainActor.run { [weak self] in
-                        self?.handleGeminiToolCall(call)
+                        guard let self, self.bridgeGeneration == generation else { return }
+                        self.handleGeminiToolCall(call)
                     }
                 }
             )
-            if Task.isCancelled { await bridge.stop() }
+            // No stop here on cancellation: whoever cancelled — a stop or a
+            // replacement start — already owns the bridge's next state, and a
+            // stop from this side would take down the session that replaced
+            // this one.
         }
     }
 
@@ -1317,7 +1334,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             id: id,
             accountAOR: account.sipAddress,
             configDirectory: directory,
-            pidFileURL: directory.appendingPathComponent("baresip.pid")
+            pidFileURL: directory.appendingPathComponent("baresip.pid"),
+            ownsAccountsFile: true
         )
     }
 
@@ -1653,13 +1671,20 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         guard let event = Self.parseCallEvent(line) else { return }
         switch event {
         case .registered:
+            instance.removeOwnedAccountsFile()
             updateRegistrationStatus(.registered, for: instance)
             if UserDefaults.standard.bool(forKey: "sipTrace"), !instancesWithSIPTrace.contains(instance.id) {
                 instancesWithSIPTrace.insert(instance.id)
                 send("/siptrace", to: instance)
             }
         case .registrationFailed(let failure):
-            updateRegistrationStatus(.failed(failure), for: instance)
+            instance.removeOwnedAccountsFile()
+            // The parser only knows the patterns; a registrar that echoes the
+            // password back in its own words is caught by the values here.
+            updateRegistrationStatus(
+                .failed(redactSensitiveValues(in: failure, secrets: knownAccountSecrets())),
+                for: instance
+            )
             if currentCallInstanceID == instance.id {
                 pendingDialRetry = nil
                 clearAssistantCall()
@@ -1687,8 +1712,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         case .closed where currentCallInstanceID != instance.id:
             deferredIncomingCalls[instance.id] = nil
         case .noAccounts(let failure):
+            instance.removeOwnedAccountsFile()
+            let message = redactSensitiveValues(in: failure, secrets: knownAccountSecrets())
             updateRegistrationStatus(
-                .failed(failure.isEmpty ? "No SIP account configured" : failure),
+                .failed(message.isEmpty ? "No SIP account configured" : message),
                 for: instance
             )
         default:
@@ -1742,8 +1769,13 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             eventBus.publish(.callAnswered(peer: state.peer))
             clearIncomingCallNotification()
             beginCallIntelligence()
+            // The assistant owns this call from the first second: the Mac's
+            // microphone must not reach the line while Gemini is still
+            // connecting, and it comes back only on handover or failure.
+            if assistantCallTask != nil || startsAssistant { muteForBridgeIfNeeded() }
             if let assistantCallTask {
-                let globalInstructions = UserDefaults.standard.string(forKey: "assistantInstructions") ?? defaultAssistantInstructions
+                let globalInstructions = UserDefaults.standard.string(forKey: "assistantInstructions")
+                    ?? assistantInstructionsDefault(for: UserDefaults.standard.string(forKey: "assistantUserDisplayName"))
                 let general = assistantSystemInstruction(
                     calledAOR: nil,
                     globalInstructions: globalInstructions,
@@ -2668,6 +2700,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             return
         }
         intelligenceRunning = true
+        callGeneration &+= 1
         intelligenceStatus = "Preparing local models …"
         Task {
             do {
@@ -2781,6 +2814,10 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         pendingArchiveRecord = nil
         let includesContent = archiveConversations
         let wasIntelligenceRunning = intelligenceRunning
+        let generation = callGeneration
+        // Taken now: should another call start before the teardown below has
+        // run, the shared transcript belongs to that call by the time it reads.
+        let entriesBeforeTeardown = transcript.filter(\.isFinal)
         let duration = callStartedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
         if hasActiveEventCall {
             hasActiveEventCall = false
@@ -2794,10 +2831,11 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
         Task {
             await bridgeStopTask?.value
-            if wasIntelligenceRunning { await intelligence.stop() }
+            let isStillThisCall = callGeneration == generation
+            if wasIntelligenceRunning, isStillThisCall { await intelligence.stop() }
             await Task.yield()
-            let entries = transcript.filter(\.isFinal)
-            geminiTranscriptionActive = false
+            let entries = isStillThisCall ? transcript.filter(\.isFinal) : entriesBeforeTeardown
+            if isStillThisCall { geminiTranscriptionActive = false }
 
             if let archiveRecord {
                 do {
@@ -2809,10 +2847,14 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                         includeConversationContent: includesContent
                     )
                     NotificationCenter.default.post(name: .phoneArchiveChanged, object: nil)
-                } catch { }
+                } catch {
+                    appendDiagnostic("phone-app: archiving the call failed: \(error)\n")
+                    showAutomationStatus("The call could not be archived.")
+                }
             }
 
-            guard wasIntelligenceRunning else { return }
+            // A call that started meanwhile owns the lanes and the summary.
+            guard wasIntelligenceRunning, isStillThisCall else { return }
             do {
                 let text = try await intelligence.summarize(
                     entries: entries,
@@ -2820,7 +2862,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                     callerNumber: callbackNumberForSummary
                 )
                 if includesContent, let archiveRecord {
-                    try? await store.attachSummary(text, to: archiveRecord.id)
+                    do {
+                        try await store.attachSummary(text, to: archiveRecord.id)
+                    } catch {
+                        appendDiagnostic("phone-app: attaching the summary failed: \(error)\n")
+                        showAutomationStatus("The summary could not be archived.")
+                    }
                 }
                 summary = CallSummary(text: text, createdAt: Date())
                 eventBus.publish(
@@ -2885,6 +2932,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private func stopGeminiLive(preservingTranscriptionRouting: Bool = false) {
         if !preservingTranscriptionRouting { geminiTranscriptionActive = false }
         guard geminiLiveState != .off else { return }
+        bridgeGeneration &+= 1
         geminiLiveState = .off
         unmuteAfterBridgeIfNeeded()
         geminiBridgeTask?.cancel()

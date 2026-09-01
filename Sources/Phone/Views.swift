@@ -955,9 +955,10 @@ struct PhoneSettingsView: View {
         case .registered:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
-        case .failed:
+        case .failed(let message):
             Image(systemName: "exclamationmark.circle.fill")
                 .foregroundStyle(.orange)
+                .help(message)
         }
     }
 

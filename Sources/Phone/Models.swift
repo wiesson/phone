@@ -62,7 +62,9 @@ enum CallState: Equatable {
         case .ringing: "phone.arrow.down.left.fill"
         case .dialing: "phone.arrow.up.right.fill"
         case .answering, .connected: "phone.connection.fill"
-        case .error: "phone.badge.exclamationmark"
+        // "phone.badge.exclamationmark" is not an SF Symbol: the menu bar item
+        // rendered empty in the one state where it matters most.
+        case .error: "exclamationmark.triangle.fill"
         }
     }
 }

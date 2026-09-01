@@ -522,3 +522,14 @@ private func transmitFrame(
     #expect(summaryWithVerifiedCallbackNumber(freeform, transcript: "Caller: Bitte rufen Sie zurück.", callerNumber: nil)
         .contains("nicht eindeutig genannt"))
 }
+
+@Test func defaultInstructionsSpeakForTheOwnerOnlyWhenOneIsNamed() {
+    let anonymous = assistantInstructionsDefault(for: nil)
+    #expect(anonymous.contains("dieses Anschlusses"))
+    #expect(!anonymous.contains("Arne"))
+    #expect(assistantInstructionsDefault(for: "   ") == anonymous)
+    let named = assistantInstructionsDefault(for: " Petra Sommerfeld ")
+    #expect(named.contains("von Petra Sommerfeld"))
+    #expect(named.contains("Petra Sommerfeld ist gerade nicht erreichbar."))
+    #expect(defaultAssistantInstructions == anonymous)
+}

@@ -4,7 +4,17 @@ import Foundation
 import Security
 
 let defaultGeminiLiveModel = "gemini-3.1-flash-live-preview"
-let defaultAssistantInstructions = "Du bist der freundliche, professionelle Telefonassistent von Arne Wiese. Arne ist gerade nicht erreichbar. Begrüße Anrufer kurz, erkläre das, und biete an, eine Nachricht mit Name, Anliegen und Rückrufnummer aufzunehmen. Halte dich kurz und antworte auf Deutsch, außer der Anrufer spricht eine andere Sprache."
+/// The instructions a line on the Personal profile speaks with until the
+/// owner writes their own. `owner` is the name from Assistant settings; with
+/// none, the assistant speaks for "this line" rather than for a stranger.
+func assistantInstructionsDefault(for owner: String?) -> String {
+    let name = owner?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let whom = name.isEmpty ? "dieses Anschlusses" : "von \(name)"
+    let absent = name.isEmpty ? "Die Person, die du vertrittst, ist gerade nicht erreichbar." : "\(name) ist gerade nicht erreichbar."
+    return "Du bist der freundliche, professionelle Telefonassistent \(whom). \(absent) Begrüße Anrufer kurz, erkläre das, und biete an, eine Nachricht mit Name, Anliegen und Rückrufnummer aufzunehmen. Halte dich kurz und antworte auf Deutsch, außer der Anrufer spricht eine andere Sprache."
+}
+
+let defaultAssistantInstructions = assistantInstructionsDefault(for: nil)
 let assistantGreetingTrigger = "Der Anruf wurde soeben angenommen. Begrüße den Anrufer jetzt."
 
 struct ResolvedAssistantProfile: Equatable, Sendable {
@@ -593,7 +603,11 @@ private final class AudioInjectionSender {
         setsockopt(descriptor, SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size))
     }
 
-    func write(samples: Data, sampleRate: UInt32, channels: UInt8) throws {
+    /// Returns false when the datagram was dropped on the way — the receiver
+    /// not draining, or not there yet — which for audio is a packet lost and
+    /// for the end marker a reason to try again.
+    @discardableResult
+    func write(samples: Data, sampleRate: UInt32, channels: UInt8) throws -> Bool {
         let packet = AudioInjectionProtocol.packet(samples: samples, sampleRate: sampleRate, channels: channels)
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
@@ -615,7 +629,7 @@ private final class AudioInjectionSender {
             let code = errno
             if code == ENOBUFS || code == ECONNREFUSED || code == ENOENT {
                 phoneDiagnosticLog("phone-app: injection packet dropped (\(code)) — receiver not draining\n")
-                return
+                return false
             }
             throw GeminiLiveError.socket(code)
         }
@@ -623,6 +637,7 @@ private final class AudioInjectionSender {
             lastSampleRate = sampleRate
             lastChannels = channels
         }
+        return true
     }
 
     /// Ends the injection session. `as` stamps the packet with a format that
@@ -632,13 +647,21 @@ private final class AudioInjectionSender {
     /// session would never end.
     func finish(as format: InjectionFormat? = nil) throws {
         guard let lastSampleRate else { return }
-        let channels = lastChannels
+        let sampleRate = format?.sampleRate ?? lastSampleRate
+        let channels = format?.channels ?? lastChannels
+        // The end marker is the one packet that must arrive: without it the
+        // tap keeps replacing the microphone with silence for the rest of the
+        // call. A full socket buffer drops it like any other datagram, so it
+        // is retried across a few packet intervals before giving up.
+        for attempt in 0..<5 {
+            if try write(samples: Data(), sampleRate: sampleRate, channels: channels) {
+                self.lastSampleRate = nil
+                return
+            }
+            if attempt < 4 { usleep(20_000) }
+        }
         self.lastSampleRate = nil
-        try write(
-            samples: Data(),
-            sampleRate: format?.sampleRate ?? lastSampleRate,
-            channels: format?.channels ?? channels
-        )
+        phoneDiagnosticLog("phone-app: injection end marker could not be delivered\n")
     }
 
     deinit {
@@ -709,9 +732,22 @@ actor GeminiLiveBridge {
             try await socket.send(.string(setup))
             guard requestID == sessionID, state != .off else { return }
             receiveTask = Task { [weak self] in await self?.receiveLoop(sessionID: requestID) }
+            // A socket that connects but never answers the setup would leave
+            // the call on "Connecting to Gemini …" until it ends.
+            Task { [weak self] in
+                try? await Task.sleep(for: Self.setupTimeout)
+                await self?.failIfStillConnecting(sessionID: requestID)
+            }
         } catch {
             if requestID == sessionID { fail(error.localizedDescription) }
         }
+    }
+
+    private static let setupTimeout: Duration = .seconds(15)
+
+    private func failIfStillConnecting(sessionID requestID: Int) {
+        guard requestID == sessionID, state == .connecting else { return }
+        fail("No answer from Gemini within \(Self.setupTimeout.components.seconds) seconds.")
     }
 
     func append(_ frame: AudioFrame) async {

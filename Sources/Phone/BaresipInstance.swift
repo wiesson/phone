@@ -186,6 +186,10 @@ final class BaresipInstance {
     let configDirectory: URL
     let pidFileURL: URL
     let socketPaths: BaresipSocketPaths
+    /// A managed line's `accounts` file is written from Keychain for the
+    /// process start only; it is deleted once baresip has read it. A
+    /// hand-written file is the user's and is never touched.
+    let ownsAccountsFile: Bool
     private(set) var registrationStatus: RegistrationStatus = .idle
 
     var onOutput: ((BaresipInstance, String) -> Void)?
@@ -197,11 +201,12 @@ final class BaresipInstance {
     private var output: Pipe?
     private let audioTap: AudioTapServer
 
-    init(id: String, accountAOR: String?, configDirectory: URL, pidFileURL: URL) {
+    init(id: String, accountAOR: String?, configDirectory: URL, pidFileURL: URL, ownsAccountsFile: Bool = false) {
         self.id = id
         self.accountAOR = accountAOR
         self.configDirectory = configDirectory
         self.pidFileURL = pidFileURL
+        self.ownsAccountsFile = ownsAccountsFile
         socketPaths = BaresipSocketPaths(identifier: id)
         audioTap = AudioTapServer(socketPath: socketPaths.tap)
         audioTap.onFrame = { [id] frame in
@@ -356,6 +361,14 @@ final class BaresipInstance {
         audioTap.drainFrameCounts()
     }
 
+    /// Removes the password-bearing account file once baresip has loaded it.
+    /// baresip reads the file at start only; re-registration and network
+    /// changes work from memory, and a restart writes a fresh file.
+    func removeOwnedAccountsFile() {
+        guard ownsAccountsFile else { return }
+        try? FileManager.default.removeItem(at: configDirectory.appendingPathComponent("accounts"))
+    }
+
     private static func wait(for tasks: [Process], until deadline: Date) {
         while tasks.contains(where: \.isRunning), Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
@@ -373,6 +386,7 @@ final class BaresipInstance {
         input = nil
         output = nil
         audioTap.stop()
+        removeOwnedAccountsFile()
         // Successive instances for one line share this path. stopAndWait() gives
         // up after its deadlines, so a process can die late — after a
         // replacement already wrote its own pid — and must not delete that.

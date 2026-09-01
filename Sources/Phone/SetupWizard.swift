@@ -787,6 +787,10 @@ struct SetupWizard: View {
     /// all lines would show another line's failure here, and would never
     /// reach "registered" while any other line is down.
     @State private var testedSIPAddress: String?
+    /// The account this wizard created. From then on a corrected password or
+    /// username is an edit of that line, not a second line with the same
+    /// address — which is what the first attempt after a typo used to be.
+    @State private var savedAccount: ManagedSIPAccount?
     @FocusState private var focusedField: Field?
 
     private enum Field {
@@ -1036,7 +1040,7 @@ struct SetupWizard: View {
                 Button(requiresRegistrationTest ? "Test registration" : "Save", action: saveAccount)
                     .buttonStyle(.borderedProminent)
                     .disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (editingAccount == nil && password.isEmpty) || domain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            } else if displayedStatus == .registered {
+            } else if displayedStatus == .registered || (step == 2 && testedLineIsOffline) {
                 Button("Done") { dismiss() }
                     .buttonStyle(.borderedProminent)
             }
@@ -1073,9 +1077,15 @@ struct SetupWizard: View {
     }
 
     private var editPlan: ManagedSIPAccountEditPlan? {
-        editingAccount.map {
+        (editingAccount ?? savedAccount).map {
             managedSIPAccountEditPlan(original: $0, updated: account, replacementPassword: password)
         }
+    }
+
+    /// A line taken offline is saved but not registered; the test step has
+    /// nothing to wait for and says so.
+    private var testedLineIsOffline: Bool {
+        testedAccount?.isEnabled == false
     }
 
     private var requiresRegistrationTest: Bool {
@@ -1098,7 +1108,8 @@ struct SetupWizard: View {
     }
 
     private var statusTitle: String {
-        switch displayedStatus {
+        if testedLineIsOffline, submissionError == nil { return "Saved, line is offline" }
+        return switch displayedStatus {
         case .idle: "Ready to test"
         case .registering: "Registering …"
         case .registered: "Phone is registered"
@@ -1107,7 +1118,10 @@ struct SetupWizard: View {
     }
 
     private var statusDetail: String {
-        switch displayedStatus {
+        if testedLineIsOffline, submissionError == nil {
+            return "The settings are saved. The line registers when it is taken online in Settings › Lines."
+        }
+        return switch displayedStatus {
         case .idle: "Phone will restart its SIP connection with these settings."
         case .registering: "Contacting \(domain) with the bundled SIP engine."
         case .registered: "Your account is ready for incoming and outgoing calls."
@@ -1201,6 +1215,7 @@ struct SetupWizard: View {
             applyPreset(.telekom)
         }
         testedSIPAddress = nil
+        savedAccount = nil
         password = ""
         submissionError = nil
         focusedField = nil
@@ -1213,7 +1228,7 @@ struct SetupWizard: View {
         do {
             if let editingSIPAddress {
                 let plan = managedSIPAccountEditPlan(
-                    original: editingAccount ?? account,
+                    original: editingAccount ?? savedAccount ?? account,
                     updated: account,
                     replacementPassword: password
                 )
@@ -1227,11 +1242,14 @@ struct SetupWizard: View {
                     password: password
                 )
                 self.editingSIPAddress = account.sipAddress
+                if editingAccount == nil { savedAccount = account }
                 if !performedPlan.requiresRegistrationTest { dismiss() }
             } else {
                 step = 2
                 testedSIPAddress = account.sipAddress
                 try phone.saveManagedAccountAndTest(account, password: password)
+                savedAccount = account
+                editingSIPAddress = account.sipAddress
             }
         } catch {
             submissionError = error.localizedDescription
