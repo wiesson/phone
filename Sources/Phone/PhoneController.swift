@@ -303,7 +303,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private var controlSocketURL: URL {
-        applicationSupportDirectory.appendingPathComponent("control.sock")
+        PhoneControlSocket.url()
     }
 
     var activeManagedAccount: ManagedSIPAccount? {

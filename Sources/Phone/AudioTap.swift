@@ -43,7 +43,7 @@ enum AudioFrameParser {
 }
 
 final class AudioTapServer: @unchecked Sendable {
-    static let defaultSocketPath = "/tmp/phone-audio-\(getuid()).sock"
+    static let defaultSocketPath = "\(phoneSocketDirectory())/pa-\(getuid()).sock"
 
     let socketPath: String
 

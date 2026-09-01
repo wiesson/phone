@@ -1,14 +1,42 @@
 import Darwin
 import Foundation
 
+/// Where the audio tap and the injection socket of one engine live.
+///
+/// Both ends run inside the app's sandbox, so the sockets go into its
+/// temporary directory rather than a world-visible `/tmp`. A Unix socket
+/// path is capped at 104 bytes; a container's temp directory already takes
+/// about 60 of them, so the file names carry a short digest of the line
+/// rather than the line itself.
 struct BaresipSocketPaths: Equatable, Sendable {
     let tap: String
     let injection: String
 
-    init(identifier: String, uid: uid_t = getuid()) {
-        tap = "/tmp/phone-audio-\(uid)-\(identifier).sock"
-        injection = "/tmp/phone-audio-inject-\(uid)-\(identifier).sock"
+    init(identifier: String, uid: uid_t = getuid(), directory: String = phoneSocketDirectory()) {
+        let base = directory.hasSuffix("/") ? directory : directory + "/"
+        let digest = shortSocketDigest(identifier)
+        tap = "\(base)pa-\(uid)-\(digest).sock"
+        injection = "\(base)pi-\(uid)-\(digest).sock"
     }
+}
+
+/// The directory the app's sockets live in: the sandbox container's
+/// temporary directory when there is one, the user's per-process temp
+/// directory otherwise. Never `/tmp`.
+func phoneSocketDirectory() -> String {
+    let directory = NSTemporaryDirectory()
+    return directory.hasSuffix("/") ? String(directory.dropLast()) : directory
+}
+
+/// A 12-hex-character FNV-1a digest: stable across launches, distinct per
+/// line, short enough for a socket path.
+func shortSocketDigest(_ value: String) -> String {
+    var hash: UInt64 = 14_695_981_039_346_656_037
+    for byte in value.utf8 {
+        hash ^= UInt64(byte)
+        hash &*= 1_099_511_628_211
+    }
+    return String(format: "%012llx", hash & 0xffffffffffff)
 }
 
 func sanitizedBaresipInstanceAOR(_ aor: String) -> String {

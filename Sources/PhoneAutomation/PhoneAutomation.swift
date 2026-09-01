@@ -1171,3 +1171,50 @@ public enum MCPProtocol {
         return try? encoder.encode(value)
     }
 }
+
+
+/// Where the app listens for `phone-mcp` and other local clients.
+///
+/// Inside the App Sandbox the two processes have separate containers, so the
+/// socket lives in the app group both are entitled to — named in the app's
+/// Info.plist under `PhoneAppGroup`, because the group carries the team
+/// identifier and belongs to the build, not the code. Without a group (a
+/// development build, or a helper that cannot find its app) the socket stays
+/// where it always was, under Application Support.
+public enum PhoneControlSocket {
+    public static let fileName = "control.sock"
+    public static let infoPlistKey = "PhoneAppGroup"
+
+    public static func url() -> URL {
+        if let group = appGroupIdentifier(),
+           let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) {
+            return container.appendingPathComponent(fileName)
+        }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Phone", isDirectory: true)
+            .appendingPathComponent(fileName)
+    }
+
+    /// The group named by the app bundle this executable belongs to. The
+    /// helper sits in `Contents/Helpers`, so its bundle is two directories up.
+    public static func appGroupIdentifier() -> String? {
+        if let override = ProcessInfo.processInfo.environment["PHONE_APP_GROUP"], !override.isEmpty {
+            return override
+        }
+        for bundle in [Bundle.main, enclosingAppBundle()].compactMap({ $0 }) {
+            if let group = bundle.object(forInfoDictionaryKey: infoPlistKey) as? String, !group.isEmpty {
+                return group
+            }
+        }
+        return nil
+    }
+
+    private static func enclosingAppBundle() -> Bundle? {
+        var url = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        for _ in 0..<4 {
+            url.deleteLastPathComponent()
+            if url.pathExtension == "app" { return Bundle(url: url) }
+        }
+        return nil
+    }
+}

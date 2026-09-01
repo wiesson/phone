@@ -1,4 +1,5 @@
 import Foundation
+import PhoneAutomation
 import Testing
 @testable import Phone
 
@@ -41,6 +42,9 @@ import Testing
 @Test func injectsUniqueAudioSocketPathsIntoEachChildEnvironment() {
     let first = BaresipSocketPaths(identifier: sanitizedBaresipInstanceAOR("line-a@example.test"), uid: 501)
     let second = BaresipSocketPaths(identifier: sanitizedBaresipInstanceAOR("line-b@example.test"), uid: 501)
+    #expect(first.tap != second.tap)
+    #expect(first.injection != second.injection)
+    #expect(!first.tap.hasPrefix("/tmp/"))
     let firstEnvironment = baresipInstanceEnvironment(base: ["BASE": "value"], socketPaths: first)
     let secondEnvironment = baresipInstanceEnvironment(base: [:], socketPaths: second)
 
@@ -189,4 +193,27 @@ import Testing
     #expect(statuses[sanitizedBaresipInstanceAOR(first.sipAddress)] == .failed("baresip was not found"))
     #expect(statuses[sanitizedBaresipInstanceAOR(second.sipAddress)] == .failed("baresip was not found"))
     #expect(aggregateRegistrationState(Array(statuses.values), total: 2).status == .failed("baresip was not found"))
+}
+
+
+/// The sandbox container's temporary directory is long; a Unix socket path
+/// is not allowed to be. The longest line identifier there is has to fit.
+@Test func socketPathsFitASandboxContainerForTheLongestLineIdentifier() {
+    let container = "/Users/someoneswithalongname/Library/Containers/com.nordwerk.phone/Data/tmp"
+    let longest = sanitizedBaresipInstanceAOR(String(repeating: "x", count: 200) + "@" + String(repeating: "y", count: 200))
+    let paths = BaresipSocketPaths(identifier: longest, uid: 501, directory: container)
+    let limit = MemoryLayout.size(ofValue: sockaddr_un().sun_path) - 1
+    #expect(paths.tap.utf8.count <= limit)
+    #expect(paths.injection.utf8.count <= limit)
+    #expect(paths.tap.hasPrefix(container + "/"))
+    #expect(shortSocketDigest("a@b") != shortSocketDigest("a@c"))
+    #expect(shortSocketDigest("a@b") == shortSocketDigest("a@b"))
+}
+
+/// Without an app group the control socket stays where the README says it
+/// is, so a development build and its helper keep finding each other.
+@Test func controlSocketFallsBackToApplicationSupportWithoutAnAppGroup() {
+    let url = PhoneControlSocket.url()
+    #expect(url.lastPathComponent == "control.sock")
+    #expect(url.path.contains("Application Support/Phone") || url.path.contains("Group Containers"))
 }

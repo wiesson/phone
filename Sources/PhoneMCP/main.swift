@@ -4,8 +4,7 @@ import PhoneAutomation
 
 enum PhoneControlClient {
     static var socketPath: String {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Phone/control.sock").path
+        PhoneControlSocket.url().path
     }
 
     static func call(tool: String, arguments: [String: JSONValue]) -> ControlResponse {
