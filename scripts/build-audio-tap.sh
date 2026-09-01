@@ -44,7 +44,9 @@ G722_ARCHIVE="$ROOT/.build/source-cache/baresip-v4.11.0.tar.gz"
 G722_CHECKSUM=e170ad5857994dfed0c84c4c04eb904fa410f3ec2d5a6c789b50b3fda47ba98c
 rm -f "$MODULES/g722.so"
 
-if [ ! -f "$G722_SOURCE" ]; then
+# g722 links spandsp, which is LGPL: the App Store build ships without it.
+# Opus and G.711 cover Telekom and sipgate.
+if [ "${PHONE_STORE_BUILD:-0}" != 1 ] && [ ! -f "$G722_SOURCE" ]; then
   brew_archive=$(brew --cache --build-from-source baresip 2>/dev/null || true)
   if [ -f "$brew_archive" ]; then
     G722_ARCHIVE=$brew_archive
@@ -69,7 +71,9 @@ if [ ! -f "$G722_SOURCE" ]; then
   fi
 fi
 
-if [ ! -f "$G722_SOURCE" ]; then
+if [ "${PHONE_STORE_BUILD:-0}" = 1 ]; then
+  echo "Skipping g722.so: store build"
+elif [ ! -f "$G722_SOURCE" ]; then
   echo "Skipping g722.so: baresip v4.11.0 module source is unavailable" >&2
 elif [ -z "$SPANDSP_PREFIX" ] || [ ! -f "$SPANDSP_PREFIX/include/spandsp.h" ] || \
      [ ! -f "$SPANDSP_PREFIX/lib/libspandsp.a" ]; then

@@ -16,7 +16,7 @@ struct OnboardingView: View {
     /// rebuild, because the address is a publishing decision rather than a
     /// code one, and a demo may want to point at a draft:
     ///
-    ///     defaults write local.phone.mini setupSkillURL https://example.com/SKILL.md
+    ///     defaults write com.nordwerk.phone setupSkillURL https://example.com/SKILL.md
     static let defaultSkillURL = "https://nordwerk.studio/phone/SKILL.md"
     @AppStorage("setupSkillURL") private var skillURL = OnboardingView.defaultSkillURL
 

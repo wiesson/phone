@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- phone-mcp is started by an MCP client, not by the app, so it cannot
+       inherit. It gets its own sandbox and reaches the app's control socket
+       through the shared app group, appended by scripts/build-app.sh. -->
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+</dict>
+</plist>

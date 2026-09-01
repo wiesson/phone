@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Embedded into the phone-mcp executable. A sandboxed command-line tool
+       has no bundle, so the sandbox takes its identity from here; without it
+       the process is killed in the sandbox initialiser before main runs. -->
+  <key>CFBundleIdentifier</key>
+  <string>com.nordwerk.phone.mcp</string>
+  <key>CFBundleName</key>
+  <string>phone-mcp</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+</dict>
+</plist>

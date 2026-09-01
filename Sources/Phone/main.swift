@@ -38,6 +38,7 @@ struct PhoneApp: App {
     private let phone: PhoneController
 
     init() {
+        migrateLegacyDefaultsIfNeeded()
         let controller = PhoneController()
         phone = controller
         appDelegate.controller = controller
@@ -118,4 +119,24 @@ private struct MenuBarPhoneLabel: View {
         NSApp.activate(ignoringOtherApps: true)
         Task { @MainActor in model.setupRequest = 0 }
     }
+}
+
+
+/// The app was `local.phone.mini` until 1.0. UserDefaults are keyed by bundle
+/// identifier, so an installation from before the rename would otherwise
+/// come up with every setting reset. Copied once; the old domain is left as
+/// it is.
+@MainActor
+func migrateLegacyDefaultsIfNeeded(
+    defaults: UserDefaults = .standard,
+    legacyDomain: String = "local.phone.mini"
+) {
+    let marker = "didMigrateDefaultsFromLocalPhoneMini"
+    guard !defaults.bool(forKey: marker),
+          Bundle.main.bundleIdentifier != legacyDomain,
+          let legacy = defaults.persistentDomain(forName: legacyDomain), !legacy.isEmpty else { return }
+    for (key, value) in legacy where defaults.object(forKey: key) == nil {
+        defaults.set(value, forKey: key)
+    }
+    defaults.set(true, forKey: marker)
 }

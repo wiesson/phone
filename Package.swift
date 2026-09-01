@@ -22,7 +22,17 @@ let package = Package(
         .executableTarget(
             name: "phone-mcp",
             dependencies: ["PhoneAutomation"],
-            path: "Sources/PhoneMCP"
+            path: "Sources/PhoneMCP",
+            exclude: ["Info.plist"],
+            linkerSettings: [
+                // The sandbox needs an identity for a tool without a bundle.
+                .unsafeFlags([
+                    "-Xlinker", "-sectcreate",
+                    "-Xlinker", "__TEXT",
+                    "-Xlinker", "__info_plist",
+                    "-Xlinker", "Sources/PhoneMCP/Info.plist"
+                ])
+            ]
         ),
         .testTarget(
             name: "PhoneTests",

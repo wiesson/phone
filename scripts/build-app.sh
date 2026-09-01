@@ -1,20 +1,81 @@
 #!/bin/sh
+# Builds dist/Phone.app.
+#
+#   sh scripts/build-app.sh                 development build: debug, ad hoc or
+#                                           Apple Development signed, Homebrew
+#                                           baresip, no sandbox
+#   sh scripts/build-app.sh --store         App Store build: release, sandboxed,
+#                                           hardened runtime, our own baresip
+#                                           from scripts/build-baresip.sh, no
+#                                           G.722
+#   sh scripts/build-app.sh --store --package   … and wrap it in dist/Phone.pkg
+#   sh scripts/build-app.sh --store --upload    … and hand the package to App
+#                                           Store Connect (TestFlight)
+#
+# Environment for the store build (see docs/RELEASE.md):
+#   PHONE_TEAM_ID              Apple team identifier; names the app group
+#   PHONE_SIGN_IDENTITY        "Apple Distribution: …" (default: first found)
+#   PHONE_INSTALLER_IDENTITY   "3rd Party Mac Developer Installer: …"
+#   PHONE_PROVISIONING_PROFILE path to the Mac App Store .provisionprofile
+#   PHONE_BUILD_NUMBER         CFBundleVersion (default: commit count)
+#   ASC_API_KEY_ID / ASC_API_ISSUER_ID   App Store Connect API key for --upload
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 
-SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development/ {print $2; exit}')
-SIGN_IDENTITY=${SIGN_IDENTITY:--}
+STORE_BUILD=0
+MAKE_PACKAGE=0
+UPLOAD=0
+for argument in "$@"; do
+  case "$argument" in
+    --store) STORE_BUILD=1 ;;
+    --package) MAKE_PACKAGE=1 ;;
+    --upload) MAKE_PACKAGE=1; UPLOAD=1 ;;
+    *) echo "Unknown option: $argument" >&2; exit 2 ;;
+  esac
+done
+[ "${PHONE_STORE_BUILD:-0}" = 1 ] && STORE_BUILD=1
+export PHONE_STORE_BUILD=$STORE_BUILD
+
+BUNDLE_ID=${PHONE_BUNDLE_ID:-com.nordwerk.phone}
+VERSION=${PHONE_VERSION:-1.0.0}
+BUILD_NUMBER=${PHONE_BUILD_NUMBER:-$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)}
+MIN_SYSTEM=26.0
+TEAM_ID=${PHONE_TEAM_ID:-}
+APP_GROUP=${PHONE_APP_GROUP:-${TEAM_ID:+$TEAM_ID.$BUNDLE_ID}}
+
+if [ "$STORE_BUILD" = 1 ]; then
+  CONFIGURATION=release
+  SIGN_IDENTITY=${PHONE_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Distribution|3rd Party Mac Developer Application/ {print $2; exit}')}
+  if [ -z "$SIGN_IDENTITY" ]; then
+    echo "No distribution identity found. Create an Apple Distribution certificate in Xcode → Settings → Accounts, or pass PHONE_SIGN_IDENTITY." >&2
+    exit 1
+  fi
+  if [ -z "$TEAM_ID" ]; then
+    echo "PHONE_TEAM_ID is required for a store build; it names the app group phone-mcp shares with the app." >&2
+    exit 1
+  fi
+  DEPS="$ROOT/.build/deps"
+  [ -x "$DEPS/bin/baresip" ] || sh "$ROOT/scripts/build-baresip.sh"
+  export BARESIP_PREFIX="$DEPS"
+  export LIBRE_PREFIX="$DEPS"
+else
+  CONFIGURATION=debug
+  SIGN_IDENTITY=${PHONE_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development/ {print $2; exit}')}
+  SIGN_IDENTITY=${SIGN_IDENTITY:--}
+fi
 
 cd "$ROOT"
 sh "$ROOT/scripts/build-audio-tap.sh"
 mkdir -p "$ROOT/.build/ModuleCache"
 export CLANG_MODULE_CACHE_PATH="$ROOT/.build/ModuleCache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/.build/ModuleCache"
-swift build --disable-sandbox -c debug
+swift build --disable-sandbox -c "$CONFIGURATION"
 
-BIN_DIR=$(swift build --disable-sandbox -c debug --show-bin-path)
-APP="$ROOT/dist/Phone.app"
+BIN_DIR=$(swift build --disable-sandbox -c "$CONFIGURATION" --show-bin-path)
+DIST=${PHONE_DIST:-$ROOT/dist}
+mkdir -p "$DIST"
+APP="$DIST/Phone.app"
 BARESIP_PREFIX=${BARESIP_PREFIX:-$(brew --prefix baresip 2>/dev/null || true)}
 LIBRE_PREFIX=${LIBRE_PREFIX:-$(brew --prefix libre 2>/dev/null || true)}
 SPANDSP_PREFIX=${SPANDSP_PREFIX:-$(brew --prefix spandsp 2>/dev/null || true)}
@@ -39,6 +100,11 @@ mkdir -p "$APP/Contents/Resources/baresip/modules"
 cp "$ROOT/runtime/baresip/config" "$APP/Contents/Resources/baresip/config"
 cp "$ROOT/runtime/baresip/accounts.example" "$APP/Contents/Resources/baresip/accounts.example"
 cp "$ROOT/Resources/baresip/contacts" "$APP/Contents/Resources/baresip/contacts"
+
+if [ "$STORE_BUILD" = 1 ] && [ -f "$ROOT/runtime/modules/g722.so" ]; then
+  echo "g722.so must not ship in a store build" >&2
+  exit 1
+fi
 
 if [ -f "$ROOT/runtime/modules/g722.so" ]; then
   config="$APP/Contents/Resources/baresip/config"
@@ -222,32 +288,77 @@ for library in "$FRAMEWORKS"/*.dylib; do
   verify_macho "$library"
 done
 
+# Entitlements. The app group carries the team identifier, so it is written
+# into the entitlement files and the Info.plist here rather than kept in
+# the repository.
+ENTITLEMENTS_DIR=$(mktemp -d)
+trap 'rm -f "$DEPENDENCIES"; rm -rf "$ENTITLEMENTS_DIR"' EXIT
+add_app_group() {
+  # plutil reads dots in a key as a key path; they have to be escaped.
+  plutil -insert 'com\.apple\.security\.application-groups' -json "[\"$APP_GROUP\"]" "$1"
+}
+if [ "$STORE_BUILD" = 1 ]; then
+  cp "$ROOT/Resources/Entitlements/Phone.entitlements" "$ENTITLEMENTS_DIR/app.entitlements"
+  cp "$ROOT/Resources/Entitlements/PhoneEngine.entitlements" "$ENTITLEMENTS_DIR/engine.entitlements"
+  cp "$ROOT/Resources/Entitlements/PhoneMCP.entitlements" "$ENTITLEMENTS_DIR/mcp.entitlements"
+  if [ -n "$APP_GROUP" ]; then
+    add_app_group "$ENTITLEMENTS_DIR/app.entitlements"
+    add_app_group "$ENTITLEMENTS_DIR/mcp.entitlements"
+  fi
+  if [ "${PHONE_MIGRATE_CONTAINER:-1}" = 1 ]; then
+    cp "$ROOT/Resources/container-migration.plist" "$APP/Contents/Resources/container-migration.plist"
+  fi
+  RUNTIME_FLAGS="--options runtime --timestamp"
+  APP_SIGN_FLAGS="--entitlements $ENTITLEMENTS_DIR/app.entitlements"
+  ENGINE_SIGN_FLAGS="--entitlements $ENTITLEMENTS_DIR/engine.entitlements"
+  MCP_SIGN_FLAGS="--entitlements $ENTITLEMENTS_DIR/mcp.entitlements"
+else
+  RUNTIME_FLAGS=""
+  APP_SIGN_FLAGS=""
+  ENGINE_SIGN_FLAGS=""
+  MCP_SIGN_FLAGS=""
+fi
+
+# Signed inside out: every nested piece first, the app last and without
+# --deep, which is what the App Store expects.
 for module in "$MODULES"/*.so; do
-  codesign --force --sign "$SIGN_IDENTITY" "$module"
+  codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAGS "$module"
 done
 for library in "$FRAMEWORKS"/*.dylib; do
-  codesign --force --sign "$SIGN_IDENTITY" "$library"
+  codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAGS "$library"
 done
-codesign --force --sign "$SIGN_IDENTITY" "$HELPER"
-codesign --force --sign "$SIGN_IDENTITY" "$MCP_HELPER"
+codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAGS $ENGINE_SIGN_FLAGS --identifier "$BUNDLE_ID.engine" "$HELPER"
+codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAGS $MCP_SIGN_FLAGS --identifier "$BUNDLE_ID.mcp" "$MCP_HELPER"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+if [ -n "${PHONE_PROVISIONING_PROFILE:-}" ]; then
+  cp "$PHONE_PROVISIONING_PROFILE" "$APP/Contents/embedded.provisionprofile"
+elif [ "$STORE_BUILD" = 1 ]; then
+  echo "Note: no PHONE_PROVISIONING_PROFILE — fine for a local check, required for TestFlight and the App Store." >&2
+fi
+
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleExecutable</key><string>Phone</string>
-  <key>CFBundleIdentifier</key><string>local.phone.mini</string>
+  <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
   <key>CFBundleName</key><string>Phone</string>
   <key>CFBundleDisplayName</key><string>Phone</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
-  <key>LSMinimumSystemVersion</key><string>26.0</string>
+  <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
+  <key>LSMinimumSystemVersion</key><string>$MIN_SYSTEM</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.business</string>
   <key>LSUIElement</key><true/>
+  <key>NSHumanReadableCopyright</key><string>© 2026 nordwerk. MIT licensed.</string>
+  <key>ITSAppUsesNonExemptEncryption</key><false/>
   <key>NSContactsUsageDescription</key><string>Phone shows contact names for incoming and outgoing calls.</string>
   <key>NSMicrophoneUsageDescription</key><string>Phone needs the microphone for SIP calls.</string>
-  <key>NSSpeechRecognitionUsageDescription</key><string>Phone transcribes calls locally on this Mac.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Phone transcribes calls locally on this Mac.</string>${APP_GROUP:+
+  <key>PhoneAppGroup</key><string>$APP_GROUP</string>}
   <key>CFBundleURLTypes</key>
   <array>
     <dict>
@@ -263,6 +374,30 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 
-codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
+if [ "$STORE_BUILD" = 1 ]; then
+  codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAGS $APP_SIGN_FLAGS "$APP"
+else
+  codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
+fi
 codesign --verify --deep --strict "$APP"
-echo "Built: $APP"
+echo "Built: $APP ($BUNDLE_ID $VERSION ($BUILD_NUMBER), $CONFIGURATION, signed as $SIGN_IDENTITY)"
+
+if [ "$MAKE_PACKAGE" = 1 ]; then
+  INSTALLER_IDENTITY=${PHONE_INSTALLER_IDENTITY:-$(security find-identity -v 2>/dev/null | awk -F'"' '/3rd Party Mac Developer Installer|Mac Installer Distribution/ {print $2; exit}')}
+  if [ -z "$INSTALLER_IDENTITY" ]; then
+    echo "No installer identity found. Create a Mac Installer Distribution certificate, or pass PHONE_INSTALLER_IDENTITY." >&2
+    exit 1
+  fi
+  PKG="$DIST/Phone.pkg"
+  rm -f "$PKG"
+  productbuild --component "$APP" /Applications --sign "$INSTALLER_IDENTITY" "$PKG"
+  echo "Packaged: $PKG"
+fi
+
+if [ "$UPLOAD" = 1 ]; then
+  : "${ASC_API_KEY_ID:?Set ASC_API_KEY_ID (App Store Connect API key id; the .p8 lives in ~/.private_keys)}"
+  : "${ASC_API_ISSUER_ID:?Set ASC_API_ISSUER_ID}"
+  xcrun altool --validate-app -f "$DIST/Phone.pkg" -t macos --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID"
+  xcrun altool --upload-app -f "$DIST/Phone.pkg" -t macos --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID"
+  echo "Uploaded build $BUILD_NUMBER of $VERSION; it appears under TestFlight in App Store Connect after processing."
+fi

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 
 public enum JSONValue: Codable, Equatable, Sendable {
     case object([String: JSONValue])
@@ -1195,26 +1196,28 @@ public enum PhoneControlSocket {
             .appendingPathComponent(fileName)
     }
 
-    /// The group named by the app bundle this executable belongs to. The
-    /// helper sits in `Contents/Helpers`, so its bundle is two directories up.
+    /// The group this process is entitled to. Read from the process's own
+    /// code signature rather than from a plist on disk: the sandboxed helper
+    /// may not read the app bundle it sits in, and the entitlement is the one
+    /// thing that is guaranteed to name the group it can actually open.
     public static func appGroupIdentifier() -> String? {
         if let override = ProcessInfo.processInfo.environment["PHONE_APP_GROUP"], !override.isEmpty {
             return override
         }
-        for bundle in [Bundle.main, enclosingAppBundle()].compactMap({ $0 }) {
-            if let group = bundle.object(forInfoDictionaryKey: infoPlistKey) as? String, !group.isEmpty {
-                return group
-            }
+        if let group = entitledAppGroups().first { return group }
+        if let group = Bundle.main.object(forInfoDictionaryKey: infoPlistKey) as? String, !group.isEmpty {
+            return group
         }
         return nil
     }
 
-    private static func enclosingAppBundle() -> Bundle? {
-        var url = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-        for _ in 0..<4 {
-            url.deleteLastPathComponent()
-            if url.pathExtension == "app" { return Bundle(url: url) }
-        }
-        return nil
+    private static func entitledAppGroups() -> [String] {
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(
+                task,
+                "com.apple.security.application-groups" as CFString,
+                nil
+              ) else { return [] }
+        return (value as? [String]) ?? []
     }
 }
