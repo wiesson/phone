@@ -267,6 +267,14 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private var instancesWithSIPTrace: Set<String> = []
     private var isStoppingInstances = false
     private var isShuttingDown = false
+    /// baresip answers a REGISTER with a success or a failure line — but a
+    /// registrar that never answers (wrong port, firewall, DNS black hole)
+    /// produces neither, and the line would sit on "Registering …" for as
+    /// long as the app runs. The control socket already caps its wait; the
+    /// interface needs the same cap, written back to the line so the wizard
+    /// and the line list show a failure that can be retried.
+    private let registrationTimeout: Duration = .seconds(30)
+    private var registrationWatchdogs: [String: Task<Void, Never>] = [:]
     private var hasActiveEventCall = false
     private var automationStatusTask: Task<Void, Never>?
     private let eventBus = PhoneEventBus()
@@ -484,8 +492,17 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         }
     }
 
+    /// "Start phone" starts whatever is not running; it must never take live
+    /// lines down because one engine died.
     func toggleBaresip() {
-        instances.values.contains(where: \.isRunning) ? stopBaresip() : startBaresip()
+        hasStoppedLine ? startBaresip() : stopBaresip()
+    }
+
+    private var hasStoppedLine: Bool {
+        if managedAccounts.isEmpty { return instances["unmanaged"]?.isRunning != true }
+        return enabledManagedAccounts.contains {
+            instances[sanitizedBaresipInstanceAOR($0.sipAddress)]?.isRunning != true
+        }
     }
 
     func requestAccountSetup() {
@@ -517,12 +534,22 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             throw error
         }
         unmanagedAccountAOR = nil
-        restartBaresip()
+        restartManagedInstance(for: account)
     }
 
-    func restartManagedAccountRegistrationTest() throws {
+    /// Re-registers one line. A full restart would re-register every line and
+    /// trips provider-side rate limiting, so the retry from the wizard
+    /// touches only the line being tested.
+    func restartManagedAccountRegistrationTest(for account: ManagedSIPAccount) throws {
         guard currentCallInstanceID == nil else { throw SIPAccountError.activeCall }
-        restartBaresip()
+        guard managedAccounts.contains(where: { $0.sipAddress == account.sipAddress }) else {
+            throw SIPAccountError.missingManagedAccount
+        }
+        let instanceID = sanitizedBaresipInstanceAOR(account.sipAddress)
+        guard !linesChangingEnablement.contains(instanceID) else { throw SIPAccountError.lineBusy }
+        linesChangingEnablement.insert(instanceID)
+        defer { linesChangingEnablement.remove(instanceID) }
+        restartManagedInstance(for: account)
     }
 
     @discardableResult
@@ -573,7 +600,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             try SIPPasswordStore.remove(account: oldAddress)
         }
         unmanagedAccountAOR = nil
-        restartBaresip(
+        restartManagedInstance(
+            for: account,
             removingInstanceFor: originalSIPAddress == account.sipAddress ? nil : originalSIPAddress
         )
         return plan
@@ -731,15 +759,33 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             // screen a fresh install shows.
             requestLibraryWindow()
         } else {
-            stopBaresipAndWait()
+            // Only the removed line's engine goes; the other lines keep their
+            // registrations rather than all re-registering at once.
+            stopManagedInstance(id: sanitizedBaresipInstanceAOR(account.sipAddress))
             try? FileManager.default.removeItem(at: removedDirectory)
-            startBaresip()
+            refreshAggregateRegistrationStatus()
+            refreshIdleState()
         }
     }
 
+    /// The way back from an error state. A failed or dead outgoing line is
+    /// re-registered on its own; a call error on a healthy line only needs the
+    /// idle state recomputed.
     func recoverFromError() {
-        state = activeInstance?.isRunning == true ? (hasRegisteredAccount ? .ready : .starting) : .stopped
-        if activeInstance?.isRunning != true { startBaresip() }
+        guard currentCallInstanceID == nil else { return }
+        if let account = activeManagedAccount {
+            let instanceID = sanitizedBaresipInstanceAOR(account.sipAddress)
+            var needsRestart = instances[instanceID]?.isRunning != true
+            if case .failed = registrationStatuses[instanceID] ?? .idle { needsRestart = true }
+            if needsRestart {
+                restartManagedInstance(for: account)
+                return
+            }
+        } else if activeInstance?.isRunning != true {
+            startBaresip()
+            return
+        }
+        refreshIdleState()
     }
 
     func dial() {
@@ -916,7 +962,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                         if case .failed(let message) = state {
                             self?.geminiTranscriptionActive = false
                             self?.clearAssistantCall()
-                            self?.appendDiagnostic("phone-app: Gemini Live failed: \(message)\n")
+                            self?.appendDiagnostic("phone-app: Gemini Live failed: \(redactSensitiveValues(in: message))\n")
                         }
                     }
                 },
@@ -1095,7 +1141,19 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     private func startBaresip() {
-        guard !instances.values.contains(where: \.isRunning) else { return }
+        // Entries whose process is gone are dropped so the line can start
+        // again; entries that are still running are left alone.
+        for (id, instance) in instances where !instance.isRunning {
+            detach(instance)
+            instances[id] = nil
+            registrationStatuses[id] = nil
+            lineBuffers[id] = nil
+            deferredIncomingCalls[id] = nil
+        }
+        if !instances.isEmpty {
+            startMissingManagedInstances()
+            return
+        }
         isShuttingDown = false
         instancesWithSIPTrace = []
         cleanupOrphanedBaresip()
@@ -1121,11 +1179,83 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             appendDiagnostic("phone-app[\(instance.id)]: starting baresip\n")
             do {
                 try instance.start(executable: executable, currentDirectory: applicationSupportDirectory)
+                armRegistrationWatchdog(for: instance)
             } catch {
                 updateRegistrationStatus(.failed("baresip could not be started"), for: instance)
             }
         }
         refreshIdleState()
+    }
+
+    /// Starts every enabled managed line that has no running engine, without
+    /// touching the ones that do. Used when one engine died or a line was
+    /// added while the others were up.
+    private func startMissingManagedInstances() {
+        isShuttingDown = false
+        guard !managedAccounts.isEmpty else { return }
+        for (index, account) in managedAccounts.enumerated() where account.isEnabled {
+            let instanceID = sanitizedBaresipInstanceAOR(account.sipAddress)
+            guard instances[instanceID] == nil else { continue }
+            startManagedInstance(for: account, index: index)
+        }
+        refreshAggregateRegistrationStatus()
+        refreshIdleState()
+    }
+
+    /// Brings one line's engine to the state its configuration describes and
+    /// leaves the other lines alone. Falls back to the full start when no
+    /// engine is running yet, or when a hand-edited account file is still in
+    /// charge and has to make way for managed lines.
+    private func restartManagedInstance(
+        for account: ManagedSIPAccount,
+        removingInstanceFor previousSIPAddress: String? = nil
+    ) {
+        if let previousSIPAddress, previousSIPAddress != account.sipAddress {
+            let previousID = sanitizedBaresipInstanceAOR(previousSIPAddress)
+            stopManagedInstance(id: previousID)
+            try? FileManager.default.removeItem(
+                at: instancesDirectory.appendingPathComponent(previousID, isDirectory: true)
+            )
+        }
+        stopManagedInstance(id: sanitizedBaresipInstanceAOR(account.sipAddress))
+        if instances["unmanaged"] != nil {
+            restartBaresip()
+            return
+        }
+        guard instances.values.contains(where: \.isRunning),
+              let index = managedAccounts.firstIndex(where: { $0.sipAddress == account.sipAddress }) else {
+            startBaresip()
+            return
+        }
+        if managedAccounts[index].isEnabled {
+            startManagedInstance(for: managedAccounts[index], index: index)
+        }
+        refreshAggregateRegistrationStatus()
+        refreshIdleState()
+    }
+
+    private func armRegistrationWatchdog(for instance: BaresipInstance) {
+        registrationWatchdogs[instance.id]?.cancel()
+        let timeout = registrationTimeout
+        registrationWatchdogs[instance.id] = Task { @MainActor [weak self, weak instance] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled, let self, let instance,
+                  self.instances[instance.id] === instance else { return }
+            self.registrationWatchdogs[instance.id] = nil
+            // baresip keeps retrying on its own; a later success line still
+            // flips the entry back to registered.
+            guard instance.registrationStatus == .registering else { return }
+            self.appendDiagnostic("phone-app[\(instance.id)]: no registration answer within \(timeout)\n")
+            self.updateRegistrationStatus(.failed(registrationTimeoutMessage(timeout)), for: instance)
+        }
+    }
+
+    private func detach(_ instance: BaresipInstance) {
+        instance.onOutput = nil
+        instance.onTermination = nil
+        instance.onAudioFrame = nil
+        registrationWatchdogs[instance.id]?.cancel()
+        registrationWatchdogs[instance.id] = nil
     }
 
     /// A start that fails before any instance exists still has to reach the
@@ -1247,6 +1377,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             configureCallbacks(for: instance)
             appendDiagnostic("phone-app[\(instance.id)]: starting baresip\n")
             try instance.start(executable: executable, currentDirectory: applicationSupportDirectory)
+            armRegistrationWatchdog(for: instance)
         } catch {
             registrationStatuses[instanceID] = .failed(error.localizedDescription)
         }
@@ -1260,9 +1391,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         // exists, and the published state already reflects the line being gone.
         // The global `isStoppingInstances` flag is deliberately not used — it
         // would also swallow the termination of a different line on a call.
-        instance.onOutput = nil
-        instance.onTermination = nil
-        instance.onAudioFrame = nil
+        detach(instance)
         instances[id] = nil
         registrationStatuses[id] = nil
         lineBuffers[id] = nil
@@ -1324,7 +1453,9 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
 
     private func stopBaresipAndWait() {
         isStoppingInstances = true
-        for instance in instances.values { instance.stopAndWait() }
+        for task in registrationWatchdogs.values { task.cancel() }
+        registrationWatchdogs = [:]
+        BaresipInstance.stopAndWait(Array(instances.values))
         instances = [:]
         lineBuffers = [:]
         registrationStatuses = [:]

@@ -194,6 +194,7 @@ final class BaresipInstance {
 
     private var process: Process?
     private var input: Pipe?
+    private var output: Pipe?
     private let audioTap: AudioTapServer
 
     init(id: String, accountAOR: String?, configDirectory: URL, pidFileURL: URL) {
@@ -233,7 +234,13 @@ final class BaresipInstance {
         )
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            guard !data.isEmpty else {
+                // End of file. Foundation keeps calling the handler for a pipe
+                // at EOF until it is removed, which pins a core at 100 %.
+                handle.readabilityHandler = nil
+                return
+            }
+            guard let text = String(data: data, encoding: .utf8) else { return }
             Task { @MainActor [weak self] in self?.consume(text) }
         }
         task.terminationHandler = { [weak self, weak task] _ in
@@ -243,13 +250,16 @@ final class BaresipInstance {
 
         process = task
         input = stdin
+        output = stdout
         do {
             try task.run()
             try String(task.processIdentifier).write(to: pidFileURL, atomically: true, encoding: .utf8)
             registrationStatus = .registering
         } catch {
+            stdout.fileHandleForReading.readabilityHandler = nil
             process = nil
             input = nil
+            output = nil
             audioTap.stop()
             throw error
         }
@@ -276,23 +286,40 @@ final class BaresipInstance {
     }
 
     func stopAndWait() {
-        guard let task = process else {
-            audioTap.stop()
-            try? FileManager.default.removeItem(at: pidFileURL)
-            return
+        Self.stopAndWait([self])
+    }
+
+    /// Stops several engines together. Every one is asked to quit first and
+    /// all are then waited for against one deadline, so quitting with three
+    /// lines costs one line's worth of waiting rather than three — the wait
+    /// blocks the main thread, and a quit that takes ten seconds looks hung.
+    static func stopAndWait(_ instances: [BaresipInstance]) {
+        var running: [(BaresipInstance, Process)] = []
+        for instance in instances {
+            guard let task = instance.process else {
+                instance.audioTap.stop()
+                try? FileManager.default.removeItem(at: instance.pidFileURL)
+                continue
+            }
+            instance.send("/quit")
+            try? instance.input?.fileHandleForWriting.close()
+            running.append((instance, task))
         }
-        send("/quit")
-        try? input?.fileHandleForWriting.close()
-        wait(for: task, until: Date().addingTimeInterval(1.5))
-        if task.isRunning {
-            task.terminate()
-            wait(for: task, until: Date().addingTimeInterval(0.75))
+        guard !running.isEmpty else { return }
+        wait(for: running.map(\.1), until: Date().addingTimeInterval(1.5))
+        let stubborn = running.filter { $0.1.isRunning }
+        if !stubborn.isEmpty {
+            for (_, task) in stubborn { task.terminate() }
+            wait(for: stubborn.map(\.1), until: Date().addingTimeInterval(0.75))
         }
-        if task.isRunning {
-            kill(task.processIdentifier, SIGKILL)
-            wait(for: task, until: Date().addingTimeInterval(0.75))
+        let survivors = running.filter { $0.1.isRunning }
+        if !survivors.isEmpty {
+            for (_, task) in survivors { kill(task.processIdentifier, SIGKILL) }
+            wait(for: survivors.map(\.1), until: Date().addingTimeInterval(0.75))
         }
-        if !task.isRunning { didStop(task) }
+        for (instance, task) in running where !task.isRunning {
+            instance.didStop(task)
+        }
     }
 
     func cleanupOrphanedProcess() {
@@ -329,8 +356,8 @@ final class BaresipInstance {
         audioTap.drainFrameCounts()
     }
 
-    private func wait(for task: Process, until deadline: Date) {
-        while task.isRunning, Date() < deadline {
+    private static func wait(for tasks: [Process], until deadline: Date) {
+        while tasks.contains(where: \.isRunning), Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
     }
@@ -341,8 +368,10 @@ final class BaresipInstance {
 
     private func didStop(_ stoppedProcess: Process) {
         guard process === stoppedProcess else { return }
+        output?.fileHandleForReading.readabilityHandler = nil
         process = nil
         input = nil
+        output = nil
         audioTap.stop()
         // Successive instances for one line share this path. stopAndWait() gives
         // up after its deadlines, so a process can die late — after a

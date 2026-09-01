@@ -150,9 +150,17 @@ struct PhonePanel: View {
                     .buttonStyle(.borderedProminent)
                     .frame(maxWidth: .infinity)
             } else if phone.state == .stopped {
-                Button("Start phone", action: phone.toggleBaresip)
-                    .buttonStyle(.borderedProminent)
-                    .frame(maxWidth: .infinity)
+                if phone.managedAccounts.isEmpty && phone.unmanagedAccountAOR == nil {
+                    // Starting a phone with no line ends in an error message;
+                    // the setup assistant is the only useful next step.
+                    Button("Set up a line", action: phone.requestAccountSetup)
+                        .buttonStyle(.borderedProminent)
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Button("Start phone", action: phone.toggleBaresip)
+                        .buttonStyle(.borderedProminent)
+                        .frame(maxWidth: .infinity)
+                }
             } else {
                 ProgressView("Registering with the provider …")
                     .frame(maxWidth: .infinity)

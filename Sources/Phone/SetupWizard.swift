@@ -783,6 +783,10 @@ struct SetupWizard: View {
     @State private var submissionError: String?
     @State private var showsAdvanced = false
     @State private var editingSIPAddress: String?
+    /// The line whose registration the test step reports. The aggregate over
+    /// all lines would show another line's failure here, and would never
+    /// reach "registered" while any other line is down.
+    @State private var testedSIPAddress: String?
     @FocusState private var focusedField: Field?
 
     private enum Field {
@@ -1082,8 +1086,15 @@ struct SetupWizard: View {
         ["Provider", "Credentials", requiresRegistrationTest ? "Test" : "Test not needed"]
     }
 
+    private var testedAccount: ManagedSIPAccount? {
+        guard let testedSIPAddress else { return nil }
+        return phone.managedAccounts.first { $0.sipAddress == testedSIPAddress }
+    }
+
     private var displayedStatus: RegistrationStatus {
-        submissionError.map { .failed($0) } ?? phone.registrationStatus
+        if let submissionError { return .failed(submissionError) }
+        if let testedAccount { return phone.registrationStatus(for: testedAccount) }
+        return phone.registrationStatus
     }
 
     private var statusTitle: String {
@@ -1189,6 +1200,7 @@ struct SetupWizard: View {
             showsAdvanced = false
             applyPreset(.telekom)
         }
+        testedSIPAddress = nil
         password = ""
         submissionError = nil
         focusedField = nil
@@ -1205,7 +1217,10 @@ struct SetupWizard: View {
                     updated: account,
                     replacementPassword: password
                 )
-                if plan.requiresRegistrationTest { step = 2 }
+                if plan.requiresRegistrationTest {
+                    step = 2
+                    testedSIPAddress = account.sipAddress
+                }
                 let performedPlan = try phone.editManagedAccount(
                     account,
                     replacing: editingSIPAddress,
@@ -1215,6 +1230,7 @@ struct SetupWizard: View {
                 if !performedPlan.requiresRegistrationTest { dismiss() }
             } else {
                 step = 2
+                testedSIPAddress = account.sipAddress
                 try phone.saveManagedAccountAndTest(account, password: password)
             }
         } catch {
@@ -1224,8 +1240,12 @@ struct SetupWizard: View {
 
     private func retryRegistrationTest() {
         submissionError = nil
+        guard let testedAccount else {
+            step = 1
+            return
+        }
         do {
-            try phone.restartManagedAccountRegistrationTest()
+            try phone.restartManagedAccountRegistrationTest(for: testedAccount)
         } catch {
             submissionError = error.localizedDescription
         }
