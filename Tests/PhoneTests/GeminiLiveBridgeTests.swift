@@ -277,39 +277,6 @@ private func pcmSamples(_ data: Data) -> [Int16] {
     }
 }
 
-@Test func encodesExternalBrainSetupMessage() throws {
-    let message = try BrainLiveProtocol.setupMessage(
-        model: "gemini-live-test",
-        instructions: "Be concise.",
-        greeting: true
-    )
-    let root = try #require(JSONSerialization.jsonObject(with: Data(message.utf8)) as? [String: Any])
-
-    #expect(root["type"] as? String == "setup")
-    #expect(root["instructions"] as? String == "Be concise.")
-    #expect(root["greeting"] as? Bool == true)
-    #expect(root["model"] as? String == "gemini-live-test")
-}
-
-@Test func selectsExternalBrainOnlyForValidWebSocketURLs() throws {
-    #expect(resolveAssistantLiveEndpoint(nil) == .gemini)
-    #expect(resolveAssistantLiveEndpoint("") == .gemini)
-    #expect(resolveAssistantLiveEndpoint("not a URL") == .gemini)
-    #expect(resolveAssistantLiveEndpoint("https://127.0.0.1:8791") == .gemini)
-    #expect(
-        resolveAssistantLiveEndpoint(" ws://127.0.0.1:8791 ") ==
-        .brain(try #require(URL(string: "ws://127.0.0.1:8791")))
-    )
-}
-
-@Test func decodesExternalBrainStateMessages() throws {
-    let live = try #require(BrainLiveProtocol.decodeServerMessage(Data(#"{"type":"state","value":"live"}"#.utf8)))
-    let failed = try #require(BrainLiveProtocol.decodeServerMessage(Data(#"{"type":"state","value":"failed","message":"offline"}"#.utf8)))
-
-    #expect(live == .state(.live))
-    #expect(failed == .state(.failed("offline")))
-}
-
 @Test func parsesALabelledSummaryIntoFields() {
     let sections = parseCallSummary("""
     Anrufer: Frau Meier für die Praxis.

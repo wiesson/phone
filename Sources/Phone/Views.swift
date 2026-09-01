@@ -330,7 +330,6 @@ struct PhoneSettingsView: View {
     @AppStorage("transcriptionSmartMode") private var transcriptionSmartMode = false
     @AppStorage("showDockIcon") private var showDockIcon = false
     @AppStorage("geminiLiveModel") private var geminiLiveModel = defaultGeminiLiveModel
-    @AppStorage("assistantBrainURL") private var assistantBrainURL = ""
     @AppStorage("assistantInstructions") private var assistantInstructions = defaultAssistantInstructions
     @AppStorage("assistantUserDisplayName") private var assistantUserDisplayName = ""
     @AppStorage("webhookURL") private var webhookURL = ""
@@ -535,11 +534,6 @@ struct PhoneSettingsView: View {
         )
     }
 
-    private var usesExternalBrain: Bool {
-        if case .brain = resolveAssistantLiveEndpoint(assistantBrainURL) { return true }
-        return false
-    }
-
     private var assistantBridgeSection: some View {
         VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -553,24 +547,14 @@ struct PhoneSettingsView: View {
                             .padding(.vertical, 2)
                             .background(.purple.opacity(0.12), in: Capsule())
                     }
-                    Text(usesExternalBrain ? "When active, call audio flows through the configured external brain." : "When active, caller audio is streamed to Google and Gemini audio is sent back into the call.")
+                    Text("When active, caller audio is streamed to Google and Gemini audio is sent back into the call.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                LabeledContent("Brain URL") {
-                    TextField("ws://127.0.0.1:8791", text: $assistantBrainURL)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 300)
-                }
-                Text("Leave empty to connect to Gemini directly. A valid ws:// or wss:// URL does not require an API key in Phone.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
                 LabeledContent("API key") {
-                    SecureField(usesExternalBrain ? "Not required in brain mode" : (phone.isGeminiConfigured ? "Configured" : "Required"), text: $geminiAPIKey)
+                    SecureField(phone.isGeminiConfigured ? "Configured" : "Required", text: $geminiAPIKey)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 300)
                 }
@@ -599,10 +583,6 @@ struct PhoneSettingsView: View {
                         Text(geminiSettingsMessage)
                             .font(.caption)
                             .foregroundStyle(geminiSettingsMessage == "API key saved." ? .green : .orange)
-                    } else if usesExternalBrain {
-                        Text("External brain configured.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     } else if phone.isGeminiConfigured {
                         Text("An API key is configured.")
                             .font(.caption)
@@ -652,7 +632,6 @@ struct PhoneSettingsView: View {
                 }
         }
         .onAppear { phone.refreshAssistantConfiguration() }
-        .onChange(of: assistantBrainURL) { _, _ in phone.refreshAssistantConfiguration() }
     }
 
     private var phoneSettings: some View {

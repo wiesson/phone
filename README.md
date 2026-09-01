@@ -352,19 +352,6 @@ streamed to Google's Gemini Live API and generated audio is injected into the
 call. Review Google's data and privacy terms before enabling it. Local
 transcription remains independent and can continue alongside the bridge.
 
-## External brain (experimental)
-
-Phone can route the live call-audio bridge through a service of your own
-instead of connecting to Gemini directly. Set its `ws://` or `wss://` URL under
-Settings > Assistant; a valid URL also removes the need for an API key in
-Phone, because the brain owns the model session and its credentials.
-
-The contract is documented in [docs/ASSISTANT_BRAIN_PROTOCOL.md](docs/ASSISTANT_BRAIN_PROTOCOL.md):
-one WebSocket per call, a JSON setup message, PCM16 mono at 16 kHz towards the
-brain and 24 kHz back. When this mode is enabled, call audio flows through that
-process; review the privacy and deployment implications before using it with
-real calls.
-
 ## Assistant answering mode (experimental)
 
 In Settings > Assistant, choose whether the assistant answers incoming calls

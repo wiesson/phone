@@ -843,13 +843,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     }
 
     func refreshAssistantConfiguration() {
-        let endpoint = resolveAssistantLiveEndpoint(UserDefaults.standard.string(forKey: "assistantBrainURL"))
-        switch endpoint {
-        case .brain:
-            isGeminiConfigured = true
-        case .gemini:
-            isGeminiConfigured = GeminiAPIKeyStore.apiKey() != nil
-        }
+        isGeminiConfigured = GeminiAPIKeyStore.apiKey() != nil
     }
 
     func toggleGeminiLive() {
@@ -865,22 +859,11 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
     private func startGeminiLive(sendsInitialGreeting: Bool, instructions instructionOverride: String? = nil) {
         guard state.isConnected else { return }
         let defaults = UserDefaults.standard
-        let endpoint = resolveAssistantLiveEndpoint(defaults.string(forKey: "assistantBrainURL"))
-        let apiKey: String
-        let brainURL: URL?
-        switch endpoint {
-        case .brain(let url):
-            apiKey = ""
-            brainURL = url
-        case .gemini:
-            guard let storedAPIKey = GeminiAPIKeyStore.apiKey() else {
-                geminiLiveState = .failed(GeminiLiveError.invalidAPIKey.localizedDescription)
-                isGeminiConfigured = false
-                clearAssistantCall()
-                return
-            }
-            apiKey = storedAPIKey
-            brainURL = nil
+        guard let apiKey = GeminiAPIKeyStore.apiKey() else {
+            geminiLiveState = .failed(GeminiLiveError.invalidAPIKey.localizedDescription)
+            isGeminiConfigured = false
+            clearAssistantCall()
+            return
         }
         let storedModel = defaults.string(forKey: "geminiLiveModel")?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -912,14 +895,12 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
             return
         }
         let bridge = geminiLiveBridge
-        let usesGeminiTranscription = brainURL == nil
         geminiLiveState = .connecting
         geminiBridgeTask?.cancel()
         geminiBridgeTask = Task {
             guard !Task.isCancelled else { return }
             await bridge.start(
                 apiKey: apiKey,
-                brainURL: brainURL,
                 model: model,
                 instructions: instructions,
                 sendsInitialGreeting: sendsInitialGreeting,
@@ -928,10 +909,8 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
                     Task { @MainActor [weak self] in
                         self?.geminiLiveState = state
                         if case .live = state {
-                            if usesGeminiTranscription {
-                                self?.finalizeLocalDrafts()
-                                self?.geminiTranscriptionActive = true
-                            }
+                            self?.finalizeLocalDrafts()
+                            self?.geminiTranscriptionActive = true
                             self?.muteForBridgeIfNeeded()
                         }
                         if case .failed(let message) = state {

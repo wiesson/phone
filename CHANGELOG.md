@@ -4,6 +4,16 @@ All notable changes to Phone. Dates are 2026. This project went from empty
 repository to everything below in roughly 48 hours — every entry links to real
 commits on `main`.
 
+## September 1
+
+### Removed
+- **External brain option.** The `ws://` bridge switch in Assistant settings and
+  the matching code path in the Gemini Live bridge are gone: the WebSocket
+  service it talked to now lives in the private cloud stack and is not shipped
+  with the app. Gemini directly is the only live-call path. The old protocol
+  document (`docs/ASSISTANT_BRAIN_PROTOCOL.md`) was removed with it; the
+  history keeps it.
+
 ## August 30
 
 ### Added

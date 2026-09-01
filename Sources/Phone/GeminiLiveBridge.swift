@@ -309,64 +309,6 @@ struct GeminiTranscriptionBuffer: Sendable {
     }
 }
 
-enum AssistantLiveEndpoint: Equatable, Sendable {
-    case gemini
-    case brain(URL)
-}
-
-func resolveAssistantLiveEndpoint(_ value: String?) -> AssistantLiveEndpoint {
-    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty,
-          let url = URL(string: value),
-          let scheme = url.scheme?.lowercased(), scheme == "ws" || scheme == "wss",
-          url.host?.isEmpty == false else { return .gemini }
-    return .brain(url)
-}
-
-enum BrainServerMessage: Equatable, Sendable {
-    case state(GeminiLiveState)
-    case toolLog(String)
-}
-
-enum BrainLiveProtocol {
-    static func setupMessage(model: String, instructions: String, greeting: Bool) throws -> String {
-        let object: [String: Any] = [
-            "type": "setup",
-            "instructions": instructions,
-            "greeting": greeting,
-            "model": model
-        ]
-        let data = try JSONSerialization.data(withJSONObject: object)
-        guard let string = String(data: data, encoding: .utf8) else { throw GeminiLiveError.invalidEndpoint }
-        return string
-    }
-
-    static func decodeServerMessage(_ data: Data) -> BrainServerMessage? {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = object["type"] as? String else { return nil }
-        if type == "state", let value = object["value"] as? String {
-            switch value {
-            case "live": return .state(.live)
-            case "failed": return .state(.failed(object["message"] as? String ?? "External brain failed"))
-            default: return nil
-            }
-        }
-        if type == "toolLog", let name = object["name"] as? String {
-            let args = compactJSONString(object["args"] ?? [:])
-            let result = object["result"].map(compactJSONString)
-            let suffix = result.map { " result=\($0)" } ?? ""
-            return .toolLog("phone-app: brain tool \(name) args=\(args)\(suffix)\n")
-        }
-        return nil
-    }
-
-    private static func compactJSONString(_ value: Any) -> String {
-        guard JSONSerialization.isValidJSONObject(value),
-              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
-              let string = String(data: data, encoding: .utf8) else { return String(describing: value) }
-        return String(string.prefix(1_000))
-    }
-}
-
 enum GeminiLiveProtocol {
     static func setupMessage(model: String, instructions: String) throws -> String {
         let modelPath = model.hasPrefix("models/") ? model : "models/\(model)"
@@ -729,11 +671,9 @@ actor GeminiLiveBridge {
     private var pendingInjectionEnd = false
     private var sessionID = 0
     private var sendsInitialGreeting = false
-    private var usesBrain = false
 
     func start(
         apiKey: String,
-        brainURL: URL? = nil,
         model: String,
         instructions: String,
         sendsInitialGreeting: Bool = false,
@@ -742,17 +682,6 @@ actor GeminiLiveBridge {
         onTranscript: @escaping TranscriptHandler,
         onToolCall: @escaping ToolCallHandler
     ) async {
-        if let brainURL {
-            await startBrain(
-                url: brainURL,
-                model: model,
-                instructions: instructions,
-                sendsInitialGreeting: sendsInitialGreeting,
-                injectionSocketPath: injectionSocketPath,
-                onState: onState
-            )
-            return
-        }
         stop(notify: false)
         sessionID &+= 1
         let requestID = sessionID
@@ -803,14 +732,6 @@ actor GeminiLiveBridge {
         }
         guard frame.speaker == .caller, state == .live, let socket,
               let pcm = callerConverter.convert(frame), !pcm.isEmpty else { return }
-        if usesBrain {
-            do {
-                try await socket.send(.data(pcm))
-            } catch {
-                failBrain(error.localizedDescription)
-            }
-            return
-        }
         do {
             try await socket.send(.string(GeminiLiveProtocol.realtimeInputMessage(pcm: pcm)))
         } catch {
@@ -843,86 +764,11 @@ actor GeminiLiveBridge {
         modelResampler = PCM16MonoResampler()
         pendingInjectionEnd = false
         sendsInitialGreeting = false
-        usesBrain = false
         transcriptionBuffer = GeminiTranscriptionBuffer()
         if notify { stateHandler?(.off) }
         stateHandler = nil
         transcriptHandler = nil
         toolCallHandler = nil
-    }
-
-    private func startBrain(
-        url: URL,
-        model: String,
-        instructions: String,
-        sendsInitialGreeting: Bool,
-        injectionSocketPath: String,
-        onState: @escaping StateHandler
-    ) async {
-        stop(notify: false)
-        sessionID &+= 1
-        let requestID = sessionID
-        stateHandler = onState
-        usesBrain = true
-        publish(.connecting)
-        do {
-            injectionSender = try AudioInjectionSender(socketPath: injectionSocketPath)
-            let session = URLSession(configuration: .default)
-            let socket = session.webSocketTask(with: url)
-            self.session = session
-            self.socket = socket
-            socket.resume()
-            let setup = try BrainLiveProtocol.setupMessage(
-                model: model,
-                instructions: instructions,
-                greeting: sendsInitialGreeting
-            )
-            try await socket.send(.string(setup))
-            guard requestID == sessionID, state != .off else { return }
-            receiveTask = Task { [weak self] in await self?.receiveBrainLoop(sessionID: requestID) }
-        } catch {
-            if requestID == sessionID { failBrain(error.localizedDescription) }
-        }
-    }
-
-    private func receiveBrainLoop(sessionID requestID: Int) async {
-        do {
-            while !Task.isCancelled, requestID == sessionID, let socket {
-                let message = try await socket.receive()
-                switch message {
-                case .data(let data):
-                    modelAudio.append(data)
-                    flushModelAudio()
-                case .string(let string):
-                    guard let decoded = BrainLiveProtocol.decodeServerMessage(Data(string.utf8)) else {
-                        phoneDiagnosticLog("phone-app: brain message not decoded: \(String(string.prefix(300)))\n")
-                        continue
-                    }
-                    switch decoded {
-                    case .state(.live):
-                        phoneDiagnosticLog("phone-app: external brain session live\n")
-                        publish(.live)
-                    case .state(.failed(let message)):
-                        failBrain(message)
-                        return
-                    case .state:
-                        continue
-                    case .toolLog(let message):
-                        phoneDiagnosticLog(message)
-                    }
-                @unknown default:
-                    continue
-                }
-            }
-        } catch {
-            if requestID == sessionID, state != .off && !(error is CancellationError) {
-                let code = socket?.closeCode.rawValue ?? -1
-                let reason = socket?.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? "none"
-                let redactedError = redactSensitiveValues(in: String(describing: error))
-                phoneDiagnosticLog("phone-app: brain socket closed — code \(code), reason: \(reason), error: \(redactedError)\n")
-                failBrain(error.localizedDescription)
-            }
-        }
     }
 
     private func receiveLoop(sessionID requestID: Int) async {
@@ -1071,27 +917,6 @@ actor GeminiLiveBridge {
     private func flushTranscription() {
         guard let utterance = transcriptionBuffer.flush() else { return }
         transcriptHandler?(utterance.speaker, utterance.text)
-    }
-
-    private func failBrain(_ message: String) {
-        sessionID &+= 1
-        receiveTask?.cancel()
-        pacingTask?.cancel()
-        socket?.cancel(with: .goingAway, reason: nil)
-        session?.invalidateAndCancel()
-        receiveTask = nil
-        pacingTask = nil
-        socket = nil
-        session = nil
-        injectionSender = nil
-        usesBrain = false
-        modelAudio.removeAll(keepingCapacity: false)
-        outputAudio.removeAll(keepingCapacity: false)
-        modelResampler = PCM16MonoResampler()
-        pendingInjectionEnd = false
-        transcriptionBuffer = GeminiTranscriptionBuffer()
-        transcriptHandler = nil
-        publish(.failed("External brain: \(message)"))
     }
 
     private func fail(_ message: String) {
