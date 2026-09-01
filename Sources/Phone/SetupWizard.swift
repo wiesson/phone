@@ -273,8 +273,12 @@ struct ManagedSIPAccount: Codable, Equatable, Identifiable, Sendable {
         }
         return assistantProfileDisplay
     }
+    /// What the panel header calls this line: its label when it has one, so
+    /// the header and the line bar in the main window agree, otherwise the
+    /// number, or the full address for a custom registrar.
     var registrationDisplay: String {
-        let address = provider == .custom ? sipAddress : username
+        let name = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let address = name.isEmpty ? (provider == .custom ? sipAddress : username) : name
         return "\(address) · \(provider.shortName)"
     }
 
@@ -954,16 +958,10 @@ struct SetupWizard: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
+            // The two fields every line needs come first; the rest is optional
+            // and says so, instead of three optional rows standing in front
+            // of the username on a first-time screen.
             VStack(spacing: 14) {
-                setupField("Label", text: $label, prompt: "Optional, for example Private or Work")
-                setupField("Display name", text: $sipDisplayName, prompt: "Optional, shown to callees")
-                VStack(alignment: .leading, spacing: 5) {
-                    setupField("Outbound caller ID (optional)", text: $outboundCallerID, prompt: "+49 170 1234567")
-                    Text("Applies only to this account. Your provider must support CLIP no screening.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                }
                 setupField("Number or username", text: $username, prompt: provider == .telekom ? "+49…" : "SIP username")
                     .focused($focusedField, equals: .username)
                 LabeledContent("Password") {
@@ -981,6 +979,22 @@ struct SetupWizard: View {
             }
             .padding(18)
             .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Optional")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                setupField("Label", text: $label, prompt: "For example Private or Work")
+                setupField("Display name", text: $sipDisplayName, prompt: "Shown to the people you call")
+                VStack(alignment: .leading, spacing: 5) {
+                    setupField("Outbound caller ID", text: $outboundCallerID, prompt: "+49 170 1234567")
+                    Text("Applies only to this line. Your provider must support CLIP no screening.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
+            .padding(18)
+            .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             HStack(spacing: 10) {
                 Image(systemName: "key.fill")
                     .foregroundStyle(.green)
@@ -1183,7 +1197,17 @@ struct SetupWizard: View {
 
     private func selectProvider(_ value: SIPProviderPreset) {
         provider = value
-        applyPreset(value)
+        if value == .custom {
+            // A custom registrar starts from nothing. Carrying the previous
+            // preset's servers across put Telekom's registrar in front of
+            // someone who had just said their provider is none of the above.
+            domain = ""
+            outboundProxy = ""
+            stunServer = ""
+            mediaEncryption = ""
+        } else {
+            applyPreset(value)
+        }
         showsAdvanced = editingAccount != nil || value == .custom || value == .fritzBox
     }
 

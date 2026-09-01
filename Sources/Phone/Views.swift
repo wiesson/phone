@@ -374,8 +374,11 @@ struct PhoneSettingsView: View {
             phoneSettings
                 .tabItem { Label("Lines", systemImage: "simcard") }
 
-            intelligenceSettings
-                .tabItem { Label("Intelligence", systemImage: "sparkles") }
+            assistantSettings
+                .tabItem { Label("Assistant", systemImage: "sparkles") }
+
+            transcriptionSettings
+                .tabItem { Label("Transcription", systemImage: "text.bubble") }
 
             automationSettings
                 .tabItem { Label("Automation", systemImage: "bolt.horizontal") }
@@ -498,7 +501,7 @@ struct PhoneSettingsView: View {
                     Text(
                         transcriptionEngine == TranscriptionEngine.gemini.rawValue
                             ? "Live call audio is sent to Gemini for transcription. Summaries still use the configured local or Gemini fallback path."
-                            : "Transcription and summaries stay on this Mac. The optional Gemini Live bridge has separate controls."
+                            : "Transcription and summaries stay on this Mac. The assistant has its own settings in the Assistant tab."
                     )
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -509,14 +512,20 @@ struct PhoneSettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var intelligenceSettings: some View {
+    /// Two tabs, sorted by what the user wants rather than by technology:
+    /// "who speaks for me" and "what is written down" are separate decisions
+    /// even though both happen to run through a model.
+    private var transcriptionSettings: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                transcriptionSection
-                Divider()
-                assistantBridgeSection
-            }
-            .padding(24)
+            transcriptionSection
+                .padding(24)
+        }
+    }
+
+    private var assistantSettings: some View {
+        ScrollView {
+            assistantBridgeSection
+                .padding(24)
         }
     }
 
@@ -545,17 +554,9 @@ struct PhoneSettingsView: View {
     private var assistantBridgeSection: some View {
         VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text("Live call bridge")
-                            .font(.headline)
-                        Text("BETA")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.purple)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.purple.opacity(0.12), in: Capsule())
-                    }
-                    Text("When active, caller audio is streamed to Google and Gemini audio is sent back into the call.")
+                    Text("Assistant")
+                        .font(.headline)
+                    Text("The assistant answers and places calls on your lines through Google Gemini Live. While it is on a call, the caller's audio is streamed to Google and the assistant's voice is sent back into the call.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -601,7 +602,7 @@ struct PhoneSettingsView: View {
                 Divider()
 
                 Label {
-                    Text("When the assistant answers, and after how long, is set per line in the Phone tab — each number can behave differently.")
+                    Text("Which profile answers on a line, when it answers, and after how long is set per line in the Lines tab — each number can behave differently.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -630,7 +631,7 @@ struct PhoneSettingsView: View {
                 }
 
                 Label {
-                    Text("Manual bridge controls remain available during calls. Local transcription stays independent.")
+                    Text("During any call, the sparkles button starts or stops the assistant by hand. Transcription is configured separately.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
