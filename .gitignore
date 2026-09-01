@@ -16,3 +16,5 @@ BACKLOG.local.md
 landing/
 *.local.plist
 
+node_modules/
+.astro/
