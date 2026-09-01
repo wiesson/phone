@@ -1024,7 +1024,7 @@ public enum MCPProtocol {
             return encode(successResponse(id: id, result: .object([
                 "protocolVersion": .string(protocolVersion),
                 "capabilities": .object(["tools": .object([:])]),
-                "serverInfo": .object(["name": .string("phone-mcp"), "version": .string("0.1.0")])
+                "serverInfo": .object(["name": .string("phone-mcp"), "version": .string("1.0.0")])
             ])))
         case "tools/list":
             return encode(successResponse(id: id, result: .object(["tools": .array(tools)])))
