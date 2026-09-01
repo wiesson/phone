@@ -4,7 +4,7 @@ Two tracks that compete for the same weeks, so they are written down
 separately: the **service** is the business, the **app** is the product that
 carries it.
 
-Status: 29. August 2026.
+Status: 31. August 2026.
 
 ## Done
 
@@ -29,9 +29,14 @@ Status: 29. August 2026.
 ## Track A — the service (this is the business)
 
 The paid product is a supervised monthly service, not an App Store download.
-The path into a customer's phone system is **call forwarding on no reply** to
-our own trunk: nothing is installed at the customer, no device, no
-registration against their line, and onboarding is one forwarding rule.
+The default path into a customer's phone system is **BYO-SIP**: the customer
+keeps their existing German SIP provider and supplies credentials for a
+dedicated endpoint (or Nordwerk provisions them on the customer's behalf).
+The cloud runtime registers that endpoint directly; no provider migration and
+no software or device at the customer are required. Call forwarding to a
+Nordwerk-owned trunk remains an optional compatibility path, not the product
+architecture. sipgate is our own dogfooding and consented outbound-demo
+endpoint, not a prerequisite for customers.
 
 1. **Cloud stack end to end** (`cloud/`, in progress). A headless gateway
    (baresip + `phone_tap`) plus a TypeScript brain (Gemini Live, tools,
@@ -42,10 +47,17 @@ registration against their line, and onboarding is one forwarding rule.
    (caller, request, urgency, callback) → delivered by webhook, optionally an
    SMS acknowledgement to the caller. It cannot fail embarrassingly; the live
    voice agent can. The live agent stays opt-in per line.
-3. **Trunk and capacity** — booked voice channels terminating on the cloud
-   side, then a queue within that limit.
-4. **Tenants** — number configuration, tickets, and archive behind the brain,
-   customer-facing view reading it live.
+3. **BYO-SIP and capacity** — isolated endpoint registrations and call workers
+   per tenant, scheduled across a bounded worker pool. Capacity is the number
+   of concurrent media/AI sessions we operate, independent of a mandatory
+   shared carrier trunk.
+4. **Tenants and control plane** — `notes(core)` is the system of record for
+   organisations, endpoints, permissions, configuration, live call state,
+   transcripts, tickets, and archive. `zentrale` remains the SIP/media runtime:
+   it receives desired endpoint configuration and emits signed, idempotent
+   call events back to `notes(core)`. SIP secrets are write-only, encrypted,
+   auditable, and may be entered either by an authorised customer admin or by
+   Nordwerk. The customer-facing view reads the resulting state live.
 
 ## Track B — the app
 
