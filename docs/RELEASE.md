@@ -9,9 +9,9 @@ handful of things only an Apple account holder can do.
 
 ```sh
 sh scripts/build-baresip.sh                      # once, or after a baresip bump
-PHONE_TEAM_ID=XXXXXXXXXX sh scripts/build-app.sh --store            # dist/Phone.app
-PHONE_TEAM_ID=XXXXXXXXXX sh scripts/build-app.sh --store --package  # + dist/Phone.pkg
-PHONE_TEAM_ID=XXXXXXXXXX ASC_API_KEY_ID=… ASC_API_ISSUER_ID=… \
+PHONE_TEAM_ID=TF5Y2AJ5QZ sh scripts/build-app.sh --store            # dist/Phone.app
+PHONE_TEAM_ID=TF5Y2AJ5QZ sh scripts/build-app.sh --store --package  # + dist/Phone.pkg
+PHONE_TEAM_ID=TF5Y2AJ5QZ ASC_API_KEY_ID=… ASC_API_ISSUER_ID=… \
   sh scripts/build-app.sh --store --upload       # + validate and upload to App Store Connect
 ```
 
@@ -48,11 +48,11 @@ Everything below happens in Xcode → Settings → Accounts, in
 [developer portal](https://developer.apple.com/account/resources). Nothing
 here is scripted, because each step needs your Apple ID.
 
-1. **Pick the team.** This Mac has two Apple Development identities:
-   `TF5Y2AJ5QZ` (Arne Wiese) and `6UU9G3U3L3` (arnewiese@mac.com). Neither
-   is a nordwerk organisation. The team decides the app group name, the
-   Keychain access group, and who is named as the seller on the store page.
-   Changing it later means a new app record.
+1. **The team is `TF5Y2AJ5QZ` (Arne Wiese)** — the one individual membership
+   that exists; `6UU9G3U3L3` (arnewiese@mac.com) is a free Xcode login. The
+   store page therefore names Arne Wiese as the seller, not nordwerk; an
+   organisation account would need a D-U-N-S number and an app transfer
+   later. The app group is `TF5Y2AJ5QZ.com.nordwerk.phone`.
 2. **Certificates.** In Xcode → Settings → Accounts → the team → Manage
    Certificates, add **Apple Distribution** and **Mac Installer
    Distribution**. The script finds them by name; nothing to configure.
@@ -86,7 +86,7 @@ here is scripted, because each step needs your Apple ID.
 ```sh
 PHONE_DIST=.build/dist-store \
 PHONE_SIGN_IDENTITY="Apple Development: …" \
-PHONE_TEAM_ID=XXXXXXXXXX \
+PHONE_TEAM_ID=TF5Y2AJ5QZ \
 PHONE_MIGRATE_CONTAINER=0 \
 sh scripts/build-app.sh --store
 codesign -dv --entitlements - .build/dist-store/Phone.app
