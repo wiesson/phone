@@ -4,7 +4,64 @@ All notable changes to Phone. Dates are 2026. This project went from empty
 repository to everything below in roughly 48 hours — every entry links to real
 commits on `main`.
 
-## September 1
+## 1.0 — September 2026
+
+The first release meant for other people's Macs: sandboxed, signed with one
+identity, built for TestFlight and the Mac App Store.
+
+### Added
+- **App Store build** (`scripts/build-app.sh --store`): release configuration,
+  App Sandbox for the app, the baresip engine, and `phone-mcp`, hardened
+  runtime with secure timestamps, inside-out signing, a `.pkg` for App Store
+  Connect and an upload step. libre and baresip are compiled from the release
+  sources (`scripts/build-baresip.sh`) instead of copied from Homebrew.
+  Bundle identifier `com.nordwerk.phone`; settings from the old identifier
+  are carried over once. `docs/RELEASE.md` lists the steps only the account
+  holder can do.
+- **Registration timeout in the interface.** A line whose registrar never
+  answers is marked failed after 30 seconds instead of showing "Registering …"
+  for as long as the app runs; the wizard offers "Test again" for it.
+- The menu bar panel offers "Set up a line" instead of "Start phone" when
+  there is no line yet.
+
+### Changed
+- **Settings sorted by intent**: General · Lines · Assistant · Transcription ·
+  Automation. Who speaks for you and what is written down are separate tabs.
+- **One line at a time.** Adding, editing, removing, retrying, or recovering a
+  line touches that line's engine only; the other lines keep their
+  registrations. A full restart re-registered everything at once, which is
+  what trips Deutsche Telekom's throttling.
+- The setup wizard asks for number and password first, then the optional
+  label, display name, and caller ID; Custom SIP starts with empty servers;
+  the test step reports the line that was just saved, not the aggregate over
+  all lines; a corrected password after a failed test edits the line instead
+  of reporting a duplicate.
+- Audio sockets moved from `/tmp` into the app's temporary directory under
+  short names; the control socket for `phone-mcp` is resolved through the app
+  group in the sandboxed build.
+- The default assistant speaks for "this line", or for the name entered in
+  Assistant settings — no longer for the developer.
+- The per-line `accounts` file that carries the SIP password for the engine
+  start is deleted once baresip has read it.
+- The store build ships without G.722 (spandsp is LGPL); Opus and G.711 stay.
+
+### Fixed
+- The menu bar icon vanished in the error state: its symbol name did not
+  exist.
+- An assistant-owned call left the Mac microphone open until Gemini reported
+  live; it is muted the moment the call connects, and unmuted again if the
+  bridge fails.
+- "Start phone" and "Try again" took live lines down when one engine had
+  died; they now start what is missing.
+- Quitting with several lines blocked the main thread for one stop timeout
+  per line; the engines are stopped together.
+- The engine's stdout handler was never removed at EOF, which can pin a core.
+- Registration failure text is redacted against the configured passwords and
+  tokens before it is shown, not only before it is logged.
+- Gemini setup has a deadline, the injection end marker is retried instead of
+  silently dropped, and callbacks from a superseded bridge session or a
+  previous call's teardown no longer touch the current one.
+- Archive failures show up in the status line instead of being swallowed.
 
 ### Removed
 - **External brain option.** The `ws://` bridge switch in Assistant settings and

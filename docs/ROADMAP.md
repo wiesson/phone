@@ -4,7 +4,7 @@ Two tracks that compete for the same weeks, so they are written down
 separately: the **service** is the business, the **app** is the product that
 carries it.
 
-Status: 31. August 2026.
+Status: 1. September 2026.
 
 ## Done
 
@@ -64,23 +64,26 @@ endpoint, not a prerequisite for customers.
 The Mac app stays the interactive front end, the demo stage, and the lab for
 the same engine. It is a vehicle, not the revenue.
 
-1. **Screens and information architecture** — settings sorted by intent rather
-   than by technology: what is app-wide (engine, keys, models, transcription)
-   versus what belongs to a line (profile, answering, hours, caller ID). The
-   per-line half is done; the tab structure and the duplicated transcript
-   surfaces (menu bar panel, library detail, separate conversation window) are
-   not.
-2. **Mac App Store, €7.99 one-time.** Open blockers, all real:
-   - no entitlements file, no App Sandbox, bundle identifier is still
-     `local.phone.mini`, ad-hoc signing;
-   - the audio tap socket lives in `/tmp` and must move into the container
-     (the path is already overridable by environment in `phone_tap.c`);
-   - `baresip` is copied from Homebrew and must be built and signed with our
-     own team identity, inheriting the sandbox;
-   - **licence**: `g722.so` links spandsp (LGPL-2.1), which does not survive
-     App Store terms. Ship the store build without G.722 — Opus and G.711 are
-     enough for Telekom and sipgate — or replace the implementation.
-   - macOS 27 "Golden Gate" ships mid-September 2026; build against that SDK.
+1. **Screens and information architecture** — done for 1.0. Settings read
+   General · Lines · Assistant · Transcription · Automation; the per-line
+   half (profile, answering, hours, caller ID) lives under Lines. The
+   transcript has two surfaces left, each with a job: the two-line glance in
+   the menu bar panel and the full timeline in the main window (live during a
+   call, archived afterwards). The separate conversation window is gone.
+   Still open, and look-and-feel rather than structure: the Lines list is
+   cramped with five lines, and the wizard's provider grid deserves the
+   provider logos.
+2. **Mac App Store** — the mechanics are done (`scripts/build-app.sh
+   --store`, `docs/RELEASE.md`): entitlements and App Sandbox for all three
+   executables, bundle identifier `com.nordwerk.phone` with a one-time
+   settings migration, audio sockets in the container, control socket through
+   an app group, baresip and libre built from source and signed with our
+   identity, hardened runtime, no G.722, version 1.0.0, package and upload.
+   What remains needs the account holder: pick the team, create the
+   distribution certificates, app group, App ID, provisioning profile, app
+   record, and API key; then a TestFlight upload for the waiting list. The
+   1.0 submission itself waits for the macOS 27 SDK (Golden Gate GM,
+   mid-September 2026) and Xcode 27. The price is set in App Store Connect.
 3. **Multi-call** — several lines, hold (re-INVITE plus injected hold music),
    transfer (SIP REFER where the provider honours it, local bridging where it
    does not). The building block for assistant → human handover, and the

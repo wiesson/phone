@@ -7,7 +7,9 @@ Phone focuses on the essentials: being reachable, answering calls, dialing out,
 and hanging up — without keeping a large softphone window around. Audio and
 optional conversation processing stay local on your Mac.
 
-> **Status:** Early, working development version. Currently targets macOS 26.
+> **Status:** 1.0 release candidate. Distributed through TestFlight for Mac
+> until the Mac App Store submission, which is built against the macOS 27 SDK
+> once Golden Gate ships. Requires macOS 26 or newer.
 
 ## Features
 
@@ -17,7 +19,8 @@ Telephony:
 - multiple SIP accounts registered simultaneously — one engine per number
 - setup wizard with provider presets (Deutsche Telekom, sipgate, FRITZ!Box,
   easybell), Keychain credential storage, and a live registration test
-- HD voice (G.722), TLS and SDES-SRTP
+- wideband audio with Opus, G.711, TLS and SDES-SRTP (G.722 in local builds
+  only; see Known limitations)
 - mute, DTMF keypad, call history with redial, macOS notifications
 - macOS Contacts names for incoming and outgoing calls, dial by name
 - handles tel:, callto:, and sip: links from other apps
@@ -63,7 +66,7 @@ Testing:
 The built application contains baresip and its required libraries, so Homebrew
 is not required on the Mac that runs Phone.
 
-Building Phone additionally requires:
+Building a development version additionally requires:
 
 - Xcode 26 or the matching Command Line Tools
 - [Homebrew](https://brew.sh)
@@ -75,7 +78,8 @@ brew install baresip libre
 
 A full Xcode project is not required. The app is built with Swift Package
 Manager and a small shell script. Homebrew, baresip, and libre are build-time
-dependencies only.
+dependencies only. The App Store build compiles baresip and libre itself and
+signs everything with one identity; see [docs/RELEASE.md](docs/RELEASE.md).
 
 ## Quick start
 
@@ -110,7 +114,7 @@ configuration" button opens the same location.
 
 When no existing account is present, Phone opens a three-step setup assistant.
 It includes presets for Deutsche Telekom, FRITZ!Box, sipgate, and Easybell, as
-well as custom SIP settings. Add and manage accounts from Settings > Phone.
+well as custom SIP settings. Add and manage lines from Settings > Lines.
 Accounts created by the assistant keep their passwords in the macOS Keychain.
 Phone runs a separate baresip process for every managed number, with an isolated
 configuration, network connection, RTP port range, UUID, and audio bridge under
@@ -125,7 +129,7 @@ the setup assistant is used.
 ### Per-number assistant profiles
 
 Each managed number can use its own locally configured assistant profile. In
-Settings > Phone, select an account and choose Personal, Hotel demo, Travel
+Settings > Lines, select a line and choose Personal, Hotel demo, Travel
 intake, or Custom, then optionally edit its instructions and multiline data.
 Incoming assistant calls use the profile belonging to the called number;
 outgoing assistant calls use the active account's profile. Resetting an editor
@@ -268,9 +272,10 @@ line-provisioning Keychain path, waits for registration, and returns the line
 plus `endpoint_id` and `endpoint_alias`. Neither credential is returned or
 written to the diagnostic log.
 
-The helper connects only to
-`~/Library/Application Support/Phone/control.sock`. The app creates that Unix
-socket with mode `0600`. Its newline-delimited request protocol is
+The helper connects only to the app's control socket: in the sandboxed App
+Store build the socket lives in the shared app group container, in a
+development build at `~/Library/Application Support/Phone/control.sock`. The
+app creates that Unix socket with mode `0600`. Its newline-delimited request protocol is
 `{"cmd":"dial","args":{"number":"+4930123456"}}`; responses are
 `{"ok":true,"result":...}` or
 `{"ok":false,"error":{"code":"...","message":"..."}}`. Commands and
@@ -294,7 +299,9 @@ cp -R dist/Phone.app /Applications/
 open /Applications/Phone.app
 ```
 
-The app is only ad hoc signed for the local Mac. Its default configuration,
+The development build is only ad hoc or development signed for the local Mac
+and is not sandboxed; the store build is both (see
+[docs/RELEASE.md](docs/RELEASE.md)). Its default configuration,
 baresip helper, required libraries, standard modules, and custom audio module
 are bundled inside the app. At first launch it creates its writable
 configuration, log, and process state under
@@ -308,7 +315,8 @@ Useful scripts:
 | --- | --- |
 | `scripts/setup.sh` | check prerequisites and create the local account file |
 | `scripts/build-audio-tap.sh` | link baresip modules and build the local audio module |
-| `scripts/build-app.sh` | build the Swift app and produce `dist/Phone.app` |
+| `scripts/build-app.sh` | build the Swift app and produce `dist/Phone.app`; `--store` for the sandboxed release build, `--package` and `--upload` for App Store Connect |
+| `scripts/build-baresip.sh` | build libre and baresip from source for the store build |
 | `scripts/run.sh` | build and open the app |
 | `scripts/e2e-live-test.sh` | live call between two of your own numbers over the real provider |
 | `scripts/integration-test.sh` | run a provider-free baresip loopback call |
@@ -343,31 +351,32 @@ The most important baresip commands are:
 - `b` — reject a call or hang up
 - `/quit` — shut baresip down cleanly
 
-## Experimental: Gemini Live bridge
+## The assistant
 
-The Gemini Live call bridge is a beta feature and is off by default. Configure
-a Gemini API key and model under Settings > Assistant, then use the sparkles
-button during an active call to start or stop it. While active, caller audio is
-streamed to Google's Gemini Live API and generated audio is injected into the
-call. Review Google's data and privacy terms before enabling it. Local
-transcription remains independent and can continue alongside the bridge.
+The assistant talks on your lines through Google's Gemini Live API. It is off
+until you save a Gemini API key under Settings > Assistant; that tab also
+holds the model, your name for call handover, and the default instructions.
+During any call, the sparkles button starts or stops the assistant by hand.
+While it is on a call, the caller's audio is streamed to Google and the
+assistant's voice is sent back into the call; review Google's data and privacy
+terms before enabling it. Transcription is configured separately and keeps
+working alongside the assistant.
 
-## Assistant answering mode (experimental)
+### Answering per line
 
-In Settings > Assistant, choose whether the assistant answers incoming calls
-**Never**, **Always**, or **Outside business hours**, then choose the answer
-delay and tailor the instructions for your callers. Weekday and weekend
-attended hours can be configured separately. With a Gemini API key configured,
-Phone answers eligible incoming calls after the delay, starts the Gemini Live
-bridge, and has the assistant greet the caller. You can still answer or decline
-before the delay expires. While the assistant is active, call audio is streamed
-to Google; review the Google data and privacy terms before enabling this mode.
+In Settings > Lines, select a line and choose whether the assistant answers
+incoming calls on it **Never**, **Always**, or **Outside business hours**, the
+answer delay, and the profile it answers with. Weekday and weekend attended
+hours are configured per line. With a Gemini API key configured, Phone answers
+eligible incoming calls after the delay and has the assistant greet the caller.
+You can still answer or decline before the delay expires.
 
 ## Privacy
 
-- SIP passwords for managed accounts are stored in macOS Keychain and are
-  materialized only into protected per-number `accounts` files below
-  `~/Library/Application Support/Phone/instances` for baresip. Manual setups
+- SIP passwords for managed accounts are stored in macOS Keychain. For the
+  engine start they are written into a protected (`0600`) per-number
+  `accounts` file below `~/Library/Application Support/Phone/instances`,
+  which is deleted again as soon as baresip has read it. Manual setups
   continue to use `~/Library/Application Support/Phone/baresip/accounts`. The
   optional development source at `runtime/baresip/accounts` is ignored by Git.
 - The sipgate PAT stays in the `sipgate-mcp` Keychain entries. Phone uses it only
@@ -382,6 +391,17 @@ addresses.
 
 ## Known limitations
 
-- only tested on Apple Silicon Macs so far
-- no graphical setup dialog for SIP accounts
-- local development build, no signed/notarized download yet
+- One call at a time: a second incoming call keeps ringing on its line until
+  the current call ends. No hold, no transfer, no conference yet.
+- The assistant needs your own Gemini API key, and while it is on a call the
+  caller's audio is streamed to Google. Without a key, Phone is a softphone
+  with local transcription.
+- On-device transcription and summaries need a Mac with Apple Intelligence;
+  otherwise summaries fall back to the Gemini API when a key is configured.
+- The App Store build has no G.722: its implementation links spandsp (LGPL),
+  which the store terms do not allow. Opus and G.711 are enough for Deutsche
+  Telekom and sipgate; local builds still include G.722.
+- Deutsche Telekom throttles lines that re-register too often. Phone touches
+  only the line that changed, but a run of failed registration tests in a
+  row can still be answered with a temporary block.
+- Only tested on Apple Silicon Macs so far. Requires macOS 26 or newer.
