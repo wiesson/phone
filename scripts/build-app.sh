@@ -11,31 +11,53 @@
 #   sh scripts/build-app.sh --store --package   … and wrap it in dist/Phone.pkg
 #   sh scripts/build-app.sh --store --upload    … and hand the package to App
 #                                           Store Connect (TestFlight)
+#   sh scripts/build-app.sh --direct        the same release build for early
+#                                           testers outside the store: signed
+#                                           with Developer ID, with G.722
+#   sh scripts/build-app.sh --direct --dmg  … packed into dist/Phone-<version>.dmg
+#   sh scripts/build-app.sh --direct --dmg --notarize   … notarised and stapled,
+#                                           ready for a GitHub release
 #
-# Environment for the store build (see docs/RELEASE.md):
+# Environment for the release builds (see docs/RELEASE.md):
 #   PHONE_TEAM_ID              Apple team identifier; names the app group
-#   PHONE_SIGN_IDENTITY        "Apple Distribution: …" (default: first found)
+#   PHONE_SIGN_IDENTITY        "Apple Distribution: …" for --store,
+#                              "Developer ID Application: …" for --direct
+#                              (default: first matching identity found)
 #   PHONE_INSTALLER_IDENTITY   "3rd Party Mac Developer Installer: …"
 #   PHONE_PROVISIONING_PROFILE path to the Mac App Store .provisionprofile
 #   PHONE_BUILD_NUMBER         CFBundleVersion (default: commit count)
 #   ASC_API_KEY_ID / ASC_API_ISSUER_ID   App Store Connect API key for --upload
+#                              and --notarize (~/.private_keys/AuthKey_<id>.p8)
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 
 STORE_BUILD=0
+DIRECT_BUILD=0
 MAKE_PACKAGE=0
 UPLOAD=0
+MAKE_DMG=0
+NOTARIZE=0
 for argument in "$@"; do
   case "$argument" in
     --store) STORE_BUILD=1 ;;
+    --direct) DIRECT_BUILD=1 ;;
     --package) MAKE_PACKAGE=1 ;;
     --upload) MAKE_PACKAGE=1; UPLOAD=1 ;;
+    --dmg) MAKE_DMG=1 ;;
+    --notarize) MAKE_DMG=1; NOTARIZE=1 ;;
     *) echo "Unknown option: $argument" >&2; exit 2 ;;
   esac
 done
 [ "${PHONE_STORE_BUILD:-0}" = 1 ] && STORE_BUILD=1
+if [ "$STORE_BUILD" = 1 ] && [ "$DIRECT_BUILD" = 1 ]; then
+  echo "--store and --direct are two builds; run them one after the other." >&2
+  exit 2
+fi
+# The store build is the one without G.722; the direct build keeps it.
 export PHONE_STORE_BUILD=$STORE_BUILD
+RELEASE_BUILD=0
+if [ "$STORE_BUILD" = 1 ] || [ "$DIRECT_BUILD" = 1 ]; then RELEASE_BUILD=1; fi
 
 BUNDLE_ID=${PHONE_BUNDLE_ID:-com.nordwerk.phone}
 VERSION=${PHONE_VERSION:-1.0.0}
@@ -44,15 +66,21 @@ MIN_SYSTEM=26.0
 TEAM_ID=${PHONE_TEAM_ID:-}
 APP_GROUP=${PHONE_APP_GROUP:-${TEAM_ID:+$TEAM_ID.$BUNDLE_ID}}
 
-if [ "$STORE_BUILD" = 1 ]; then
+if [ "$RELEASE_BUILD" = 1 ]; then
   CONFIGURATION=release
-  SIGN_IDENTITY=${PHONE_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Distribution|3rd Party Mac Developer Application/ {print $2; exit}')}
+  if [ "$STORE_BUILD" = 1 ]; then
+    SIGN_IDENTITY=${PHONE_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Distribution|3rd Party Mac Developer Application/ {print $2; exit}')}
+    IDENTITY_HINT="Create an Apple Distribution certificate in Xcode → Settings → Accounts"
+  else
+    SIGN_IDENTITY=${PHONE_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Developer ID Application/ {print $2; exit}')}
+    IDENTITY_HINT="Create a Developer ID Application certificate in Xcode → Settings → Accounts"
+  fi
   if [ -z "$SIGN_IDENTITY" ]; then
-    echo "No distribution identity found. Create an Apple Distribution certificate in Xcode → Settings → Accounts, or pass PHONE_SIGN_IDENTITY." >&2
+    echo "No signing identity found. $IDENTITY_HINT, or pass PHONE_SIGN_IDENTITY." >&2
     exit 1
   fi
   if [ -z "$TEAM_ID" ]; then
-    echo "PHONE_TEAM_ID is required for a store build; it names the app group phone-mcp shares with the app." >&2
+    echo "PHONE_TEAM_ID is required for a release build; it names the app group phone-mcp shares with the app." >&2
     exit 1
   fi
   DEPS="$ROOT/.build/deps"
@@ -297,7 +325,7 @@ add_app_group() {
   # plutil reads dots in a key as a key path; they have to be escaped.
   plutil -insert 'com\.apple\.security\.application-groups' -json "[\"$APP_GROUP\"]" "$1"
 }
-if [ "$STORE_BUILD" = 1 ]; then
+if [ "$RELEASE_BUILD" = 1 ]; then
   cp "$ROOT/Resources/Entitlements/Phone.entitlements" "$ENTITLEMENTS_DIR/app.entitlements"
   cp "$ROOT/Resources/Entitlements/PhoneEngine.entitlements" "$ENTITLEMENTS_DIR/engine.entitlements"
   cp "$ROOT/Resources/Entitlements/PhoneMCP.entitlements" "$ENTITLEMENTS_DIR/mcp.entitlements"
@@ -374,7 +402,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 
-if [ "$STORE_BUILD" = 1 ]; then
+if [ "$RELEASE_BUILD" = 1 ]; then
   codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAGS $APP_SIGN_FLAGS "$APP"
 else
   codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
@@ -392,6 +420,30 @@ if [ "$MAKE_PACKAGE" = 1 ]; then
   rm -f "$PKG"
   productbuild --component "$APP" /Applications --sign "$INSTALLER_IDENTITY" "$PKG"
   echo "Packaged: $PKG"
+fi
+
+if [ "$MAKE_DMG" = 1 ]; then
+  DMG="$DIST/Phone-$VERSION.dmg"
+  STAGING=$(mktemp -d)
+  cp -R "$APP" "$STAGING/Phone.app"
+  ln -s /Applications "$STAGING/Applications"
+  rm -f "$DMG"
+  hdiutil create -volname "Phone" -srcfolder "$STAGING" -ov -format UDZO -quiet "$DMG"
+  rm -rf "$STAGING"
+  codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAGS "$DMG"
+  echo "Disk image: $DMG"
+fi
+
+if [ "$NOTARIZE" = 1 ]; then
+  : "${ASC_API_KEY_ID:?Set ASC_API_KEY_ID (App Store Connect API key id; the .p8 lives in ~/.private_keys)}"
+  : "${ASC_API_ISSUER_ID:?Set ASC_API_ISSUER_ID}"
+  KEY_FILE="$HOME/.private_keys/AuthKey_$ASC_API_KEY_ID.p8"
+  [ -f "$KEY_FILE" ] || { echo "API key file not found: $KEY_FILE" >&2; exit 1; }
+  xcrun notarytool submit "$DMG" --key "$KEY_FILE" --key-id "$ASC_API_KEY_ID" --issuer "$ASC_API_ISSUER_ID" --wait
+  xcrun stapler staple "$DMG"
+  spctl -a -t open --context context:primary-signature -v "$DMG"
+  echo "Notarised and stapled: $DMG — attach it to a GitHub release, for example:"
+  echo "  gh release create v$VERSION --prerelease --title \"Phone $VERSION\" \"$DMG\""
 fi
 
 if [ "$UPLOAD" = 1 ]; then

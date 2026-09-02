@@ -315,7 +315,7 @@ Useful scripts:
 | --- | --- |
 | `scripts/setup.sh` | check prerequisites and create the local account file |
 | `scripts/build-audio-tap.sh` | link baresip modules and build the local audio module |
-| `scripts/build-app.sh` | build the Swift app and produce `dist/Phone.app`; `--store` for the sandboxed release build, `--package` and `--upload` for App Store Connect |
+| `scripts/build-app.sh` | build the Swift app and produce `dist/Phone.app`; `--store` for the sandboxed release build, `--package` and `--upload` for App Store Connect; `--direct --dmg --notarize` for a Developer ID disk image |
 | `scripts/build-baresip.sh` | build libre and baresip from source for the store build |
 | `scripts/run.sh` | build and open the app |
 | `scripts/e2e-live-test.sh` | live call between two of your own numbers over the real provider |

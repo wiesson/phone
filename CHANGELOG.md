@@ -16,7 +16,9 @@ identity, built for TestFlight and the Mac App Store.
   Connect and an upload step. libre and baresip are compiled from the release
   sources (`scripts/build-baresip.sh`) instead of copied from Homebrew.
   Bundle identifier `com.nordwerk.phone`; settings from the old identifier
-  are carried over once. `docs/RELEASE.md` lists the steps only the account
+  are carried over once. `--direct --dmg --notarize` produces the same build
+  signed with Developer ID as a notarised disk image for early testers
+  (GitHub Releases). `docs/RELEASE.md` lists the steps only the account
   holder can do.
 - **Registration timeout in the interface.** A line whose registrar never
   answers is marked failed after 30 seconds instead of showing "Registering …"

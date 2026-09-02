@@ -41,6 +41,26 @@ PHONE_TEAM_ID=TF5Y2AJ5QZ ASC_API_KEY_ID=… ASC_API_ISSUER_ID=… \
 Without `PHONE_PROVISIONING_PROFILE` the script builds and signs but warns;
 TestFlight and the store need the embedded profile.
 
+## A DMG for early testers
+
+The store build does not run outside the store. Testers who should have the
+app before TestFlight get the same release build signed with **Developer
+ID**, notarised, and packed into a disk image:
+
+```sh
+PHONE_TEAM_ID=TF5Y2AJ5QZ ASC_API_KEY_ID=… ASC_API_ISSUER_ID=… \
+  sh scripts/build-app.sh --direct --dmg --notarize
+gh release create v1.0.0 --prerelease --title "Phone 1.0.0" dist/Phone-1.0.0.dmg
+```
+
+Same sandbox, hardened runtime, app group, and container migration as the
+store build; the only difference is the signature and that G.722 stays in,
+because the LGPL limit is a store rule. The image goes to GitHub Releases in
+the public repository, marked as a pre-release; the landing page links there.
+The notarisation uses the same App Store Connect API key as the upload. A
+**Developer ID Application** certificate is the one extra thing to create, in
+the same Xcode dialog as the others.
+
 ## What only you can do (once)
 
 Everything below happens in Xcode → Settings → Accounts, in
@@ -54,8 +74,9 @@ here is scripted, because each step needs your Apple ID.
    organisation account would need a D-U-N-S number and an app transfer
    later. The app group is `TF5Y2AJ5QZ.com.nordwerk.phone`.
 2. **Certificates.** In Xcode → Settings → Accounts → the team → Manage
-   Certificates, add **Apple Distribution** and **Mac Installer
-   Distribution**. The script finds them by name; nothing to configure.
+   Certificates, add **Apple Distribution**, **Mac Installer Distribution**,
+   and **Developer ID Application** (for the tester DMG). The script finds
+   them by name; nothing to configure.
 3. **Identifiers.** In the developer portal:
    - an **App Group** `<TEAMID>.com.nordwerk.phone`;
    - an **App ID** `com.nordwerk.phone` with the App Groups capability, the
