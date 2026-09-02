@@ -49,9 +49,13 @@ ID**, notarised, and packed into a disk image:
 
 ```sh
 PHONE_TEAM_ID=TF5Y2AJ5QZ ASC_API_KEY_ID=… ASC_API_ISSUER_ID=… \
-  sh scripts/build-app.sh --direct --dmg --notarize
-gh release create v1.0.0 --prerelease --title "Phone 1.0.0" dist/Phone-1.0.0.dmg
+  sh scripts/release-github.sh          # build, notarise, tag v1.0.0, pre-release with the DMG
 ```
+
+`scripts/release-github.sh` refuses to run from a dirty tree, from a branch
+other than main, or from a main that is not pushed; the notes come from
+`docs/releases/<version>.md`. `--draft` keeps the release unpublished for a
+look before it goes out.
 
 Same sandbox, hardened runtime, app group, and container migration as the
 store build; the only difference is the signature and that G.722 stays in,
