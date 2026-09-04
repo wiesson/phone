@@ -211,7 +211,7 @@ func parseAccountAOR(from content: String) -> String? {
 }
 
 @MainActor
-final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserNotificationCenterDelegate {
+final class PhoneController: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     let menuBar = MenuBarModel()
     let store: PhoneStore
 
@@ -953,7 +953,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         geminiBridgeTask?.cancel()
         bridgeGeneration &+= 1
         let generation = bridgeGeneration
-        geminiBridgeTask = Task {
+        geminiBridgeTask = Task { [weak self] in
             guard !Task.isCancelled else { return }
             await bridge.start(
                 apiKey: apiKey,
@@ -2702,7 +2702,7 @@ final class PhoneController: NSObject, ObservableObject, @preconcurrency UNUserN
         intelligenceRunning = true
         callGeneration &+= 1
         intelligenceStatus = "Preparing local models …"
-        Task {
+        Task { [self] in
             do {
                 try await intelligence.start { [weak self] speaker, text, isFinal in
                     Task { @MainActor in self?.receiveLocalTranscript(speaker: speaker, text: text, isFinal: isFinal) }

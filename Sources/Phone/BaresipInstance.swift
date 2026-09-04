@@ -237,7 +237,7 @@ final class BaresipInstance {
         self.ownsAccountsFile = ownsAccountsFile
         socketPaths = BaresipSocketPaths(identifier: id)
         audioTap = AudioTapServer(socketPath: socketPaths.tap)
-        audioTap.onFrame = { [id] frame in
+        audioTap.onFrame = { [id, weak self] frame in
             Task { @MainActor [weak self] in self?.onAudioFrame?(id, frame) }
         }
     }

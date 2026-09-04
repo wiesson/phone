@@ -134,7 +134,6 @@ func upsertSavedAssistantProfile(
 }
 
 func travelDemoBookings(startingAt date: Date, calendar: Calendar = .current) -> String {
-    var calendar = calendar
     let start = calendar.startOfDay(for: date)
     let formatter = DateFormatter()
     formatter.calendar = calendar

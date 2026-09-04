@@ -122,6 +122,22 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp "$BIN_DIR/Phone" "$APP/Contents/MacOS/Phone"
 cp "$BIN_DIR/phone-mcp" "$APP/Contents/Helpers/phone-mcp"
+
+# SwiftPM in Xcode 27 stamps every executable with an absolute runpath into
+# .build/out/Products/…/PackageFrameworks. Nothing in the bundle lives there;
+# drop it before the bundle is signed or verified.
+drop_build_tree_runpaths() {
+  object=$1
+  otool -l "$object" | awk '/cmd LC_RPATH/{found=1; next} found && /path /{print $2; found=0}' \
+    | while IFS= read -r runpath; do
+        case "$runpath" in
+          @executable_path/*|@loader_path|@loader_path/*) ;;
+          *) install_name_tool -delete_rpath "$runpath" "$object" ;;
+        esac
+      done
+}
+drop_build_tree_runpaths "$APP/Contents/MacOS/Phone"
+drop_build_tree_runpaths "$APP/Contents/Helpers/phone-mcp"
 cp "$BARESIP_EXECUTABLE" "$APP/Contents/Helpers/baresip"
 cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 mkdir -p "$APP/Contents/Resources/baresip/modules"
