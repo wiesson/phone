@@ -34,6 +34,9 @@ PHONE_TEAM_ID=TF5Y2AJ5QZ ASC_API_KEY_ID=… ASC_API_ISSUER_ID=… \
   first launch. Set `PHONE_MIGRATE_CONTAINER=0` to build without the
   migration — useful when checking a store build on the development Mac,
   where the migration would move the development data.
+- **Privacy manifest** (`Resources/PrivacyInfo.xcprivacy`): no tracking, no
+  collected data, and the two required-reason APIs the app touches —
+  UserDefaults (CA92.1) and file timestamps for the log rotation (C617.1).
 - `ITSAppUsesNonExemptEncryption` is `false`: TLS and SRTP use standard
   algorithms through OpenSSL. Confirm the export compliance answer in App
   Store Connect on the first submission.
@@ -100,15 +103,26 @@ here is scripted, because each step needs your Apple ID.
    Connect → the app → TestFlight → add an internal group, or an external
    group with the waiting list's addresses; the first external build goes
    through a short beta review.
-8. **Xcode 27.** The 1.0 submission is to be built against the macOS 27 SDK.
-   Install the Xcode 27 GM from the developer downloads, then
-   `sudo xcode-select -s /Applications/Xcode-27.app` (or the path it lands
-   at) before running the store build. Until then the script builds with
-   whatever `xcode-select` points at — Xcode 26.6 today.
+8. **Xcode 27.** The 1.0 submission is built against the macOS 27 SDK.
+   Xcode 27 beta (27A5252f) is installed as `/Applications/Xcode-beta.app`;
+   the scripts pick it up through
+   `DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer` (or
+   `sudo xcode-select -s /Applications/Xcode-beta.app`). The build script
+   passes the SDK to the linker explicitly — the Xcode 27 Swift driver alone
+   stamps the deployment target as the SDK — and refuses a release build in
+   which the app, the helpers, a module, or libre/baresip carry another SDK
+   stamp than the selected Xcode; after an Xcode update, rerun
+   `sh scripts/build-baresip.sh --force`. `Info.plist` records the toolchain
+   (`DTSDKName`, `DTXcode`, …) like an Xcode build does.
+
+   TestFlight accepts builds from a beta Xcode; the App Store review does
+   not. The final upload for review is made with the Xcode 27 release (RC
+   or GM), which is the same command with the other `DEVELOPER_DIR`.
 
 ## Checking a store build locally
 
 ```sh
+DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
 PHONE_DIST=.build/dist-store \
 PHONE_SIGN_IDENTITY="Apple Development: …" \
 PHONE_TEAM_ID=TF5Y2AJ5QZ \

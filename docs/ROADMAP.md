@@ -4,7 +4,7 @@ Two tracks that compete for the same weeks, so they are written down
 separately: the **service** is the business, the **app** is the product that
 carries it.
 
-Status: 1. September 2026.
+Status: 4. September 2026.
 
 ## Done
 
@@ -81,9 +81,11 @@ the same engine. It is a vehicle, not the revenue.
    identity, hardened runtime, no G.722, version 1.0.0, package and upload.
    What remains needs the account holder: pick the team, create the
    distribution certificates, app group, App ID, provisioning profile, app
-   record, and API key; then a TestFlight upload for the waiting list. The
-   1.0 submission itself waits for the macOS 27 SDK (Golden Gate GM,
-   mid-September 2026) and Xcode 27. The price is set in App Store Connect.
+   record, and API key; then a TestFlight upload for the waiting list. Since
+   4 September 2026 the bundle is built against the macOS 27 SDK with Xcode
+   27 beta and passes the local checks (entitlements, SDK stamp, privacy
+   manifest, sandboxed launch); the review upload itself is made with the
+   Xcode 27 release build. The price is set in App Store Connect.
 3. **Multi-call** — several lines, hold (re-INVITE plus injected hold music),
    transfer (SIP REFER where the provider honours it, local bridging where it
    does not). The building block for assistant → human handover, and the

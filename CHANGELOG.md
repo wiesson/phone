@@ -46,6 +46,15 @@ identity, built for TestFlight and the Mac App Store.
 - The per-line `accounts` file that carries the SIP password for the engine
   start is deleted once baresip has read it.
 - The store build ships without G.722 (spandsp is LGPL); Opus and G.711 stay.
+- **Built against the macOS 27 SDK** with Xcode 27. The build passes the SDK
+  to the linker itself (the Xcode 27 Swift driver stamps the deployment
+  target instead), drops the absolute runpath SwiftPM now writes into every
+  executable, refuses a release build whose executables or own libraries
+  carry another SDK stamp, and writes the toolchain keys into `Info.plist`.
+  A privacy manifest is bundled: no tracking, no collected data, UserDefaults
+  and file timestamps declared. Clean under the Swift 6.4 compiler (weak
+  captures inside strongly capturing closures, a `@preconcurrency` that had
+  no effect).
 
 ### Fixed
 - The menu bar icon vanished in the error state: its symbol name did not

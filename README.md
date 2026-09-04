@@ -7,9 +7,11 @@ Phone focuses on the essentials: being reachable, answering calls, dialing out,
 and hanging up — without keeping a large softphone window around. Audio and
 optional conversation processing stay local on your Mac.
 
-> **Status:** 1.0 release candidate. Distributed through TestFlight for Mac
-> until the Mac App Store submission, which is built against the macOS 27 SDK
-> once Golden Gate ships. Requires macOS 26 or newer.
+> **Status:** 1.0 release candidate, built against the macOS 27 SDK with
+> Xcode 27. The store bundle is signed, sandboxed, and verified locally; the
+> upload waits for the account holder's distribution certificate, provisioning
+> profile, and App Store Connect API key (see [docs/RELEASE.md](docs/RELEASE.md)).
+> Requires macOS 26 or newer.
 
 ## Features
 
@@ -68,7 +70,7 @@ is not required on the Mac that runs Phone.
 
 Building a development version additionally requires:
 
-- Xcode 26 or the matching Command Line Tools
+- Xcode 27 (a beta works; select it with `DEVELOPER_DIR`) or Xcode 26
 - [Homebrew](https://brew.sh)
 - baresip and libre:
 

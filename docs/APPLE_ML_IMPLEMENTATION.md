@@ -169,3 +169,29 @@ Berechtigungsfehler der Aufnahme dürfen nicht mit fehlenden Speech-Assets verwe
 `isAvailable` ist die Bool-Kurzform. FoundationModels stellt keinen App-seitigen Asset-Download wie `Speech.AssetInventory` bereit; bei `.modelNotReady` muss die UI warten beziehungsweise später erneut prüfen. Die strukturierte Ausgabe entsteht lokal über `LanguageModelSession.respond(to:generating:)` und den durch `@Generable` erzeugten Schema-Typ. Relevante Laufzeitfehler sind unter anderem `LanguageModelSession.GenerationError.assetsUnavailable`, `.unsupportedLanguageOrLocale`, `.exceededContextWindowSize`, `.guardrailViolation`, `.rateLimited` und `.refusal`.
 
 Für lange Calls das Transkript vorab segmentieren oder hierarchisch zusammenfassen, da `exceededContextWindowSize` konkret auftreten kann. Keine Audio- oder Transkriptdaten müssen für diese APIs an einen eigenen Server gesendet werden; die Capture- und Persistenzschicht bleibt dennoch für Datenschutz, Einwilligung und Aufbewahrung verantwortlich.
+
+## Stand macOS 27 (geprüft am 4. September 2026)
+
+Gemessen mit einer kleinen Sonde gegen das macOS-27-SDK (Xcode 27 beta
+27A5252f) auf Arnes Mac unter macOS 27.0 (26A5425a):
+
+- **Foundation Models, On-Device:** `SystemLanguageModel.default` ist
+  verfügbar, Variante `coreAdvanced3` („AFM 3 Core Advanced“), Kontext 8.192
+  Token, Deutsch unterstützt. Die Test-Zusammenfassung eines deutschen
+  Anruftranskripts (Anliegen, Name, Rückrufnummer) kam nach 1,4 s und war
+  korrekt. `SystemLanguageModel.Variant` (`core3`, `coreAdvanced3`) ist neu in
+  27 und nur lesbar; die Variante ergibt sich aus dem Gerät.
+- **Private Cloud Compute:** `PrivateCloudComputeLanguageModel()` ist
+  verfügbar, Kontext 32.768 Token, Deutsch unterstützt, Quota unter dem Limit
+  (`quotaUsage.status == .belowLimit`). Damit gibt es eine zweite Stufe vor
+  Gemini, die Gesprächstext in Apples Datenschutzdomäne hält — noch nicht
+  angebunden; `LocalIntelligence.swift` fällt heute direkt auf Gemini zurück.
+- **SpeechTranscriber:** de_DE, de_AT, de_CH und zwölf englische Varianten
+  sind installiert; Format `Int16, 16 kHz, mono`, also das, was baresip
+  liefert. Ein synthetisches 14-Sekunden-Sample wurde in 0,32 s
+  transkribiert, wortgenau bis auf die Ziffernfolge der Rückrufnummer
+  („0301234567“ → „030567“). Die Nummer im Transkript ist damit ein Fall für
+  die Zusammenfassung mit Rückfrage, nicht für blindes Übernehmen.
+- `SystemLanguageModel.Adapter` ist in 27 obsolet; eigene Adapter laufen über
+  `compatibleAdapterIdentifiers(name:)` und dynamische Profile
+  (`DynamicProfileBuilder`).
