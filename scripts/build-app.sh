@@ -98,9 +98,20 @@ sh "$ROOT/scripts/build-audio-tap.sh"
 mkdir -p "$ROOT/.build/ModuleCache"
 export CLANG_MODULE_CACHE_PATH="$ROOT/.build/ModuleCache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/.build/ModuleCache"
-swift build --disable-sandbox -c "$CONFIGURATION"
+# The Swift driver in Xcode 27 hands the SDK to clang as --sysroot, and clang
+# then stamps the deployment target instead of the SDK version into
+# LC_BUILD_VERSION. App Store Connect reads that stamp to decide which SDK the
+# app was built against, so name the SDK the way clang understands it.
+SDK_PATH=$(xcrun --sdk macosx --show-sdk-path)
+SDK_VERSION=$(xcrun --sdk macosx --show-sdk-version)
+SDK_BUILD=$(xcrun --sdk macosx --show-sdk-build-version)
+XCODE_VERSION=$(xcodebuild -version | awk 'NR == 1 {print $2}')
+XCODE_BUILD=$(xcodebuild -version | awk '/Build version/ {print $3}')
+MACHINE_BUILD=$(sw_vers -buildVersion)
+set -- -Xswiftc -Xclang-linker -Xswiftc -isysroot -Xswiftc -Xclang-linker -Xswiftc "$SDK_PATH"
+swift build --disable-sandbox -c "$CONFIGURATION" "$@"
 
-BIN_DIR=$(swift build --disable-sandbox -c "$CONFIGURATION" --show-bin-path)
+BIN_DIR=$(swift build --disable-sandbox -c "$CONFIGURATION" "$@" --show-bin-path)
 DIST=${PHONE_DIST:-$ROOT/dist}
 mkdir -p "$DIST"
 APP="$DIST/Phone.app"
@@ -140,6 +151,7 @@ drop_build_tree_runpaths "$APP/Contents/MacOS/Phone"
 drop_build_tree_runpaths "$APP/Contents/Helpers/phone-mcp"
 cp "$BARESIP_EXECUTABLE" "$APP/Contents/Helpers/baresip"
 cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp "$ROOT/Resources/PrivacyInfo.xcprivacy" "$APP/Contents/Resources/PrivacyInfo.xcprivacy"
 mkdir -p "$APP/Contents/Resources/baresip/modules"
 cp "$ROOT/runtime/baresip/config" "$APP/Contents/Resources/baresip/config"
 cp "$ROOT/runtime/baresip/accounts.example" "$APP/Contents/Resources/baresip/accounts.example"
@@ -323,6 +335,33 @@ verify_macho() {
   done < "$DEPENDENCIES"
 }
 
+# A release build must be linked against the SDK this Xcode ships; App Store
+# Connect reads the stamp from every executable, and a stale helper or dylib
+# from an earlier scripts/build-baresip.sh run would carry the old one.
+# Third-party dylibs (OpenSSL from Homebrew) keep the stamp of whoever built
+# them; Apple reads the stamp of what we link, so those only get a note.
+verify_sdk_stamp() {
+  object=$1
+  severity=${2:-error}
+  stamped=$(otool -l "$object" | awk '/cmd LC_BUILD_VERSION/{found=1; next} found && /sdk /{print $2; exit}')
+  [ "$RELEASE_BUILD" = 1 ] && [ "$stamped" != "$SDK_VERSION" ] || return 0
+  if [ "$severity" = error ]; then
+    echo "$object was linked against SDK $stamped, expected $SDK_VERSION (rebuild it with the current Xcode; for baresip: sh scripts/build-baresip.sh --force)" >&2
+    exit 1
+  fi
+  echo "Note: $object was linked against SDK $stamped (third-party build; the app itself is on $SDK_VERSION)." >&2
+}
+verify_sdk_stamp "$APP/Contents/MacOS/Phone"
+verify_sdk_stamp "$MCP_HELPER"
+verify_sdk_stamp "$HELPER"
+for module in "$MODULES"/*.so; do verify_sdk_stamp "$module"; done
+for library in "$FRAMEWORKS"/*.dylib; do
+  case "$(basename "$library")" in
+    libre.*|libbaresip.*) verify_sdk_stamp "$library" ;;
+    *) verify_sdk_stamp "$library" note ;;
+  esac
+done
+
 verify_macho "$HELPER"
 verify_macho "$MCP_HELPER"
 for module in "$MODULES"/*.so; do
@@ -398,6 +437,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.business</string>
   <key>LSUIElement</key><true/>
   <key>NSHumanReadableCopyright</key><string>© 2026 nordwerk. MIT licensed.</string>
+  <key>BuildMachineOSBuild</key><string>$MACHINE_BUILD</string>
+  <key>DTCompiler</key><string>com.apple.compilers.llvm.clang.1_0</string>
+  <key>DTPlatformName</key><string>macosx</string>
+  <key>DTPlatformVersion</key><string>$SDK_VERSION</string>
+  <key>DTPlatformBuild</key><string>$SDK_BUILD</string>
+  <key>DTSDKName</key><string>macosx$SDK_VERSION</string>
+  <key>DTSDKBuild</key><string>$SDK_BUILD</string>
+  <key>DTXcode</key><string>$(printf '%s' "$XCODE_VERSION" | awk -F. '{printf "%02d%d%d", $1, $2, ($3 == "" ? 0 : $3)}')</string>
+  <key>DTXcodeBuild</key><string>$XCODE_BUILD</string>
   <key>ITSAppUsesNonExemptEncryption</key><false/>
   <key>NSContactsUsageDescription</key><string>Phone shows contact names for incoming and outgoing calls.</string>
   <key>NSMicrophoneUsageDescription</key><string>Phone needs the microphone for SIP calls.</string>
